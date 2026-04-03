@@ -1,0 +1,50 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowJs": false,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "exactOptionalPropertyTypes": true,
+    "lib": [
+      "ESNext"
+    ],
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "plugins": [
+      {
+        "completions": true,
+        "diagnosticSeverity": {
+          "anyUnknownInErrorContext": "warning",
+          "deterministicKeys": "warning",
+          "extendsNativeError": "warning",
+          "importFromBarrel": "warning",
+          "instanceOfSchema": "warning",
+          "missedPipeableOpportunity": "suggestion",
+          "missingEffectServiceDependency": "warning",
+          "nodeBuiltinImport": "suggestion",
+          "schemaUnionOfLiterals": "suggestion",
+          "serviceNotAsClass": "warning",
+          "strictBooleanExpressions": "warning",
+          "strictEffectProvide": "warning"
+        },
+        "diagnostics": true,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "name": "@effect/language-service",
+        "quickinfo": true
+      }
+    ],
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ESNext",
+    "verbatimModuleSyntax": true
+  }
+}

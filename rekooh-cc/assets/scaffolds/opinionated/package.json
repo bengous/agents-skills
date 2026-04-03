@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "claude-hooks": "link:~/.claude/skills/rekooh-cc/references/opinionated-lib/source"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.6",
+    "@effect/language-service": "0.80.0",
+    "@types/bun": "1.3.10",
+    "typescript": "5.9.3"
+  },
+  "name": "claude-hooks-local",
+  "private": true,
+  "scripts": {
+    "format": "biome format --write src/",
+    "lint": "biome lint src/",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "validate": "bun run typecheck && bun run lint && bun run test"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

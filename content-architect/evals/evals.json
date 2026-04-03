@@ -1,0 +1,56 @@
+{
+  "evals": [
+    {
+      "expectations": [
+        "Output contains a Top Tasks section identifying the most common user tasks",
+        "Output includes at least 3 user journeys with entry points, paths, and goals",
+        "Every screen in the inventory has a one-sentence Job statement",
+        "Output contains a valid Mermaid sitemap diagram",
+        "Primary navigation has 7 or fewer items",
+        "Output includes MVP/v2/nice-to-have prioritization for every screen",
+        "Screen content descriptions use real headlines and CTA labels, not placeholder text",
+        "Output reads the site-vitrine.md reference file",
+        "The skill asks clarifying questions before producing the full blueprint"
+      ],
+      "expected_output": "A content blueprint for a showcase site with: top tasks analysis, 3+ user journeys (urgent repair, renovation planning, trust-building), 5-7 screens with one-job-per-screen, a mermaid sitemap, 4-5 nav items max, MVP/v2 prioritization, content strategy per screen with real headlines (not placeholders), and landing page framework application (Shapiro/PAS/StoryBrand)",
+      "files": [],
+      "id": 1,
+      "prompt": "Je suis plombier a Lyon, je veux un site pour montrer mes realisations et recevoir des demandes de devis. J'ai deja quelques photos de chantiers sur mon telephone. Mon concurrent principal c'est Plombier Express qui a un super site. Je n'ai rien pour l'instant, pas de site."
+    },
+    {
+      "expectations": [
+        "Output contains a command-to-screen mapping for all 12 CLI commands",
+        "At least one command is identified as staying CLI-only (rollback is the obvious candidate)",
+        "Multi-command workflows are mapped to wizard or guided flows",
+        "Output includes an onboarding journey for non-technical users",
+        "Empty state descriptions reference CLI commands or actionable instructions, not decorative content",
+        "Output contains screen states (empty, loading, error) for app screens",
+        "Output reads the cli-frontend.md reference file",
+        "Output contains a valid Mermaid sitemap diagram",
+        "The Pareto principle is applied (not all CLI flags become form fields)"
+      ],
+      "expected_output": "A content blueprint that: applies the CLI-to-frontend decision tree to each of the 12 commands, identifies which stay CLI-only (rollback), which become screens, which become actions on existing screens, maps multi-command workflows (deploy create->status->logs->promote) to wizard flows, produces 6-10 screens with CRUD-to-UI mapping, includes empty states showing CLI commands (Vercel pattern), has onboarding journey for non-technical users, and applies the Pareto rule (20% operations for 80% users)",
+      "files": [],
+      "id": 2,
+      "prompt": "J'ai un outil CLI de deploiement interne avec ces commandes: deploy list, deploy create --app <name> --env <env> --branch <branch>, deploy status <id>, deploy logs <id> --follow, deploy promote <id> --to production, deploy rollback <id>, config get <key>, config set <key> <value>, env list, env set <key> <value> --app <name>, team list, team invite <email> --role <role>. L'equipe ops (5 personnes techniques) l'utilise tous les jours. On veut ajouter une interface web parce que les product managers et les devs juniors galèrent avec la CLI. Le CLI doit rester l'outil principal pour les ops."
+    },
+    {
+      "expectations": [
+        "Output starts with an audit of the existing site before proposing new structure",
+        "The audit identifies the 3 duplicate landing pages as redundant",
+        "Each existing page receives a verdict (keep/merge/cut/split)",
+        "The stale blog is addressed (recommend cutting or committing to content plan)",
+        "The proposed navigation has fewer than 9 items (the current problem)",
+        "Output includes a redirect map for cut or merged pages",
+        "Output reads the refonte.md reference file",
+        "The feature parity trap is mentioned (not everything needs to be kept)",
+        "Output contains both a before and after sitemap or structural comparison"
+      ],
+      "expected_output": "A content blueprint that: starts with an audit (screen census of 30 pages, job assignment, redundancy scan identifying the 3 duplicate landing pages, dead-end detection), applies the feature parity trap diagnostic (Bavaro question), proposes verdicts per page (keep/merge/cut), reduces 30 pages to ~12-15, fixes the 9-item nav to 5-7 with 4S-tested labels, includes a redirect map for cut/merged pages, addresses the stale blog (cut or commit), and produces a before/after sitemap comparison",
+      "files": [],
+      "id": 3,
+      "prompt": "Mon site e-commerce a 30 pages et c'est devenu le bazar. On a un header avec 9 items de navigation, des pages 'Ressources' et 'Solutions' que personne ne visite, 3 landing pages differentes pour le meme produit, une section blog avec le dernier article date de 2024, et des clients qui appellent le support parce qu'ils ne trouvent pas comment commander. L'URL c'est https://example-shop.com. Je n'ai pas d'analytics mais je sais que la page produit principal et le checkout sont les plus visitees."
+    }
+  ],
+  "skill_name": "content-architect"
+}

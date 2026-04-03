@@ -1,0 +1,5 @@
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 25
+msrv = "1.94.1"
+allow-unwrap-in-tests = true

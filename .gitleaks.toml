@@ -1,0 +1,4 @@
+[allowlist]
+  paths = [
+    '''bun-cc/examples/03-complex/tests/crypto\.test\.ts''',
+  ]

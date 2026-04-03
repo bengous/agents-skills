@@ -1,0 +1,21 @@
+{
+  "dependencies": {
+    "@effect/platform": "0.94.5",
+    "@effect/platform-bun": "0.87.1",
+    "effect": "3.19.19"
+  },
+  "name": "rekooh-scripts",
+  "private": true,
+  "scripts": {
+    "check": "biome check --write .",
+    "effect:diagnose": "effect-language-service diagnostics --project tsconfig.json",
+    "effect:quickfixes": "effect-language-service quickfixes --project tsconfig.json",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "typecheck": "tsc --noEmit",
+    "validate": "bun run typecheck && bun run lint && bun run format:check"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

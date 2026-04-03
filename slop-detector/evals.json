@@ -1,0 +1,30 @@
+{
+  "evals": [
+    {
+      "expected_output": "Score 75+. Should flag: thrilled to announce, passionate about, driving innovation, world-class, numbered list of 3, engagement bait question, hashtag spam, incredible (×2), grateful. Genre: LinkedIn.",
+      "id": 1,
+      "prompt": "Audit this LinkedIn post for slop:\n\nThrilled to announce that after an incredible journey, I'm joining Acme Corp as VP of Engineering! I'm passionate about building world-class teams and driving innovation. Three things I'm most excited about: 1) The incredible team 2) The massive market opportunity 3) The commitment to excellence. Grateful for everyone who supported me along the way! What's the best advice you've received starting a new role? #leadership #newchapter #blessed"
+    },
+    {
+      "expected_output": "Score 80+. Should flag: writing to express interest, proven track record, ideal candidate, high-quality solutions, utilized, drive significant business impact, cross-functional teams. Genre: cover letter.",
+      "id": 2,
+      "prompt": "Check this cover letter opening:\n\nI am writing to express my strong interest in the Senior Developer position at TechCo. With over 10 years of experience and a proven track record of delivering high-quality solutions, I am confident that my skills make me an ideal candidate. I have utilized technologies such as React, Python, and AWS to drive significant business impact across cross-functional teams."
+    },
+    {
+      "expected_output": "Score under 15. Should say: leave as is. Specific numbers, real technical detail, acknowledges a bug, has a next action. This is good human writing.",
+      "id": 3,
+      "prompt": "Does this sound AI? Rate it:\n\nWe shipped v2 of the search API on Monday. Latency dropped from 340ms to 90ms p99. The trick was moving the ranking step into the query pipeline instead of post-processing. Still has a bug with CJK tokenization — fixing tomorrow."
+    },
+    {
+      "expected_output": "Score 85+. Should flag: came across your profile, truly impressed, exciting opportunity, great fit, revolutionizing, leverage data, drive growth, incredible opportunity. Should produce a rewrite under 60 words that names the company and role.",
+      "id": 4,
+      "prompt": "Rewrite this recruiter message to not sound like AI:\n\nHi [Name], I came across your profile and was truly impressed by your extensive experience in machine learning and AI. I have an exciting opportunity at a fast-growing startup that I think you'd be a great fit for. The company is revolutionizing the way businesses leverage data to drive growth. Would you be open to a quick chat to learn more about this incredible opportunity?"
+    },
+    {
+      "expected_output": "Score 20-35. Mostly clean. Minor flags: 'headcount optimization' is a euphemism, 'reflect the progress we've made' is slightly padded. But has real numbers, specific causes, forward-looking detail. Verdict: light edits, not a rewrite.",
+      "id": 5,
+      "prompt": "Audit this — is it slop or just clean professional writing?\n\nOur Q3 results reflect the progress we've made on operational efficiency. Revenue grew 12% year-over-year to $4.2M, while operating costs decreased 8% through headcount optimization and vendor renegotiation. We expect Q4 to benefit from the new enterprise pricing tier launching in November."
+    }
+  ],
+  "skill_name": "slop-detector"
+}

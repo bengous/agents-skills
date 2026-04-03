@@ -1,0 +1,6 @@
+{
+  "extends": "../../../../tsconfig/effect-lenient.json",
+  "include": [
+    "**/*.ts"
+  ]
+}

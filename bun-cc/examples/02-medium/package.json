@@ -1,0 +1,11 @@
+{
+  "name": "gh-release",
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "bun test",
+    "typecheck": "tsc"
+  },
+  "type": "module",
+  "version": "1.0.0"
+}
