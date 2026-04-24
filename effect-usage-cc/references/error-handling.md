@@ -49,7 +49,7 @@ class NotFoundError extends Data.TaggedError("NotFoundError")<{
 Key properties `[O]`:
 - Auto-generates `_tag` discriminant
 - Built-in equality and hashing (via `Data` module)
-- Yieldable — same as `Schema.TaggedErrorClass`
+- Yieldable — same as `Schema.TaggedError`
 - No Schema overhead — faster construction
 - Collects stack trace and `cause` automatically
 
@@ -57,9 +57,9 @@ Key properties `[O]`:
 
 | Context | Use |
 |---|---|
-| Error crosses a boundary (API, RPC, serialization) | `Schema.TaggedErrorClass` |
+| Error crosses a boundary (API, RPC, serialization) | `Schema.TaggedError` |
 | Error stays internal (within a service or module) | `Data.TaggedError` |
-| Error needs runtime field validation | `Schema.TaggedErrorClass` |
+| Error needs runtime field validation | `Schema.TaggedError` |
 | Maximum simplicity, no validation needed | `Data.TaggedError` |
 
 ---
@@ -215,7 +215,7 @@ early return — no explicit `if (error) return` needed.
 ## Summary: Error Handling Checklist `[R]`
 
 1. **Define errors upfront** — errors are part of the API contract, not afterthoughts
-2. **Choose the right constructor** — `Schema.TaggedErrorClass` at boundaries, `Data.TaggedError` internally
+2. **Choose the right constructor** — `Schema.TaggedError` at boundaries, `Data.TaggedError` internally
 3. **Use factory functions** for repetitive error wrapping (`toXyzError` pattern) `[T3]`
 4. **Keep error unions as plain TS types** — no Schema union overhead for internal tracking `[T3]`
 5. **Use `fail` for recoverable, `die` for bugs** — do not put invariant violations in the typed channel

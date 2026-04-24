@@ -11,9 +11,15 @@ debugging "method not found" errors.
 | `import { Schema } from "@effect/schema"` | `import { Schema } from "effect"` or `import * as Schema from "effect/Schema"` | `@effect/schema` was merged into the main `effect` package | `[O]` |
 | `Schema.parse(...)` / `Schema.parseSync(...)` | `Schema.decodeUnknownSync(schema)(data)` | Old API; current name is `decodeUnknown` / `decodeUnknownSync` | `[O]` |
 | `Schema.validate(...)` | `Schema.decodeUnknownSync(schema)(data)` | No `validate` function exists; decode IS validation | `[O]` |
-| `Effect.match(effect, { onSuccess, onFailure })` | `Effect.either(effect)` + `Either.match(either, { onLeft, onRight })` or `Effect.catchTag` | `Effect.match` does not exist; use `Either.match` after `Effect.either`, or tag-based catching | `[O]` |
 | `Effect.provide(layer)` as standalone | `effect.pipe(Effect.provide(layer))` or `Effect.provide(effect, layer)` | `Effect.provide` takes an effect as first arg (data-last with pipe) | `[R]` |
 | `Layer.provide(layerA, layerB)` | `Layer.provide(layerA, layerB)` -- layerA depends on layerB | Argument order confusion: first arg is the layer being built, second provides its deps | `[R]` |
+
+## Valid APIs That Are Often Misused
+
+| API | Correct Use | Common Misuse | Source |
+|---|---|---|---|
+| `Effect.match(effect, { onFailure, onSuccess })` | Transform both typed failure and success into plain values | Using it when handlers need Effects; use `Effect.matchEffect` then | `[O]` |
+| `Effect.either(effect)` | Convert typed failure/success into `Either` for later branching | Using it just to immediately match; prefer `Effect.match` for direct value transforms | `[O]` `[R]` |
 
 ## Wrong Terminology
 

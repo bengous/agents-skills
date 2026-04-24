@@ -143,7 +143,7 @@ failure path, no resource needs, and no async operations.
 
 ### 7. Over-Abstracting Services
 
-Not every function needs `Context.Tag` + `Layer` `[R]`.
+Not every function needs `Context.Tag`, `Effect.Tag`, `Effect.Service`, or `Layer` `[R]`.
 
 ```ts
 // Bad
@@ -161,8 +161,8 @@ const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1)
 **Why:** Services exist for stateful dependencies with lifecycle (DB connections,
 HTTP clients, config). Pure transforms are just functions `[R]`.
 
-**Detect:** `Context.Tag` for services whose implementations are stateless
-pure functions with no constructor arguments.
+**Detect:** service tags/layers whose implementations are stateless pure functions
+with no constructor arguments.
 
 ---
 

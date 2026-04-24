@@ -6,7 +6,7 @@ description: >
   applies automated fixes, configures rule severities, and sets up CI integration. Use when
   working with Effect diagnostics, fixing ELS warnings, generating code from directives,
   analyzing layer composition, or configuring tsconfig plugin options. NOT for: architectural
-  decisions about Effect adoption (use effect-usage), non-Effect TypeScript, or manual code
+  decisions about Effect adoption (use effect-usage-cc), non-Effect TypeScript, or manual code
   review without ELS tooling.
 model: opus
 allowed-tools:
@@ -23,7 +23,7 @@ allowed-tools:
 
 Operational guide for `@effect/language-service` CLI and configuration. This skill handles
 **tooling**: running commands, interpreting output, applying fixes, configuring projects.
-For architecture decisions about when/how to use Effect, see the `effect-usage` skill instead.
+For architecture decisions about when/how to use Effect, see `effect-usage-cc` instead.
 
 ## Command Decision Table
 
@@ -183,7 +183,7 @@ This skill covers tooling operations. For current API details or version-specifi
 |---|---|
 | ELS release notes, new rules | `mcp__exa__web_search_exa` — search Effect-TS/language-service |
 | Effect API docs | `mcp__Context7__query-docs` — resolve `effect` library |
-| Pattern guidance | Load `effect-usage` skill |
+| Pattern guidance | Load `effect-usage-cc` skill |
 
 ## Navigating References
 

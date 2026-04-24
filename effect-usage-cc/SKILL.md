@@ -86,7 +86,8 @@ Common mistakes agents make with Effect. Numbered for reference in reviews.
 6. **Spreading Effect "for consistency"** — Using Effect in a module just because adjacent modules
    use it. Each component earns its complexity independently `[R]`.
 7. **Over-abstracting services** — Not every function needs to be a service. A synchronous
-   transform does not need `Context.Tag` + `Layer` just because it is called from Effect code `[R]`.
+   transform does not need `Context.Tag`, `Effect.Tag`, `Effect.Service`, or `Layer` just
+   because it is called from Effect code `[R]`.
 8. **Raw Fiber manipulation** — Prefer `Effect.forkScoped` over direct `Fiber.fork`. Scoped forks
    are interrupted automatically when the parent scope closes `[T3]` `[R]`.
 9. **Tacit (point-free) style** — Avoid `Effect.map(fn)`. Use `Effect.map((x) => fn(x))`.
@@ -125,6 +126,19 @@ Trust this skill for architectural decisions. Fetch docs for API specifics, type
 or when the skill's guidance is insufficient for the task at hand.
 
 ## For Consuming Agents
+
+### Task Workflow
+
+1. Inspect the local code first: Effect version, existing imports, service style, test runner,
+   and whether `@effect/language-service` is configured.
+2. Decide whether the task is **architecture/code guidance** or **ELS tooling**. For diagnostics,
+   quickfixes, codegen, or tsconfig plugin work, use `effect-language-service-cc`.
+3. Load only the reference files needed for the task. Prefer the root doctrine for quick reviews;
+   load references when writing code, correcting code, or resolving ambiguity.
+4. Preserve the project's existing Effect style unless it is wrong or harmful. Do not migrate
+   `Context.Tag` to `Effect.Service`, or v3 services to v4-only patterns, just because newer
+   APIs exist.
+5. When changing code, run the project's normal typecheck/tests and ELS diagnostics if available.
 
 ### Verdict Scale
 

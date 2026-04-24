@@ -124,7 +124,7 @@ it.effect("processes all items", () =>
 ## TestClock `[O]`
 
 `it.effect` provides `TestClock` — time starts at 0, advances only via `TestClock.adjust`.
-Fork the time-dependent effect, adjust, then assert:
+Fork the time-dependent effect, let the fiber start when needed, adjust, then assert:
 
 ```ts
 it.effect("completes after delay", () =>
@@ -132,6 +132,7 @@ it.effect("completes after delay", () =>
     const fiber = yield* pipe(
       Effect.delay(Effect.succeed("done"), "10 seconds"), Effect.fork
     )
+    yield* Effect.yieldNow()
     yield* TestClock.adjust("10 seconds")
     expect(yield* Fiber.join(fiber)).toBe("done")
   })
@@ -139,6 +140,9 @@ it.effect("completes after delay", () =>
 ```
 
 Scheduled effects (`Effect.repeat`, `Schedule.spaced`) also respect `TestClock` `[O]`.
+If a test remains flaky, the usual bug is advancing the clock before the forked
+effect has reached its sleep/schedule. Add `Effect.yieldNow()` after `Effect.fork`
+before `TestClock.adjust` `[R]`.
 
 ## Mocking services with test layers `[O]`
 

@@ -25,11 +25,13 @@ Do **not** use services/layers for `[R]`:
 
 ## Service Definition Approaches
 
-Three approaches, each with distinct trade-offs.
+Choose the service definition style that matches the surrounding code. Existing project
+convention wins unless it is causing real type, lifecycle, or testability problems.
 
 ### 1. `Context.Tag` — Foundational `[O]` `[L]`
 
 The base primitive. Define a tag with a unique string identifier and a shape type.
+It supports object services, function services, and primitive services.
 
 ```typescript
 import { Context, Effect, Layer } from "effect"
@@ -37,8 +39,8 @@ import { Context, Effect, Layer } from "effect"
 class Database extends Context.Tag("Database")<
   Database,
   {
-    readonly query: (sql: string) => Effect.Effect<unknown>
-    readonly execute: (sql: string) => Effect.Effect<void>
+    readonly query: (sql: string, params?: ReadonlyArray<unknown>) => Effect.Effect<unknown>
+    readonly execute: (sql: string, params?: ReadonlyArray<unknown>) => Effect.Effect<void>
   }
 >() {}
 ```
@@ -52,18 +54,51 @@ const DatabaseLive = Layer.effect(
     const config = yield* Config
     const pool = yield* makePool(config)
     return {
-      query: (sql) => Effect.tryPromise(() => pool.query(sql)),
-      execute: (sql) => Effect.tryPromise(() => pool.execute(sql)),
+      query: (sql, params) => Effect.tryPromise(() => pool.query(sql, params)),
+      execute: (sql, params) => Effect.tryPromise(() => pool.execute(sql, params)),
     }
   })
 )
 ```
 
 **When to use**: any service shape, including primitives (`string`, `number`) that
-`Effect.Service` cannot express `[O]`. Also needed when you want multiple named
-layer variants (Live, Test, Staging) as static properties on the class `[L]`.
+`Effect.Service` cannot express `[O]`. Also useful when you want explicit,
+low-magic service access or multiple named layer variants
+(Live, Test, Staging) as static properties on the class `[L]`.
 
-### 2. `Effect.Service` — Convenience Wrapper `[O]`
+### 2. `Effect.Tag` — Tag with Static Accessors `[O]`
+
+Creates a service tag and turns object fields into static accessors. It does not
+create a default layer.
+
+```typescript
+import { Effect, Layer } from "effect"
+
+class Notifications extends Effect.Tag("Notifications")<
+  Notifications,
+  { readonly notify: (message: string) => Effect.Effect<void> }
+>() {}
+
+const NotificationsLive = Layer.succeed(Notifications, {
+  notify: (message) => Effect.log(message),
+})
+
+const action = Notifications.notify("Hello")
+```
+
+Use `.use` when access depends on the full service object:
+
+```typescript
+const action = Notifications.use((svc) => svc.notify("Hello"))
+```
+
+**When to use**: object-shaped services where static method access improves call
+sites, but you still want to define layers separately `[O]`.
+
+**Limitation**: accessors only help with object members. For primitive service
+shapes, `Effect.Tag` still works as a tag, but `Context.Tag` is usually clearer `[O]` `[R]`.
+
+### 3. `Effect.Service` — Tag + Default Layer `[O]`
 
 Combines service definition and default layer in one class. Introduced in v3.9.
 
@@ -71,11 +106,12 @@ Combines service definition and default layer in one class. Introduced in v3.9.
 import { Effect } from "effect"
 
 class UserService extends Effect.Service<UserService>()("UserService", {
+  accessors: true,
   effect: Effect.gen(function* () {
     const db = yield* Database
     return {
       findById: (id: string) =>
-        db.query(`SELECT * FROM users WHERE id = '${id}'`),
+        db.query("SELECT * FROM users WHERE id = ?", [id]),
     }
   }),
   dependencies: [DatabaseLive],
@@ -83,16 +119,19 @@ class UserService extends Effect.Service<UserService>()("UserService", {
 ```
 
 Access the auto-generated layer via `UserService.Default` (with deps) or
-`UserService.DefaultWithoutDependencies` (without deps) `[O]`.
+`UserService.DefaultWithoutDependencies` (without deps). Set `accessors: true`
+when you want static method accessors like `UserService.findById(id)` `[O]`.
 
 **When to use**: services whose shape is an object type (not primitives), and where
 a single default implementation suffices. Reduces boilerplate compared to
 `Context.Tag` + manual `Layer.effect` `[O]`.
 
 **Limitation**: cannot be used when the service type is a primitive (`string`,
-function type, etc.) — fall back to `Context.Tag` `[O]`.
+function type, etc.) — fall back to `Context.Tag` `[O]`. It is still marked
+experimental in the v3 API docs, so avoid churn in mature codebases that already
+use `Context.Tag` cleanly `[O]` `[R]`.
 
-### 3. `ServiceMap.Service` — Namespaced Keys `[T3]`
+### 4. `ServiceMap.Service` — Namespaced Keys `[T3]`
 
 **Effect v4 (effect-smol) only** — not available in stable v3. Used in T3 Code for strict
 separation of service identity from implementation.
@@ -118,15 +157,15 @@ strict file separation prevent collisions and improve discoverability `[T3]`.
 
 ### Comparison
 
-| Criterion | `Context.Tag` | `Effect.Service` | `ServiceMap.Service` |
-|---|---|---|---|
-| Minimum version | v2.4+ | v3.9+ | v4 (effect-smol) |
-| Boilerplate | Medium | Low | Medium |
-| Primitive service types | Yes | No | No |
-| Multiple layer variants | Manual (static props) | `Default` only | Manual |
-| Auto default layer | No | Yes | No |
-| Namespaced identity | Manual string | Manual string | Automatic |
-| Adoption context | Any | Single-implementation services | Large codebases |
+| Criterion | `Context.Tag` | `Effect.Tag` | `Effect.Service` | `ServiceMap.Service` |
+|---|---|---|---|---|
+| Boilerplate | Medium | Medium | Low | Medium |
+| Primitive service types | Yes | Yes (no accessors) | No | No |
+| Static accessors | Via codegen | Yes | Optional | v4 pattern |
+| Multiple layer variants | Manual | Manual | `Default` plus manual | Manual |
+| Auto default layer | No | No | Yes | No |
+| Namespaced identity | Manual string | Manual string | Manual string | Automatic |
+| Adoption context | Any | Accessor-friendly services | Single-implementation services | Large codebases |
 
 ---
 
