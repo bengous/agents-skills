@@ -1,27 +1,27 @@
 # SQLite
 
-Bun's built-in SQLite driver via `bun:sqlite`. Synchronous, zero-dependency.
+Bun ships a synchronous SQLite driver as `bun:sqlite`. Use it for local CLIs,
+embedded data stores, tests, and small services where blocking the event loop is
+acceptable.
 
 ## Open a Database
 
 ```typescript
 import { Database } from "bun:sqlite";
 
-const db = new Database("mydb.sqlite");
+const db = new Database("app.sqlite");
 const memoryDb = new Database(":memory:");
-const readonlyDb = new Database("mydb.sqlite", { readonly: true });
-const strictDb = new Database(":memory:", { strict: true }); // bind without $ prefix
+const readonlyDb = new Database("app.sqlite", { readonly: true });
+const strictDb = new Database(":memory:", { strict: true });
 ```
 
-Enable WAL mode for concurrent reads:
+Set journal mode deliberately instead of assuming defaults:
 
 ```typescript
 db.run("PRAGMA journal_mode = WAL;");
 ```
 
-## Queries
-
-### `db.run(sql)` — DDL/DML without results
+## Statements
 
 ```typescript
 db.run(`
@@ -31,56 +31,47 @@ db.run(`
     email TEXT UNIQUE
   )
 `);
+
+const byId = db.query("SELECT * FROM users WHERE id = ?");
+const user = byId.get(1);
+const allUsers = db.query("SELECT * FROM users").all();
+const names = db.query("SELECT name FROM users").values();
 ```
 
-### `db.query(sql)` — Prepared statement (cached)
-
-Returns a reusable `Statement` with these methods:
+Use `iterate()` for large result sets:
 
 ```typescript
-const stmt = db.query("SELECT * FROM users WHERE id = ?");
-
-stmt.get(1);       // single row object or undefined
-stmt.all();        // array of row objects
-stmt.values();     // array of arrays (no column names)
-stmt.run(args);    // execute, return { changes, lastInsertRowid }
-
-// Iterate large result sets without loading all into memory
-for (const row of stmt.iterate()) {
-  console.log(row.name);
+for (const row of db.query("SELECT * FROM users").iterate()) {
+  console.log(row);
 }
 ```
 
-### `db.prepare(sql)` — Same as `db.query()` (alias)
+## Parameters
 
-## Parameter Binding
-
-Positional (`?`) or named (`$param`, `:param`, `@param`):
+Use parameters for all user-provided values.
 
 ```typescript
-// Positional
 db.query("SELECT * FROM users WHERE name = ? AND age > ?").all("Alice", 18);
 
-// Named (default — prefix required)
-db.query("INSERT INTO users (name, email) VALUES ($name, $email)")
-  .run({ $name: "Bob", $email: "bob@example.com" });
-
-// Named (strict mode — no prefix needed)
-const strictDb = new Database(":memory:", { strict: true });
-strictDb.query("SELECT $message").all({ message: "Hello" });
+db.query("INSERT INTO users (name, email) VALUES ($name, $email)").run({
+  $name: "Bob",
+  $email: "bob@example.com",
+});
 ```
 
-## Insert Results
+With `{ strict: true }`, named parameter object keys omit the prefix:
+
+```typescript
+const db = new Database(":memory:", { strict: true });
+db.query("SELECT $message").all({ message: "hello" });
+```
+
+## Writes and Transactions
 
 ```typescript
 const result = db.query("INSERT INTO users (name) VALUES (?)").run("Alice");
-result.lastInsertRowid;  // number — ID of inserted row
-result.changes;          // number — rows affected
+console.log(result.lastInsertRowid, result.changes);
 ```
-
-## Transactions
-
-Atomic: all statements succeed or all roll back.
 
 ```typescript
 const insert = db.prepare("INSERT INTO users (name) VALUES ($name)");
@@ -90,46 +81,35 @@ const insertMany = db.transaction((users: { $name: string }[]) => {
   return users.length;
 });
 
-const count = insertMany([
-  { $name: "Alice" },
-  { $name: "Bob" },
-]);
-
-// Transaction modes
-insertMany.deferred(users);   // BEGIN DEFERRED (default)
-insertMany.immediate(users);  // BEGIN IMMEDIATE
-insertMany.exclusive(users);  // BEGIN EXCLUSIVE
+insertMany([{ $name: "Alice" }, { $name: "Bob" }]);
+insertMany.immediate([{ $name: "Carol" }]);
+insertMany.exclusive([{ $name: "Dana" }]);
 ```
 
-## Map to Class Instances
+## Mapping and Cleanup
 
 ```typescript
 class User {
   id!: number;
   name!: string;
-  get displayName() { return `User: ${this.name}`; }
+  get displayName() {
+    return `User: ${this.name}`;
+  }
 }
 
 const users = db.query("SELECT * FROM users").as(User).all();
-users[0].displayName; // "User: Alice"
-```
-
-## Cleanup
-
-```typescript
 db.close();
 ```
 
-## Gotchas
+## Guardrails
 
-1. **All operations are synchronous** — `db.query().all()` blocks. For async, use
-   workers or wrap in `Effect.sync`.
-
-2. **`strict: true` changes binding** — without it, named params need `$`/`:`/`@` prefix
-   in the object keys.
-
-3. **WAL is not default** — you must explicitly set `PRAGMA journal_mode = WAL`.
+- All database operations are synchronous. Keep heavy queries out of latency-sensitive
+  request paths or isolate them in workers/processes.
+- Do not concatenate SQL. Bind parameters.
+- Choose `strict: true` deliberately; it changes named parameter object keys.
+- Close databases owned by the current process, especially in tests.
+- Test transaction behavior with a real database or `:memory:`, not mocked statements.
 
 ## Official Docs
 
-- [SQLite](https://bun.sh/docs/api/sqlite)
+- `https://bun.sh/docs/runtime/sqlite`

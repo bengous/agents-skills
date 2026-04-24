@@ -1,66 +1,112 @@
 # CLI Patterns
 
-Reusable patterns for Bun CLI scripts. These are not API references — they are
-idiomatic solutions to common CLI needs.
+Reusable patterns for Bun CLI scripts. These are workflow patterns, not API
+reference.
 
-## Logging with Colors
+## Logging
 
 ```typescript
 const colors = {
-  red: "\x1b[0;31m",
-  green: "\x1b[0;32m",
-  yellow: "\x1b[1;33m",
-  blue: "\x1b[0;34m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
   reset: "\x1b[0m",
 } as const;
 
-const log = {
-  info: (msg: string) => console.log(`${colors.blue}i${colors.reset} ${msg}`),
-  success: (msg: string) => console.log(`${colors.green}v${colors.reset} ${msg}`),
-  warning: (msg: string) => console.log(`${colors.yellow}!${colors.reset} ${msg}`),
-  error: (msg: string) => console.error(`${colors.red}x${colors.reset} ${msg}`),
+export const log = {
+  info: (message: string) => console.log(`${colors.blue}info${colors.reset} ${message}`),
+  success: (message: string) => console.log(`${colors.green}ok${colors.reset} ${message}`),
+  warn: (message: string) => console.error(`${colors.yellow}warn${colors.reset} ${message}`),
+  error: (message: string) => console.error(`${colors.red}error${colors.reset} ${message}`),
 };
 ```
 
-## User Confirmation
+Keep library functions silent. Print only in CLI adapters or top-level command
+handlers.
+
+## Confirmation
 
 ```typescript
-async function confirm(prompt: string): Promise<boolean> {
-  process.stdout.write(`${prompt} [Y/n] `);
+export async function confirm(prompt: string, defaultValue = false): Promise<boolean> {
+  const suffix = defaultValue ? "[Y/n]" : "[y/N]";
+  process.stdout.write(`${prompt} ${suffix} `);
+
   for await (const line of console) {
     const answer = line.trim().toLowerCase();
-    return answer !== "n";
+    if (answer === "") return defaultValue;
+    if (answer === "y" || answer === "yes") return true;
+    if (answer === "n" || answer === "no") return false;
+    process.stdout.write("Please answer yes or no: ");
   }
-  return false;
-}
 
-if (await confirm("Proceed?")) {
-  // do action
+  return defaultValue;
 }
 ```
 
-## Error Handling
+Do not prompt in non-interactive paths unless the command explicitly supports it.
+Accept `--yes`, `--no`, or `--force` for automation.
+
+## Error Boundary
 
 ```typescript
-async function main(): Promise<void> {
-  try {
-    // main logic
-  } catch (e) {
-    log.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  }
+export async function main(): Promise<void> {
+  // command logic
 }
 
 if (import.meta.main) {
-  main();
+  main().catch((error: unknown) => {
+    log.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 }
 ```
 
-## Parallel Operations
+Wrap errors with context at the boundary where the operation becomes meaningful:
 
 ```typescript
-// Process multiple files in parallel
-const files = ["a.json", "b.json", "c.json"];
-const results = await Promise.all(files.map(processFile));
-process.exit(results.every(Boolean) ? 0 : 1);
+async function readConfig(path: string): Promise<Config> {
+  try {
+    return await Bun.file(path).json();
+  } catch (error) {
+    throw new Error(`Failed to read config ${path}`, { cause: error });
+  }
+}
 ```
+
+## Parallel Work
+
+Use unbounded `Promise.all` only for small known lists. For filesystem, network, or
+subprocess fan-out, add a small concurrency limit.
+
+```typescript
+async function mapLimit<T, R>(
+  values: readonly T[],
+  limit: number,
+  fn: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < values.length) {
+      const index = next++;
+      results[index] = await fn(values[index] as T);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+  return results;
+}
+```
+
+## Exit Codes
+
+Prefer returning data from functions and deciding the exit code in `main()`.
+
+```typescript
+const ok = await runChecks();
+process.exit(ok ? 0 : 1);
+```
+
+Use distinct exit codes only when callers are documented to depend on them.

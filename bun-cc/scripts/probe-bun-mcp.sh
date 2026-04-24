@@ -51,9 +51,10 @@ if [[ ! -f "${mcp_file}" ]]; then
   <action>
     Bun MCP server is not configured (no .mcp.json found at project root).
 
-    YOU MUST use AskUserQuestion to ask the user:
-    "The Bun MCP server is not installed in this project. Want me to set it up?
-     I'll create .mcp.json and you'll just need to run /reload-plugins."
+    Bun MCP is optional. Before editing project config, ask the user whether to
+    add it:
+    "Bun MCP is not configured in this project. Want me to create .mcp.json?
+     You will need to reload plugins/tools after."
 
     If the user accepts:
     1. Read ${mcp_file} first (it may already exist with other servers).
@@ -68,8 +69,8 @@ $(mcp_bun_json | indent 10)
     4. After reload, mcp__bun__* tools become available.
 
     If the user declines:
-    Use Context7 MCP or exa for Bun documentation lookups,
-    and Bash for running bun commands directly.
+    Use official Bun docs/Context7/exa for documentation lookups, and Bash for
+    running bun commands directly.
   </action>
 </bun-mcp-status>
 XML
@@ -84,13 +85,14 @@ if [[ -n "${has_bun}" ]]; then
 	cat <<'XML'
 <bun-mcp-status installed="true">
   <guidance>
-    Bun MCP server is available. Prefer mcp__bun__* tools over Bash for:
+    Bun MCP server is available. Prefer Bun MCP tools over Bash for:
     - Running scripts: run-bun-script-file, run-bun-eval
     - Testing: run-bun-test
     - Building: run-bun-build
     - Package management: run-bun-install
     - Performance: analyze-bun-performance, benchmark-bun-script
-    Fall back to Context7/exa only for documentation lookups not covered by MCP tools.
+    Fall back to official Bun docs/Context7/exa for documentation lookups not
+    covered by MCP tools.
   </guidance>
 </bun-mcp-status>
 XML
@@ -100,9 +102,10 @@ else
   <action>
     .mcp.json exists but has no "bun" MCP server entry.
 
-    YOU MUST use AskUserQuestion to ask the user:
-    "The Bun MCP server is not configured in this project's .mcp.json. Want me to add it?
-     You'll just need to run /reload-plugins after."
+    Bun MCP is optional. Before editing project config, ask the user whether to
+    add it:
+    "Bun MCP is not configured in this project's .mcp.json. Want me to add it?
+     You will need to reload plugins/tools after."
 
     If the user accepts:
     1. Read ${mcp_file}, add "bun" to the mcpServers object:
@@ -111,8 +114,8 @@ $(mcp_bun_json | indent 7)
     3. Tell the user to run /reload-plugins to activate the MCP server.
 
     If the user declines:
-    Use Context7 MCP or exa for Bun documentation lookups,
-    and Bash for running bun commands directly.
+    Use official Bun docs/Context7/exa for documentation lookups, and Bash for
+    running bun commands directly.
   </action>
 </bun-mcp-status>
 XML

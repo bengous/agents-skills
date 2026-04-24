@@ -1,131 +1,122 @@
-# Bundler & Compiler
+# Bundler and Executables
 
-Bun's native bundler via `Bun.build()` and standalone executable compilation.
+Bun's bundler handles TypeScript, JSX/TSX, CSS, assets, and Bun-native runtime
+targets. Use it directly for simple builds; keep framework build systems when a
+project already has one.
 
-## Basic Bundling
+## Basic Build
 
 ```typescript
 const result = await Bun.build({
-  entrypoints: ["./src/index.tsx"],
+  entrypoints: ["./src/index.ts"],
   outdir: "./dist",
+  target: "bun",
 });
 
 if (!result.success) {
-  console.error("Build failed:", result.logs);
+  throw new AggregateError(result.logs, "Build failed");
 }
 ```
 
-## Full Configuration
+## Common Options
 
 ```typescript
-await Bun.build({
-  entrypoints: ["./src/index.tsx", "./src/worker.ts"],
+const result = await Bun.build({
+  entrypoints: ["./src/index.ts", "./src/worker.ts"],
   outdir: "./dist",
-  target: "browser",       // "browser" | "bun" | "node"
-  format: "esm",           // "esm" | "cjs" | "iife"
-  splitting: true,          // code splitting (ESM only)
-  minify: true,             // or { whitespace: true, syntax: true, identifiers: true }
-  sourcemap: "linked",      // "none" | "linked" | "inline" | "external"
+  target: "bun",            // "browser" | "bun" | "node"
+  format: "esm",            // "esm" | "cjs" | "iife"
+  splitting: true,           // ESM code splitting
+  minify: true,
+  sourcemap: "linked",       // "none" | "linked" | "inline" | "external"
 
-  // Don't bundle these packages
-  external: ["react", "react-dom"],
-  // Or mark ALL packages external
-  packages: "external",
+  external: ["react"],
+  packages: "external",      // mark all package imports external
 
-  // Compile-time constants
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
-    VERSION: JSON.stringify("1.0.0"),
   },
 
-  // Inline env vars (or "PUBLIC_*" for prefix matching)
-  env: "inline",
-
-  // Custom file loaders
-  loader: { ".png": "dataurl", ".txt": "file" },
-
-  // Output naming with tokens: [name], [hash], [dir], [ext]
+  env: "inline",             // or prefix such as "PUBLIC_*"
+  loader: { ".txt": "text", ".png": "file" },
   naming: {
     entry: "[dir]/[name]-[hash].[ext]",
     chunk: "chunks/[name]-[hash].[ext]",
     asset: "assets/[name]-[hash].[ext]",
   },
 
-  // JSX config
-  jsx: { runtime: "automatic", importSource: "react" },
-
-  // Banner/footer
-  banner: '"use client";',
-  footer: "// Built with Bun",
-
-  // Remove console/debugger
   drop: ["console", "debugger"],
-
-  // Build metadata
   metafile: true,
 });
-```
-
-## Build Result
-
-```typescript
-const result = await Bun.build({ /* ... */ });
-
-result.success;   // boolean
-result.logs;      // build messages (errors/warnings)
-result.outputs;   // BuildArtifact[]
 
 for (const output of result.outputs) {
-  output.path;    // absolute path
-  output.kind;    // "entry-point" | "chunk" | "asset" | "sourcemap"
-  await output.text();   // file contents as string
+  console.log(output.kind, output.path);
 }
 ```
 
-## Compile to Standalone Executable
+Notes:
 
-Bundle + embed the Bun runtime into a single binary:
+- If an entrypoint has `#!/usr/bin/env bun`, Bun defaults to `target: "bun"`.
+- Bundles with `target: "bun"` include a `// @bun` pragma so Bun does not
+  retranspile them at runtime.
+- `packages: "external"` is useful for server builds that should keep runtime
+  dependencies external.
+
+## Standalone Executables
+
+Prefer the current object form for API builds:
 
 ```typescript
-// API
 const result = await Bun.build({
   entrypoints: ["./src/cli.ts"],
-  compile: true,               // current platform
-  // OR
-  compile: "bun-linux-x64",   // cross-compile
-  // OR
   compile: {
     target: "bun-linux-x64",
     outfile: "./dist/mycli",
-    execArgv: ["--smol"],       // reduce memory usage
+    execArgv: ["--smol"],
   },
   minify: true,
-  sourcemap: "linked",
-  bytecode: true,               // pre-compile to bytecode
+  bytecode: true,
 });
+
+if (!result.success) {
+  throw new AggregateError(result.logs, "Executable build failed");
+}
 ```
 
-### CLI equivalent
+CLI equivalent:
 
 ```bash
 bun build ./src/cli.ts --compile --outfile mycli
 bun build ./src/cli.ts --compile --target=bun-linux-x64 --outfile mycli-linux
 ```
 
-### Cross-compilation targets
+Supported target families:
 
-| Target | OS | Arch |
-|---|---|---|
-| `bun-linux-x64` | Linux | x64 |
-| `bun-linux-arm64` | Linux | ARM64 |
-| `bun-darwin-x64` | macOS | x64 |
-| `bun-darwin-arm64` | macOS | ARM64 (Apple Silicon) |
-| `bun-windows-x64` | Windows | x64 |
-| `bun-windows-arm64` | Windows | ARM64 |
+| Target | OS | Arch | Libc |
+|---|---|---|---|
+| `bun-linux-x64` | Linux | x64 | glibc |
+| `bun-linux-arm64` | Linux | arm64 | glibc |
+| `bun-linux-x64-musl` | Linux | x64 | musl |
+| `bun-linux-arm64-musl` | Linux | arm64 | musl |
+| `bun-darwin-x64` | macOS | x64 | system |
+| `bun-darwin-arm64` | macOS | arm64 | system |
+| `bun-windows-x64` | Windows | x64 | system |
+| `bun-windows-arm64` | Windows | arm64 | system |
 
-Variants: append `-baseline` (older CPUs), `-modern` (newer CPUs), or `-musl` (Alpine Linux).
+For x64 targets, append `-baseline` for older CPUs or `-modern` for newer CPUs.
+Use `-baseline` when users report `Illegal instruction` on older Linux/Windows
+machines.
+
+## Guardrails
+
+- Compile CLIs from a single entrypoint; keep dynamic plugin loading external or
+  test it in the compiled binary.
+- Test the generated executable, not only the TypeScript source.
+- Do not assume cross-compiled binaries behave identically across OS path,
+  permission, and shell semantics.
+- For Windows executables, Bun adds `.exe` when no extension is provided.
 
 ## Official Docs
 
-- [Bundler](https://bun.sh/docs/bundler)
-- [Standalone Executables](https://bun.sh/docs/bundler/executables)
+- `https://bun.sh/docs/bundler`
+- `https://bun.sh/docs/bundler/executables`

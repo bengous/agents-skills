@@ -39,76 +39,70 @@ allowed-tools:
 
 # Bun Development
 
-## Overview
-
-This skill covers Bun runtime APIs for CLI scripts and applications. The main content
-below focuses on CLI script scaffolding. Load a reference for API details and patterns.
+Use this skill for Bun runtime scripts, CLIs, small services, and Bun-native tooling.
+Prefer project conventions over these defaults when the local repo already has a
+working Bun shape.
 
 ## Navigating References
 
-Start here for CLI scripts. Load a reference when you need API details or patterns.
+Load only the reference needed for the task.
 
 | File | Answers |
 |---|---|
-| `references/bun-api.md` | Shell ($), Spawn, File I/O, Archives, Utilities |
-| `references/testing.md` | bun:test, matchers, CLI integration testing |
-| `references/patterns.md` | Logging, user confirmation, error handling, parallel ops |
-| `references/http-server.md` | HTTP server, routing, WebSocket upgrades |
-| `references/bundler.md` | Bun.build, compile to executable, cross-compile |
-| `references/sqlite.md` | bun:sqlite, prepared statements, transactions |
+| `references/bun-api.md` | Shell `$`, spawn, file I/O, archives, utilities |
+| `references/testing.md` | `bun:test`, mocks, CLI integration tests, CI flags |
+| `references/patterns.md` | CLI logging, confirmation, errors, parallel work |
+| `references/http-server.md` | `Bun.serve`, routing, WebSocket upgrades |
+| `references/bundler.md` | `Bun.build`, standalone executables, targets |
+| `references/sqlite.md` | `bun:sqlite`, prepared statements, transactions |
 | `references/crypto.md` | Bun.password hashing, CryptoHasher |
 
-## File Structure Pattern
+## Task Workflow
+
+1. Inspect local truth first: `package.json`, `bunfig.toml`, `tsconfig.json`, lockfile,
+   scripts, current Bun version, and existing test/build commands.
+2. Use Bun MCP tools when they are actually loaded. If not, use Bash for local Bun
+   commands and fetch official docs for API uncertainty.
+3. Keep root code plain TypeScript unless the project already uses a framework. Bun is
+   the runtime/toolkit, not an excuse to add abstractions.
+4. Export pure functions from CLI entrypoints for direct tests; keep side effects in
+   `main()` or thin adapters.
+5. Run the smallest project-native validation first (`bun test`, targeted tests,
+   typecheck/lint/build as configured), then broaden only when the change touches shared
+   behavior.
+
+## Default CLI Shape
+
+Use this shape when the project has no stronger convention:
 
 ```
 ~/.local/bin/
-├── my-script              # Bash wrapper (in PATH)
-└── my-script-lib/
-    ├── my-script.ts       # Main TypeScript implementation
-    ├── my-script.test.ts  # Tests
-    ├── package.json
-    └── tsconfig.json
+|-- my-script              # Bash wrapper in PATH
+`-- my-script-lib/
+    |-- my-script.ts       # TypeScript entrypoint
+    |-- my-script.test.ts
+    |-- package.json
+    `-- tsconfig.json
 ```
 
-**Bash wrapper** (`~/.local/bin/my-script`):
 ```bash
 #!/usr/bin/env bash
 exec bun "$HOME/.local/bin/my-script-lib/my-script.ts" "$@"
 ```
 
-**Why this structure?**
-- Bash wrapper stays in PATH (no .ts extension visible)
-- TypeScript files isolated in lib directory
-- Tests colocated with implementation
-- Clean separation of concerns
+This keeps the command name extensionless while leaving TypeScript and tests in a
+normal project directory.
 
 ## Quick Start Template
-
-### Main Script (`my-script.ts`)
 
 ```typescript
 #!/usr/bin/env bun
 
-import { $ } from "bun";
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
 const VERSION = "1.0.0";
 
-// ============================================================================
-// PURE FUNCTIONS (exported for testing)
-// ============================================================================
-
 export function processData(input: string): string {
-  // Pure, testable logic here
   return input.trim().toUpperCase();
 }
-
-// ============================================================================
-// SIDE-EFFECTING FUNCTIONS
-// ============================================================================
 
 async function main(): Promise<void> {
   const args = Bun.argv.slice(2);
@@ -127,18 +121,14 @@ async function main(): Promise<void> {
   console.log(result);
 }
 
-// CLI entry point (only runs when executed directly)
 if (import.meta.main) {
-  main().catch((e) => {
-    console.error(`Error: ${e.message}`);
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
 }
 ```
 
-### Package Configuration
-
-**package.json:**
 ```json
 {
   "name": "my-script",
@@ -149,15 +139,18 @@ if (import.meta.main) {
 }
 ```
 
-**tsconfig.json:**
 ```json
 {
   "compilerOptions": {
-    "strict": true,
+    "lib": ["ESNext"],
     "target": "ESNext",
-    "module": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
     "moduleResolution": "bundler",
-    "types": ["bun-types"],
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true
   }
@@ -166,79 +159,26 @@ if (import.meta.main) {
 
 ## Gotchas
 
-1. **`Bun.file().exists()` is async** - Always await it
-   ```typescript
-   // WRONG
-   if (Bun.file("x").exists()) { }
-   // CORRECT
-   if (await Bun.file("x").exists()) { }
-   ```
+- `Bun.file().exists()` is async. Always `await` it.
+- Bun transpiles TypeScript but does not typecheck. Use the project typecheck command.
+- Install Bun globals with `@types/bun`; do not use stale `bun-types` tsconfig entries.
+- Bun Shell interpolation is escaped by default, but protection ends when handing
+  data to another shell such as `bash -c`.
+- Use `node:fs/promises` for directory operations not covered by `Bun.file` or
+  `Bun.write`.
+- Prefer absolute paths or `Bun.which()` when invoking a security-sensitive binary.
 
-2. **PATH lookup vs absolute path** - `Bun.spawn(["cmd"])` uses PATH, which may find wrong binary
-   ```typescript
-   // Use absolute path when it matters
-   Bun.spawnSync(["/usr/local/bin/myapp", "--version"]);
-   ```
+## Fetching Documentation
 
-3. **Buffer vs string** - Shell commands return Buffers
-   ```typescript
-   const { stdout } = await $`cmd`.nothrow().quiet();
-   console.log(stdout.toString());  // Convert to string
-   ```
+Use official Bun docs when API details matter:
 
-4. **Node.js fs for directories** - Bun doesn't have native directory APIs
-   ```typescript
-   import { readdir, mkdir } from "node:fs/promises";
-   await mkdir("path/to/dir", { recursive: true });
-   ```
-
-5. **Exit codes** - Use `process.exit(code)` for CLI exit codes
-   ```typescript
-   process.exit(success ? 0 : 1);
-   ```
-
-## Official Documentation
-
-- [Bun Shell ($)](https://bun.sh/docs/runtime/shell)
-- [Child Process](https://bun.sh/docs/runtime/child-process)
-- [File I/O](https://bun.sh/docs/runtime/file-io)
-- [Archive](https://bun.sh/docs/runtime/archive)
-- [Testing](https://bun.sh/docs/test/writing)
-- [Utilities (which)](https://bun.sh/docs/runtime/utils)
-- [HTTP Server](https://bun.sh/docs/api/http)
-- [WebSockets](https://bun.sh/docs/api/websockets)
-- [SQLite](https://bun.sh/docs/api/sqlite)
-- [Bundler](https://bun.sh/docs/bundler)
-- [Compile to Executable](https://bun.sh/docs/bundler/executables)
-- [Hashing](https://bun.sh/docs/api/hashing)
-
-## Resources
-
-### references/
-
-- `bun-api.md` - Shell ($), Spawn, File I/O, Archives, Utilities
-- `testing.md` - bun:test, matchers, CLI integration testing
-- `patterns.md` - Logging, confirmation, error handling, parallel ops
-- `http-server.md` - Bun.serve, routing, WebSocket
-- `bundler.md` - Bun.build, compile, cross-compile
-- `sqlite.md` - bun:sqlite, prepared statements
-- `crypto.md` - Bun.password, CryptoHasher
-
-### examples/
-
-Production-grade example scripts demonstrating skill patterns at different complexity levels:
-
-| Example | Complexity | Lines | Key Patterns |
-|---------|------------|-------|--------------|
-| `01-simple/json-keys` | Simple | ~90 | File I/O, CLI args, pure functions, exit codes |
-| `02-medium/gh-release` | Medium | ~240 | HTTP fetch, `Bun.Archive`, retry logic, multi-file |
-| `03-complex/env-sync` | Complex | ~650 | Subcommands, Web Crypto, prompts, Bun Shell |
-
-Each example includes:
-- Full test suite (`bun test`)
-- Biome linting (`biome check .`)
-- TypeScript strict mode (`tsc`)
-- README with usage documentation
+| Need | Source |
+|---|---|
+| Runtime APIs | `https://bun.sh/docs/runtime/...` |
+| Test runner | `https://bun.sh/docs/test` |
+| Bundler/executables | `https://bun.sh/docs/bundler` |
+| TypeScript config | `https://bun.sh/docs/typescript` |
+| Package manager/install | `https://bun.sh/docs/pm` |
 
 !`echo "## Bun MCP"`
 !`~/.claude/skills/bun-cc/scripts/probe-bun-mcp.sh`

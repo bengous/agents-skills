@@ -1,90 +1,91 @@
-# Crypto & Password Hashing
+# Crypto and Hashing
 
-Bun's built-in password hashing and cryptographic hashing utilities.
+Bun exposes password hashing, cryptographic hashing, HMAC, and fast
+non-cryptographic hashes. Use Web Crypto or `node:crypto` when a project already
+standardizes on those APIs.
 
-## Password Hashing (`Bun.password`)
+## Password Hashing
 
-Argon2id by default, with bcrypt support. Automatic salt generation.
+`Bun.password` generates salts automatically and stores the algorithm in the hash.
+`verify()` auto-detects PHC/MCF formats.
 
 ```typescript
-// Hash (async — default Argon2id)
 const hash = await Bun.password.hash("my-password");
-// $argon2id$v=19$m=65536,t=2,p=1$...
-
-// Verify (auto-detects algorithm from hash)
 const ok = await Bun.password.verify("my-password", hash);
-
-// Sync versions
-const hashSync = Bun.password.hashSync("my-password");
-const okSync = Bun.password.verifySync("my-password", hashSync);
 ```
 
-### Bcrypt
+Configure algorithms deliberately:
 
 ```typescript
-const hash = await Bun.password.hash("my-password", {
+const argonHash = await Bun.password.hash("my-password", {
+  algorithm: "argon2id",
+  memoryCost: 65536,
+  timeCost: 3,
+});
+
+const bcryptHash = await Bun.password.hash("my-password", {
   algorithm: "bcrypt",
-  cost: 12,  // work factor 4-31, default 10
+  cost: 12,
 });
 ```
 
-### Argon2 Variants
+Sync variants exist, but they are CPU-expensive and block the runtime:
 
 ```typescript
-const hash = await Bun.password.hash("my-password", {
-  algorithm: "argon2id",  // or "argon2i", "argon2d"
-  memoryCost: 65536,      // KB (default 65536)
-  timeCost: 3,            // iterations (default 2)
-});
+const hash = Bun.password.hashSync("my-password");
+const ok = Bun.password.verifySync("my-password", hash);
 ```
 
-## Cryptographic Hashing (`Bun.CryptoHasher`)
+Use sync hashing only in CLIs, migrations, tests, or startup paths where blocking
+is acceptable.
 
-Streaming hash computation for arbitrary data:
+## Cryptographic Hashing
 
 ```typescript
 const hasher = new Bun.CryptoHasher("sha256");
 hasher.update("hello ");
 hasher.update("world");
 const digest = hasher.digest("hex");
-// "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
 ```
 
-### HMAC
+`update()` accepts strings, typed arrays, and array buffers. String updates can pass
+an encoding as the second argument.
+
+HMAC:
 
 ```typescript
-const hasher = new Bun.CryptoHasher("sha256", "secret-key");
-hasher.update("hello world");
-hasher.digest("hex");
-// "095d5a21fe6d0646db223fdf3de6436bb8dfb2fab0b51677ecf6441fcf5f2a67"
+const hmac = new Bun.CryptoHasher("sha256", "secret-key");
+hmac.update("hello world");
+console.log(hmac.digest("hex"));
 ```
 
-### Digest formats
+Do not reuse an HMAC hasher after `digest()`. Use `.copy()` before digesting when
+you need variants.
+
+## Non-Cryptographic Hashing
+
+`Bun.hash` is fast and not security-safe.
 
 ```typescript
-hasher.digest("hex");        // hex string
-hasher.digest("base64");     // base64 string
-hasher.digest();             // Uint8Array
-```
-
-## Non-Cryptographic Hashing (`Bun.hash`)
-
-Fast hashing for hash tables, checksums, etc. Not for security.
-
-```typescript
-Bun.hash("data");                 // bigint — Wyhash 64-bit (default)
-Bun.hash("data", 1234n);         // with seed
-
-// Named algorithms
+Bun.hash("data");
+Bun.hash("data", 1234n);
 Bun.hash.crc32("data");
-Bun.hash.xxHash32("data");
 Bun.hash.xxHash64("data");
-Bun.hash.cityHash64("data");
-Bun.hash.murmur32v3("data");
-
-// Accepts: string | TypedArray | DataView | ArrayBuffer
+Bun.hash.rapidhash("data");
 ```
+
+Use this for sharding, cache keys, or checksums where collision resistance is not a
+security property.
+
+## Guardrails
+
+- Never use `Bun.hash` for passwords, tokens, signatures, or integrity checks against
+  attackers.
+- Prefer async password hashing in servers.
+- Store password hashes exactly as returned; do not split out salts manually.
+- Use `crypto.randomUUID()` or Web Crypto for random values, not hashes of predictable data.
 
 ## Official Docs
 
-- [Hashing](https://bun.sh/docs/api/hashing)
+- `https://bun.sh/docs/api/hashing`
+- `https://bun.sh/docs/runtime/hashing`

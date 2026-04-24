@@ -1,87 +1,89 @@
-# HTTP Server & WebSockets
+# HTTP Server and WebSockets
 
-Bun's built-in HTTP server via `Bun.serve()`. No external dependencies needed.
+Use `Bun.serve()` for Bun-native HTTP servers. For new Bun versions, prefer the
+`routes` object for simple routing and `fetch` as fallback or when request handling
+is highly dynamic.
 
-## Basic HTTP Server
+## Routes
 
 ```typescript
 const server = Bun.serve({
-  port: 3000,             // default: 3000 or $PORT
-  hostname: "0.0.0.0",    // default: "0.0.0.0"
+  port: 3000,
+  routes: {
+    "/api/health": new Response("OK"),
 
-  async fetch(req) {
-    const url = new URL(req.url);
+    "/users/:id": (req) => {
+      return Response.json({ id: req.params.id });
+    },
 
-    if (url.pathname === "/api/health") {
-      return Response.json({ ok: true });
-    }
+    "/api/posts": {
+      GET: () => Response.json({ posts: [] }),
+      POST: async (req) => {
+        const body = await req.json();
+        return Response.json({ created: true, ...body }, { status: 201 });
+      },
+    },
 
-    if (req.method === "POST" && url.pathname === "/api/data") {
-      const body = await req.json();
-      return Response.json({ received: body }, { status: 201 });
-    }
+    "/api/*": Response.json({ message: "Not found" }, { status: 404 }),
+    "/favicon.ico": new Response(Bun.file("./favicon.ico")),
+  },
 
+  fetch() {
     return new Response("Not Found", { status: 404 });
   },
 
   error(error) {
-    return new Response(`Error: ${error.message}`, { status: 500 });
+    console.error(error);
+    return new Response("Internal Server Error", { status: 500 });
   },
 });
 
 console.log(`Listening on ${server.url}`);
 ```
 
-## Server Interface
+Use `fetch(req, server)` instead of `routes` when you need custom dispatch,
+streaming setup, or compatibility with older Bun versions.
 
-Key properties and methods on the returned `server` object:
-
-```typescript
-server.port;             // number — port listening on
-server.hostname;         // string
-server.url;              // URL — full URL including protocol
-server.development;      // boolean
-
-server.stop();           // stop accepting connections (returns Promise)
-server.reload(options);  // update fetch/error handlers without restart
-server.ref();            // keep process alive while server runs
-server.unref();          // allow process to exit
-
-server.pendingRequests;  // number of in-flight HTTP requests
-server.pendingWebSockets; // number of active WebSocket connections
-server.requestIP(req);   // SocketAddress | null
-```
-
-## TLS / HTTPS
+## Server Lifecycle
 
 ```typescript
-Bun.serve({
-  port: 443,
-  tls: {
-    cert: Bun.file("cert.pem"),
-    key: Bun.file("key.pem"),
-    // ca: Bun.file("ca.pem"),  // optional CA chain
-    // passphrase: "...",        // optional key passphrase
+await server.stop();      // graceful
+await server.stop(true);  // close active connections
+
+server.reload({
+  routes: {
+    "/api/version": Response.json({ version: "2.0.0" }),
   },
-  fetch(req) { /* ... */ },
 });
+
+server.unref(); // allow process exit if this is the only active handle
+server.ref();
 ```
+
+Useful properties and methods:
+
+- `server.url`, `server.port`, `server.hostname`
+- `server.pendingRequests`, `server.pendingWebSockets`
+- `server.requestIP(req)`
+- `server.timeout(req, seconds)` for per-request idle timeout
+
+Default idle timeout is short enough to affect long-lived streams. For SSE or
+slow streaming responses, call `server.timeout(req, 0)`.
 
 ## WebSocket Upgrade
-
-Upgrade HTTP requests to WebSocket inside the `fetch` handler:
 
 ```typescript
 type WsData = { username: string; joinedAt: number };
 
-const server = Bun.serve({
+const server = Bun.serve<WsData>({
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
-      const username = url.searchParams.get("user") || "anon";
       const ok = server.upgrade(req, {
-        data: { username, joinedAt: Date.now() } satisfies WsData,
-        headers: { "Set-Cookie": "session=abc" }, // optional
+        data: {
+          username: url.searchParams.get("user") ?? "anon",
+          joinedAt: Date.now(),
+        },
       });
       return ok ? undefined : new Response("Upgrade failed", { status: 500 });
     }
@@ -90,76 +92,48 @@ const server = Bun.serve({
 
   websocket: {
     open(ws) {
-      console.log(`${ws.data.username} connected`);
+      ws.subscribe("chat");
+      server.publish("chat", `${ws.data.username} joined`);
     },
     message(ws, message) {
-      ws.send(`Echo: ${message}`);
+      server.publish("chat", `${ws.data.username}: ${message}`);
     },
-    close(ws, code, reason) {
-      console.log(`${ws.data.username} left (${code})`);
+    close(ws) {
+      ws.unsubscribe("chat");
     },
-    drain(ws) {
-      // called when backpressure is relieved
+    drain() {
+      // backpressure relieved
     },
 
-    // Configuration
-    idleTimeout: 120,              // seconds (default 120)
-    maxPayloadLength: 1024 * 1024, // bytes (default 16 MB)
-    perMessageDeflate: true,       // compression
-    sendPings: true,               // keep-alive pings
-    backpressureLimit: 1024 * 1024,
-    closeOnBackpressureLimit: false,
-    publishToSelf: false,
+    idleTimeout: 120,
+    maxPayloadLength: 1024 * 1024,
+    perMessageDeflate: true,
+    sendPings: true,
   },
 });
 ```
 
-## WebSocket Pub/Sub
+Gotchas:
 
-Built-in topic-based pub/sub — no Redis or external broker needed:
+- On successful `server.upgrade()`, return `undefined`, not a `Response`.
+- Type WebSocket `data` with `Bun.serve<WsData>()` or `satisfies`.
+- `server.publish()` returns bytes sent, `0` if dropped, and `-1` on backpressure.
+
+## Static and File Responses
 
 ```typescript
-websocket: {
-  open(ws) {
-    ws.subscribe("chat");                    // join topic
-    server.publish("chat", "Someone joined"); // broadcast
-  },
-  message(ws, msg) {
-    server.publish("chat", `${ws.data.username}: ${msg}`);
-  },
-  close(ws) {
-    ws.unsubscribe("chat");
-    server.publish("chat", `${ws.data.username} left`);
-  },
+routes: {
+  "/health": new Response("OK"),
+  "/download.zip": new Response(Bun.file("./download.zip")),
 }
-
-// Publish from outside handlers
-server.publish("chat", "Server announcement!");
-server.subscriberCount("chat"); // number of subscribers
 ```
 
-## Hot Reload
-
-Update handlers without dropping connections:
-
-```typescript
-server.reload({
-  fetch(req) { /* new handler */ },
-  error(err) { /* new error handler */ },
-});
-```
-
-## Gotchas
-
-1. **`server.upgrade()` returns boolean** — return `undefined` (not `new Response()`)
-   on successful upgrade. Returning a Response after upgrade causes an error.
-
-2. **WebSocket `data` typing** — use `satisfies` or generic `Bun.serve<WsData>()`
-   to type `ws.data` across all handlers.
-
-3. **`publish` return value** — returns bytes sent, `0` if dropped, `-1` on backpressure.
+Static `Response` objects are cached for the server lifetime. File responses using
+`Bun.file()` read from disk per request and support filesystem-driven behavior such
+as missing-file 404s and range requests.
 
 ## Official Docs
 
-- [HTTP Server](https://bun.sh/docs/api/http)
-- [WebSockets](https://bun.sh/docs/api/websockets)
+- `https://bun.sh/docs/api/http`
+- `https://bun.sh/docs/runtime/http/routing`
+- `https://bun.sh/docs/api/websockets`
