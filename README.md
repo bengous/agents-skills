@@ -6,10 +6,10 @@ Custom skills for Claude Code and compatible AI agents.
 
 ```bash
 # All skills
-npx skills add b3ngous/agents-skills
+npx skills add bengous/agents-skills
 
 # Single skill
-npx skills add b3ngous/agents-skills --skill bun-cc
+npx skills add bengous/agents-skills --skill bun-cc
 ```
 
 ## Setup
@@ -45,6 +45,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `design-system-creator` | Create design systems based on physical/sensory anchoring |
 | `handoff-prompt` | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
 | `humanizer` | Remove signs of AI-generated writing from text |
+| `shrinkify` | Interactively reduce skills while preserving behavior and output contracts |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |
 | `slop-detector` | Detect, score, and rewrite AI-generated or generic text |
 
