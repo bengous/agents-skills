@@ -43,6 +43,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 |-------|-------------|
 | `content-architect` | Design content architecture for digital products: screen inventory, user journeys, navigation |
 | `design-system-creator` | Create design systems based on physical/sensory anchoring |
+| `handoff-prompt` | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
 | `humanizer` | Remove signs of AI-generated writing from text |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |
 | `slop-detector` | Detect, score, and rewrite AI-generated or generic text |
