@@ -45,6 +45,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `design-system-creator` | Create design systems based on physical/sensory anchoring |
 | `handoff-prompt` | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
 | `humanizer` | Remove signs of AI-generated writing from text |
+| `interactive-unslop` | Interactive prose review workflow for authored text and technical journals |
 | `shrinkify` | Interactively reduce skills while preserving behavior and output contracts |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |
 | `slop-detector` | Detect, score, and rewrite AI-generated or generic text |
