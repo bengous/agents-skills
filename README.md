@@ -48,6 +48,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `shrinkify` | Interactively reduce skills while preserving behavior and output contracts |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |
 | `slop-detector` | Detect, score, and rewrite AI-generated or generic text |
+| `state-machine` | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |
 
 ### Claude Code (`-cc`)
 

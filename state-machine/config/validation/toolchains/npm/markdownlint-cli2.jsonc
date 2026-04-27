@@ -1,0 +1,18 @@
+{
+  "gitignore": true,
+  "frontMatter": "(^---\\s*$[^]*?^---\\s*$)(\\r\\n|\\r|\\n|$)",
+  "globs": ["SKILL.md", "references/**/*.md"],
+  "config": {
+    "default": true,
+    "MD003": false,
+    "MD013": false,
+    "MD022": false,
+    "MD024": false,
+    "MD026": false,
+    "MD033": false,
+    "MD041": false,
+    "MD046": { "style": "fenced" },
+    "MD048": { "style": "backtick" },
+    "MD060": false
+  }
+}
