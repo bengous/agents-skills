@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 2,
+  "skill": "state-machine",
+  "observedAt": "2026-04-28",
+  "runner": "scripts/validate-references.sh",
+  "coverageManifest": "config/validation/snippets.json",
+  "scratchPolicy": {
+    "root": "/tmp/state-machine-validation.*",
+    "cleanup": "left on disk for inspection",
+    "repoWrites": "none outside state-machine/"
+  },
+  "coverage": {
+    "markdownFiles": ["SKILL.md", "references/**/*.md"],
+    "fencedSnippets": 76,
+    "requireManifestEntryForEveryFence": true,
+    "requireContentHashMatch": true,
+    "nonExecutableModesRequireReason": true,
+    "modes": {
+      "ts-typecheck": 27,
+      "js-syntax": 4,
+      "tsx-typecheck": 1,
+      "svelte-module": 2,
+      "svelte-component": 3,
+      "c-compile": 5,
+      "c-sketch": 1,
+      "java-compile": 2,
+      "java-sketch": 2,
+      "rust-fixture": 4,
+      "toml-check": 1,
+      "shellcheck": 4,
+      "mermaid-render": 15,
+      "text": 5
+    }
+  },
+  "observedLocalTools": [
+    {
+      "name": "rustc",
+      "command": "rustc --version",
+      "observedVersion": "rustc 1.94.1 (e408947bf 2026-03-25)"
+    },
+    {
+      "name": "cargo clippy",
+      "command": "cargo clippy --version",
+      "observedVersion": "clippy 0.1.94 (e408947bfd 2026-03-25)"
+    },
+    {
+      "name": "gcc",
+      "command": "gcc --version",
+      "observedVersion": "gcc (GCC) 15.2.1 20260209"
+    },
+    {
+      "name": "clang",
+      "command": "clang --version",
+      "observedVersion": "clang version 22.1.3"
+    },
+    {
+      "name": "javac",
+      "command": "javac -version",
+      "observedVersion": "javac 25.0.1"
+    },
+    {
+      "name": "shellcheck",
+      "command": "shellcheck --version",
+      "observedVersion": "ShellCheck 0.11.0"
+    },
+    {
+      "name": "node",
+      "command": "node --version",
+      "observedVersion": "v25.9.0"
+    },
+    {
+      "name": "npm",
+      "command": "npm --version",
+      "observedVersion": "11.12.1"
+    },
+    {
+      "name": "bun",
+      "command": "bun --version",
+      "observedVersion": "1.3.13",
+      "scope": "observed only; npm lockfile is canonical"
+    }
+  ],
+  "pinnedPackageInputs": {
+    "javascript": {
+      "manager": "npm",
+      "manifest": "config/validation/toolchains/npm/package.json",
+      "lockfile": "config/validation/toolchains/npm/package-lock.json",
+      "dependencies": {
+        "@githubnext/tiny-svelte-fsm": "1.0.0",
+        "@mermaid-js/mermaid-cli": "11.12.0",
+        "@statelyai/inspect": "0.7.1",
+        "@taplo/cli": "0.7.0",
+        "@types/react": "19.2.14",
+        "@types/react-dom": "19.2.3",
+        "@xstate/react": "6.1.0",
+        "@xstate/svelte": "5.0.0",
+        "markdown-it": "14.1.1",
+        "markdown-link-check": "3.14.2",
+        "markdownlint-cli2": "0.22.1",
+        "react": "19.2.5",
+        "react-dom": "19.2.5",
+        "svelte": "5.55.5",
+        "svelte-check": "4.4.6",
+        "tsx": "4.21.0",
+        "typescript": "6.0.3",
+        "xstate": "5.31.0"
+      }
+    },
+    "rust": {
+      "manager": "cargo",
+      "manifest": "config/validation/toolchains/cargo/Cargo.toml",
+      "lockfile": "config/validation/toolchains/cargo/Cargo.lock",
+      "dependencies": {
+        "statig": "0.4.1"
+      }
+    }
+  },
+  "validators": [
+    {
+      "surface": "Markdown fence inventory",
+      "commands": ["node scripts/validate-references.mjs"],
+      "statusScope": "CommonMark fence extraction via markdown-it; every fence must match config/validation/snippets.json by file, index, language and sha256"
+    },
+    {
+      "surface": "TypeScript, JavaScript, React, XState",
+      "commands": ["node --check", "tsc -p generated/ts/tsconfig.json --noEmit"],
+      "statusScope": "strict snippet type checking; external library .d.ts checks are skipped because pinned XState 5.31.0 is not clean under TypeScript 6 exact optional property checking"
+    },
+    {
+      "surface": "Svelte 5",
+      "commands": ["svelte-check --fail-on-warnings"],
+      "statusScope": "Svelte components and .svelte.ts rune modules are checked in a scratch Svelte workspace"
+    },
+    {
+      "surface": "C",
+      "commands": [
+        "gcc -std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wswitch-enum -Wstrict-prototypes -Wold-style-definition -Wundef -Wformat=2 -Wnull-dereference -c",
+        "clang with the same flags"
+      ],
+      "statusScope": "complete C snippets compile with both GCC and Clang; the intentionally incomplete anti-pattern switch is manifest-classified as a sketch"
+    },
+    {
+      "surface": "Java",
+      "commands": ["javac --release 17 -encoding UTF-8 -Xlint:all -Werror -proc:none -implicit:none"],
+      "statusScope": "self-contained Java snippets compile; framework sketches are manifest-classified with explicit reasons"
+    },
+    {
+      "surface": "Rust",
+      "commands": [
+        "cargo fmt --check",
+        "cargo check --locked --all-targets",
+        "cargo clippy --locked --all-targets -- -D warnings",
+        "cargo test --locked --doc"
+      ],
+      "statusScope": "scratch Rust crate covers enum/match, typestate, and statig examples with locked dependencies"
+    },
+    {
+      "surface": "Mermaid, shell, TOML, Markdown",
+      "commands": [
+        "mmdc -i fence.mmd -o fence.svg",
+        "shellcheck --shell=bash --severity=style --format=gcc",
+        "taplo check --no-auto-config",
+        "markdownlint-cli2",
+        "markdown-link-check",
+        "cargo run -p skills-tools -- validate frontmatter"
+      ],
+      "statusScope": "diagrams render, shell snippets lint, TOML parses, Markdown structure is checked, links resolve, and skill frontmatter remains loader-valid"
+    }
+  ]
+}

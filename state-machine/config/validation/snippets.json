@@ -1,0 +1,626 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": "SKILL.md and references/**/*.md",
+  "snippets": [
+    {
+      "file": "references/anti-patterns.md",
+      "index": 1,
+      "lang": "typescript",
+      "startLine": 10,
+      "sha256": "fa86720988fe4690f2d25a59490157628321b8027a27a9b346caca599b556b34",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 2,
+      "lang": "typescript",
+      "startLine": 29,
+      "sha256": "2d6960ea0cd985f683aab3709a56adffd2b73dad515a10a45d0a50ec69459f67",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 3,
+      "lang": "javascript",
+      "startLine": 58,
+      "sha256": "881248d5b972549e8d813ceaf207b85c60d1e3edf150c4080d4cf74b6725a1bc",
+      "mode": "js-syntax"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 4,
+      "lang": "javascript",
+      "startLine": 99,
+      "sha256": "33835f6694c9d2f77a6c4ae82fe9fef288e860fa03ebb5b5a85515253e1252e7",
+      "mode": "js-syntax"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 5,
+      "lang": "typescript",
+      "startLine": 153,
+      "sha256": "a769a4cb34eeade85ff8541c81a9e3cccdb7a702c138d9adf2e6089a7959848b",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 6,
+      "lang": "typescript",
+      "startLine": 166,
+      "sha256": "d3156e6263c57aa522670e507f8b6acb7ed936a3a9f6eaa8b02e9ba563febba7",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 7,
+      "lang": "typescript",
+      "startLine": 194,
+      "sha256": "d1381ca78116c4955fc11e87d14c17ed511838a7f1dff7e7e214e4bb5152e6c0",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 8,
+      "lang": "typescript",
+      "startLine": 213,
+      "sha256": "f03d72314d4967db0b1e270cdf7f613b232715fe5379fd49847127c11875df2e",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 9,
+      "lang": "typescript",
+      "startLine": 233,
+      "sha256": "d3a369d745d37ce642a0499ea343d210a0517257acbfd2cc26edc189ca256f60",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 10,
+      "lang": "typescript",
+      "startLine": 248,
+      "sha256": "67afc5239f980aa61cca7bbcb3a36a9b27f5da4da49809c6dd35374ae8b0cb2a",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 11,
+      "lang": "c",
+      "startLine": 270,
+      "sha256": "c8962d228a19768c6d8dc9bcbd2ee47a1ccc549629118e5ea1e9f2d2392b96fe",
+      "mode": "c-sketch",
+      "reason": "intentionally incomplete anti-pattern demonstrating missing switch cases"
+    },
+    {
+      "file": "references/anti-patterns.md",
+      "index": 12,
+      "lang": "c",
+      "startLine": 292,
+      "sha256": "25260ca4c501bf25b20423890d2c23f7eaf3372b0e691e447fdcc80dc7ece52a",
+      "mode": "c-compile"
+    },
+    {
+      "file": "references/implementations/c.md",
+      "index": 1,
+      "lang": "c",
+      "startLine": 11,
+      "sha256": "3bb54342e4deca734ef96816fe10b4910e06d5ce4f677d83c59353df18150b03",
+      "mode": "c-compile"
+    },
+    {
+      "file": "references/implementations/c.md",
+      "index": 2,
+      "lang": "c",
+      "startLine": 46,
+      "sha256": "54023e5fb93bcc69335c5aa1269698cece9e38190b354307378588a44b3113f3",
+      "mode": "c-compile"
+    },
+    {
+      "file": "references/implementations/c.md",
+      "index": 3,
+      "lang": "c",
+      "startLine": 112,
+      "sha256": "714e8e4b331b18b57ffc3004b86201fc076d59f6c6d0a2aee0026b8c17337553",
+      "mode": "c-compile"
+    },
+    {
+      "file": "references/implementations/java.md",
+      "index": 1,
+      "lang": "java",
+      "startLine": 12,
+      "sha256": "596ca7331be1d4d0f421a902d8f7a7fbd5baf9d1cd348525b06214c8f92323fc",
+      "mode": "java-compile",
+      "fixture": "order-state"
+    },
+    {
+      "file": "references/implementations/java.md",
+      "index": 2,
+      "lang": "java",
+      "startLine": 79,
+      "sha256": "f660925a09614855a942c24ef6cf0697ca2e307ee01da451eb6863f0cd8885b9",
+      "mode": "java-compile",
+      "fixture": "state-pattern"
+    },
+    {
+      "file": "references/implementations/java.md",
+      "index": 3,
+      "lang": "java",
+      "startLine": 138,
+      "sha256": "181c83cf3861d58805c63703bcd500aacaf9efd7dd8356ac007f8517f96022cf",
+      "mode": "java-sketch",
+      "reason": "dependency-backed framework sketch with imports/base classes intentionally omitted in prose"
+    },
+    {
+      "file": "references/implementations/java.md",
+      "index": 4,
+      "lang": "java",
+      "startLine": 183,
+      "sha256": "542264caabc1f320fa166cc6f85250ee72feb6ee5f0ecbc61e0bf5a9d2f4e1c2",
+      "mode": "java-sketch",
+      "reason": "dependency-backed framework sketch with imports/base classes intentionally omitted in prose"
+    },
+    {
+      "file": "references/implementations/react-usereducer.md",
+      "index": 1,
+      "lang": "javascript",
+      "startLine": 9,
+      "sha256": "881248d5b972549e8d813ceaf207b85c60d1e3edf150c4080d4cf74b6725a1bc",
+      "mode": "js-syntax"
+    },
+    {
+      "file": "references/implementations/react-usereducer.md",
+      "index": 2,
+      "lang": "javascript",
+      "startLine": 50,
+      "sha256": "33835f6694c9d2f77a6c4ae82fe9fef288e860fa03ebb5b5a85515253e1252e7",
+      "mode": "js-syntax"
+    },
+    {
+      "file": "references/implementations/react-usereducer.md",
+      "index": 3,
+      "lang": "typescript",
+      "startLine": 95,
+      "sha256": "be3144228370f184d7aab500b020c65b3fa4d2e3822c188ee462fc0abdb71051",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/react-usereducer.md",
+      "index": 4,
+      "lang": "tsx",
+      "startLine": 142,
+      "sha256": "8f724b40d4f4c793b591ab4ea008c19ce543b589acbcf1f1c0eff236184d951c",
+      "mode": "tsx-typecheck"
+    },
+    {
+      "file": "references/implementations/rust.md",
+      "index": 1,
+      "lang": "rust",
+      "startLine": 12,
+      "sha256": "56b73feb0774673cddee43abf1f92e7a1f52b4d2426d69c8d636a115d8a8ff21",
+      "mode": "rust-fixture"
+    },
+    {
+      "file": "references/implementations/rust.md",
+      "index": 2,
+      "lang": "rust",
+      "startLine": 85,
+      "sha256": "4406fcb8c8497d6a794b5a13511bc7eedafe15f69318f51a1eccb2e42a5de294",
+      "mode": "rust-fixture"
+    },
+    {
+      "file": "references/implementations/rust.md",
+      "index": 3,
+      "lang": "rust",
+      "startLine": 119,
+      "sha256": "6f18e5cfe96404a49280d8b96db217f8b589baa92605f21bc5a23e1e8c9924f8",
+      "mode": "rust-fixture"
+    },
+    {
+      "file": "references/implementations/rust.md",
+      "index": 4,
+      "lang": "toml",
+      "startLine": 149,
+      "sha256": "e2f2c88c088fefd57fe80775510cec2f9e4266c9563087a822f41625373d21d9",
+      "mode": "toml-check"
+    },
+    {
+      "file": "references/implementations/rust.md",
+      "index": 5,
+      "lang": "rust",
+      "startLine": 155,
+      "sha256": "62ea85c71c7589315779893516871a3786c5ea42926562db5941dac3d9cbae78",
+      "mode": "rust-fixture"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 1,
+      "lang": "typescript",
+      "startLine": 9,
+      "sha256": "f5f0efba0d78b519c4fb55d3d544dcf178bf003c9555f7bb35621c4a502f0d32",
+      "mode": "svelte-module",
+      "fixture": "fsm"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 2,
+      "lang": "svelte",
+      "startLine": 53,
+      "sha256": "9be5c0695ca5187caffeb89f778957b0b9b21c58038c53d70d4532949ee5a5ef",
+      "mode": "svelte-component"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 3,
+      "lang": "svelte",
+      "startLine": 86,
+      "sha256": "b92bb925e1b1c3c35f49a40312bdba915f1b6a384ae32639c8d24aa1c4d06e3e",
+      "mode": "svelte-component"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 4,
+      "lang": "typescript",
+      "startLine": 116,
+      "sha256": "361a7f31c804de97279ab0a70c48e4e76d8f2c9566fe27f79fe362873fe858d0",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 5,
+      "lang": "sh",
+      "startLine": 134,
+      "sha256": "432d7c6b5ceb3c207990fa349075e75f3d592ff11a9e15b9b9b6acefa82a3625",
+      "mode": "shellcheck"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 6,
+      "lang": "svelte",
+      "startLine": 138,
+      "sha256": "3d60d29297aa42437273712cbf3ac522ac9293643fc110d0b85bf3aaa7d173c9",
+      "mode": "svelte-component"
+    },
+    {
+      "file": "references/implementations/svelte5-runes.md",
+      "index": 7,
+      "lang": "typescript",
+      "startLine": 166,
+      "sha256": "caec220649bd7a1a73f630f1000ce0d0eee716fd1bc2bebbd1bb5ec657d518de",
+      "mode": "svelte-module",
+      "fixture": "cart"
+    },
+    {
+      "file": "references/implementations/typescript-discriminated-unions.md",
+      "index": 1,
+      "lang": "typescript",
+      "startLine": 8,
+      "sha256": "698e5271c603e12c601813375b8db752d450b230bbe9041c5842dba03290dc4a",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/typescript-discriminated-unions.md",
+      "index": 2,
+      "lang": "typescript",
+      "startLine": 47,
+      "sha256": "696e58c91c9b3e6139543a4907ac9d0c144fd02ceed1b4cdc4362af32b258a1b",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/typescript-discriminated-unions.md",
+      "index": 3,
+      "lang": "typescript",
+      "startLine": 69,
+      "sha256": "c0cb3524d83fa802874aabcab760101dc83ba742b27be5e6f73583fdd6f6f9c5",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/typescript-discriminated-unions.md",
+      "index": 4,
+      "lang": "typescript",
+      "startLine": 90,
+      "sha256": "7c1a2e0a689cc0e3b72904966bc5f893b58b9ad44f37362dc998d2ed13582d2b",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 1,
+      "lang": "sh",
+      "startLine": 10,
+      "sha256": "bf622dc6e348d672b29fbf8d12b0061d059f182d964292863c4be8035de763dd",
+      "mode": "shellcheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 2,
+      "lang": "sh",
+      "startLine": 17,
+      "sha256": "b21e1a92eee735041efcecf90c74ad5095d6e5df843b2ee837268a72c952aab9",
+      "mode": "shellcheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 3,
+      "lang": "sh",
+      "startLine": 23,
+      "sha256": "c1c073b2c3d79a41da7b098e3e29f0e52c3cde67a7287c8dbd921c9024f52ea3",
+      "mode": "shellcheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 4,
+      "lang": "typescript",
+      "startLine": 35,
+      "sha256": "1febfa4190b286c90b9291eb785b3d50d19ddeeac2421700f20949719b6835e2",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 5,
+      "lang": "typescript",
+      "startLine": 62,
+      "sha256": "a3d4325b209104ec69456939e3ceb7dc8b61c13761759d8706cf8abf1ae30573",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 6,
+      "lang": "typescript",
+      "startLine": 83,
+      "sha256": "adfece0fd2f7ffa4e99b4012e07b72bb05d560fcaaa902b54530c7624db50c0e",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 7,
+      "lang": "typescript",
+      "startLine": 150,
+      "sha256": "8f974ddce84b43f2790e23b73806fecdc604928851a56f8fbc39b364c325f0bb",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 8,
+      "lang": "typescript",
+      "startLine": 196,
+      "sha256": "455f1ea9bac15946435e08629e069521c3e11da8255168bc219508dc7028cb31",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/implementations/xstate.md",
+      "index": 9,
+      "lang": "typescript",
+      "startLine": 226,
+      "sha256": "a9505bfb38511e0960f61ed07eb513f20fe873d49dd274e3b9c895f6f869cb9a",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/modeling-process.md",
+      "index": 1,
+      "lang": "text",
+      "startLine": 10,
+      "sha256": "29563c8e503895ce92197da9f566fea0966a6135ff332c06d17257420e0fc2c7",
+      "mode": "text",
+      "reason": "illustrative state listing or notation sketch, not executable code"
+    },
+    {
+      "file": "references/modeling-process.md",
+      "index": 2,
+      "lang": "mermaid",
+      "startLine": 30,
+      "sha256": "493a4def35bf3e8c671042df141b50e90b0c7fefe660b0fb6155e503d1e98276",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/modeling-process.md",
+      "index": 3,
+      "lang": "mermaid",
+      "startLine": 65,
+      "sha256": "e8ee9ed38ea14b1851803ddcd2468858de4d3a168e1f4ff9a095a7b3c9924e94",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/modeling-process.md",
+      "index": 4,
+      "lang": "typescript",
+      "startLine": 114,
+      "sha256": "5a3cef80af3fb4f4da7562d4d26db87c65ccdc2b59c01bfb3bef554f0d1cd3f3",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 1,
+      "lang": "mermaid",
+      "startLine": 11,
+      "sha256": "b0626c2981d79624ef6a0eacf780cdda56f1130808a573eee229472ad19136fc",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 2,
+      "lang": "typescript",
+      "startLine": 29,
+      "sha256": "b8f6df79cabb1d82107f4808b68d3dbc68d0ddbe3c2b28bc500fbc0b146c3a25",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 3,
+      "lang": "mermaid",
+      "startLine": 57,
+      "sha256": "cccef7f52396459ebd43254950e92959120cdd54af650ee2a18458522012c569",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 4,
+      "lang": "typescript",
+      "startLine": 71,
+      "sha256": "e5456fbd213cb5fea6bd17eb6277f246e4f87ac5007aea6e9e2a26b0b0eba713",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 5,
+      "lang": "typescript",
+      "startLine": 110,
+      "sha256": "ea4b04744b60b58e896f509c787aaf0d29b3dad6885ef46fabe0df9f6035e308",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 6,
+      "lang": "mermaid",
+      "startLine": 163,
+      "sha256": "815706b9bd3cf3650bd055747eba460a39cee2f5b3e87b25f88d3ff94bdf5e06",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 7,
+      "lang": "typescript",
+      "startLine": 179,
+      "sha256": "aaf1151f812a94683337296474e6120eccfde42235886c0341814db1bba44ed1",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 8,
+      "lang": "mermaid",
+      "startLine": 196,
+      "sha256": "8db3a23aad84be389d86bf3bf4210c3ce2010f1795038a6b72981253bf691b06",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 9,
+      "lang": "typescript",
+      "startLine": 213,
+      "sha256": "b7b9dfd941e4430f7acee34910a17ac21cad45afc22e41ae4d27000870f5124d",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 10,
+      "lang": "mermaid",
+      "startLine": 231,
+      "sha256": "6e775f72a1a97a0a5f08d019cca334ab4522807cbf41ff23726b9e85d5f14f2c",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 11,
+      "lang": "typescript",
+      "startLine": 244,
+      "sha256": "3501d60e473680ea31c82478802dea71239471a08d6fb50330ef1c9a8d28e006",
+      "mode": "ts-typecheck"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 12,
+      "lang": "mermaid",
+      "startLine": 262,
+      "sha256": "62a271834e54f7ba0c155ba183b05e4b0a9f50ffbad7033380a7b5bb76cf152a",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/patterns.md",
+      "index": 13,
+      "lang": "c",
+      "startLine": 278,
+      "sha256": "bb286d9273b661d93dcac521b969be995027354317741d28369f7c76f4e127d1",
+      "mode": "c-compile"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 1,
+      "lang": "text",
+      "startLine": 20,
+      "sha256": "d6c7f225269725374cb9c846ed0f545bc753507be06c8c25c7a98c9a45101f54",
+      "mode": "text",
+      "reason": "illustrative state listing or notation sketch, not executable code"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 2,
+      "lang": "text",
+      "startLine": 26,
+      "sha256": "8b563f91ccc3a76a4e987345f72406601f370309114b250d4e25abd87c4538b1",
+      "mode": "text",
+      "reason": "illustrative state listing or notation sketch, not executable code"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 3,
+      "lang": "text",
+      "startLine": 33,
+      "sha256": "b072055fdcba0c05dd827fd2f1c00e7a7609602041ae4a5f1d5449a53b1c4156",
+      "mode": "text",
+      "reason": "illustrative state listing or notation sketch, not executable code"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 4,
+      "lang": "mermaid",
+      "startLine": 45,
+      "sha256": "77d4252b20b5cefc64de405a3ce813177b85604987eef019244cf7155cc09558",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 5,
+      "lang": "mermaid",
+      "startLine": 74,
+      "sha256": "ce91dfa9f404c4bb9820de910caba50b12b8b82f3b689c56752d14421660c6da",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/statecharts-extensions.md",
+      "index": 6,
+      "lang": "text",
+      "startLine": 109,
+      "sha256": "bf3aa483ff392bbc03f0412ca79f4cd8fba80696c2bf5963476d291ce881a3a4",
+      "mode": "text",
+      "reason": "illustrative state listing or notation sketch, not executable code"
+    },
+    {
+      "file": "references/visual-notation.md",
+      "index": 1,
+      "lang": "mermaid",
+      "startLine": 14,
+      "sha256": "c9e11b574f768d5ff39ae2d74c7c36c9164faf23075da2d0e1e7a079da7423cf",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/visual-notation.md",
+      "index": 2,
+      "lang": "mermaid",
+      "startLine": 27,
+      "sha256": "5bc0a670c081f0721b1dc64de89a3a5fc30619e0147fe4cea077b607e31bc90d",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/visual-notation.md",
+      "index": 3,
+      "lang": "mermaid",
+      "startLine": 42,
+      "sha256": "6198b2d926c92506888f31aa6a7926e7d95a8157025a9ae733f60a5835002067",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/visual-notation.md",
+      "index": 4,
+      "lang": "mermaid",
+      "startLine": 61,
+      "sha256": "ce91dfa9f404c4bb9820de910caba50b12b8b82f3b689c56752d14421660c6da",
+      "mode": "mermaid-render"
+    },
+    {
+      "file": "references/visual-notation.md",
+      "index": 5,
+      "lang": "mermaid",
+      "startLine": 80,
+      "sha256": "f44c81085cdad2327d06bdaa8f9465e1d0c5998f57e433ebf58b3205f6fb778d",
+      "mode": "mermaid-render"
+    }
+  ]
+}
