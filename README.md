@@ -60,4 +60,3 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `effect-usage-cc` | Decision support for Effect (effect-ts) — when to use it, which patterns to prefer |
 | `null-as-error-cc` | Audit Effect codebases for silent error swallowing (catchAll → sentinel values) |
 | `refactorlib-cc` | Audit a codebase for handcrafted code replaceable by existing dependencies |
-| `rekooh-cc` | Author, audit, and manage Claude Code hooks — scaffolding, typed runtime, testing |

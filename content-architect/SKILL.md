@@ -3,19 +3,39 @@ name: content-architect
 model: opus
 effort: medium
 description: >
-  Design content architecture for digital products: screen inventory, user
-  journeys, navigation structure, prioritization (MVP/v2/nice-to-have), and
-  an implementation-ready markdown blueprint. Use when the user asks what
-  pages or screens they need, how to structure a site or app, or for help
-  with content architecture, information architecture, sitemap, screen
-  inventory, page map, navigation structure, redesigns, CLI-to-frontend
-  migrations, or product audits where the first decision is what screens to
-  build.
+  Design content architecture for digital products when the needed output is a
+  sitemap, page map, navigation structure, screen inventory, content hierarchy,
+  or CLI-to-frontend mapping. Use when deciding what pages/screens exist and how
+  they connect. Do not use for UI implementation, visual design, design systems,
+  complete PRDs, implementation tickets, or code architecture.
 ---
 
 # Content Architect
 
 Design what goes where. Every screen has one job, every journey has a destination, every piece of content lives in exactly one place.
+
+## Routing
+
+Use this skill for:
+
+- Sitemap, page map, navigation structure, IA/content hierarchy.
+- Screen inventory: what pages/screens exist, their jobs, and how they connect.
+- CLI-to-frontend mapping: which commands deserve UI screens.
+- Redesign planning where the first decision is which screens survive.
+
+Do not use this skill for:
+
+- Building or styling UI. Use frontend/design skills instead.
+- Visual identity, color, typography, tokens, or design systems.
+- Full PRDs, implementation tickets, or issue breakdowns.
+- Code architecture, module design, or refactoring.
+
+## Modes
+
+Default to `quick` unless the user explicitly asks for a full blueprint, workshop, or staged validation.
+
+- `quick`: ask only for missing high-impact context. If enough context is present, state assumptions and produce a direct recommendation with the minimum useful screen/nav structure. Do not pause at gates.
+- `full workshop`: use the full 6-phase method, ask in rounds, and pause at validation gates before moving on.
 
 ## Before You Start
 
@@ -32,7 +52,7 @@ Read the matching reference file BEFORE asking deeper questions. It contains typ
 
 ## Required Inputs
 
-Collect these in rounds of 3-5 questions, not all at once:
+Collect only the inputs needed for the chosen mode. In `full workshop`, collect them in rounds of 3-5 questions, not all at once:
 
 1. **The product** -- What is it? What does it do? For whom?
 2. **The audience** -- Who uses it? What are their goals when they arrive?
@@ -40,7 +60,9 @@ Collect these in rounds of 3-5 questions, not all at once:
 4. **The existing state** -- Is there an existing product? (URL, repo, CLI `--help` output, screenshots, or greenfield)
 5. **The constraints** -- Tech stack, page/screen budget, non-negotiable features, multilingual needs
 
-**Do not produce a blueprint without first asking questions.** Present your first round of questions to the user and wait for answers. If the user provides enough context upfront, you may still need to confirm assumptions -- list them explicitly ("I'm assuming X, Y, Z -- correct?") before proceeding. When information is genuinely missing and you cannot ask (e.g., async context), flag each gap in the blueprint as **[Assumption: ...]** so the reader knows what was inferred vs. confirmed.
+In `quick` mode, do not block on perfect discovery. If the user provides enough context, list assumptions and proceed. When information is genuinely missing and you cannot ask (e.g., async context), flag each gap as **[Assumption: ...]** so the reader knows what was inferred vs. confirmed.
+
+In `full workshop`, do not produce a blueprint without first asking questions. Present your first round of questions to the user and wait for answers. If the user provides enough context upfront, confirm the important assumptions before proceeding.
 
 After collecting inputs, run a **Top Tasks Analysis** (Gerry McGovern): identify the 5-10 tasks that capture the majority of user intent. These top tasks filter everything downstream -- they become the seeds for journeys, and journeys become the seeds for screens. Do this before proposing any screen.
 
@@ -91,7 +113,7 @@ A developer or AI agent must be able to implement each screen from the blueprint
 - For each journey: identify friction points and success metrics
 - For app-web and cli-frontend: include the **onboarding journey** (see Blueprint Template)
 
-**GATE: Present journeys to the user for validation before proposing any screens.**
+**Full workshop gate:** Present journeys to the user for validation before proposing any screens.
 
 ### Phase 3 -- Screen Inventory
 - From the journeys, derive the minimum set of screens
@@ -100,7 +122,7 @@ A developer or AI agent must be able to implement each screen from the blueprint
 - Group screens into navigation zones (primary nav, secondary/sub-nav, footer, hidden/utility)
 - For each section: describe the content (not placeholder text), what it does NOT contain, and the interactions
 
-**GATE: Present the screen inventory to the user for validation before designing navigation.**
+**Full workshop gate:** Present the screen inventory to the user for validation before designing navigation.
 
 ### Phase 4 -- Navigation and Sitemap
 - Design the navigation structure respecting product-type sizing (Principle 4)
@@ -116,7 +138,7 @@ A developer or AI agent must be able to implement each screen from the blueprint
   - **Shape Up appetite** (Ryan Singer/Basecamp): "How long do we *want* to spend?" -- best for time-boxed teams
 - Identify dependencies between screens
 
-**GATE: Present priorities to the user for validation before producing the final blueprint.**
+**Full workshop gate:** Present priorities to the user for validation before producing the final blueprint.
 
 ### Phase 6 -- Produce the Blueprint
 Generate the full blueprint document using the template below. The blueprint is the deliverable -- everything above was process.

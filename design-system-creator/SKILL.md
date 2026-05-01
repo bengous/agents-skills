@@ -8,12 +8,11 @@ description: >
   product) grounded in physical/sensory anchoring rather than design trends.
   Delivers CSS tokens, typography scale, component patterns, accessibility
   checklist, and absolute rules as a single developer-ready markdown document.
-  Use this skill whenever the user asks to create a design system, theme,
-  color palette, visual identity, CSS tokens, theme variables, or propose an
-  art direction. Also triggers on "style guide", "site colors", "choose fonts",
-  "look and feel", "visual branding", "charte graphique", "identite visuelle",
-  "direction artistique", "refonte visuelle", or any new project where design
-  isn't yet defined — propose this skill proactively.
+  Use when the requested deliverable is a design system, style guide, visual
+  identity system, CSS/theme tokens, color and typography system, component
+  styling rules, or structured art direction. Do not use for one-off UI styling,
+  generic look-and-feel feedback, page implementation, content architecture,
+  PRDs, or implementation tickets.
 compatibility:
   optional:
     - visualize:show_widget (for visual moodboards; falls back to HTML file or structured markdown)
@@ -22,6 +21,22 @@ compatibility:
 # Design System Creator
 
 Create a design system anchored in the real identity of the subject — not in design trends. Every color, font, and component exists for a functional reason. The deliverable is a structured markdown document directly usable by a developer or AI agent for implementation.
+
+## Routing
+
+Use this skill when the final deliverable is a reusable design language:
+
+- Design system or style guide.
+- Visual identity system, theme tokens, CSS variables, color/typography rules.
+- Component styling rules with usage constraints.
+- Structured art direction that must guide later implementation.
+
+Do not use this skill for:
+
+- Building, refactoring, or polishing a specific UI screen.
+- Generic "make it look better" feedback without a design-system deliverable.
+- Sitemap, screen inventory, navigation, or content architecture.
+- PRDs, implementation issues, or product requirements.
 
 ## Required Inputs
 

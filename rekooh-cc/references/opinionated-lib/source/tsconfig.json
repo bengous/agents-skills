@@ -1,6 +1,0 @@
-{
-  "extends": "../../../../../../tsconfig/effect-strict.json",
-  "include": [
-    "src/**/*.ts"
-  ]
-}
