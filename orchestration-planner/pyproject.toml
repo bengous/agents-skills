@@ -1,0 +1,44 @@
+[project]
+name = "orchestration-planner"
+version = "0.1.0"
+description = "Human-gated planner for PRD-to-issues-to-workflow orchestration."
+authors = [
+    { name = "Augustin BENGOLEA", email = "bengous@protonmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+orch = "orchestration_planner.cli:main"
+orch-codex-user-prompt-submit = "orchestration_planner.hook:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.3",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ARG", "PT"]
+ignore = []
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.basedpyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
