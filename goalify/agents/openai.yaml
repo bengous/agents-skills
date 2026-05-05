@@ -1,0 +1,6 @@
+interface:
+  display_name: "Goalify"
+  short_description: "Convert rough intent into a compact Codex /goal command and first-turn prompt."
+  default_prompt: "Use $goalify to turn my intention into a Codex /goal command plus a compact session prompt."
+policy:
+  allow_implicit_invocation: false

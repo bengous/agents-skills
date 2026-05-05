@@ -43,6 +43,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 |-------|-------------|
 | `content-architect` | Design content architecture for digital products: screen inventory, user journeys, navigation |
 | `design-system-creator` | Create design systems based on physical/sensory anchoring |
+| `goalify` | Convert rough intent into a compact Codex `/goal` command and first-turn prompt |
 | `handoff-prompt` | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
 | `humanizer` | Remove signs of AI-generated writing from text |
 | `orchestration-planner` | Human-gated planner for PRD-to-issues-to-workflow orchestration |
