@@ -1,0 +1,7 @@
+interface:
+  display_name: "Promptify"
+  short_description: "Turn rough intent into a GPT-5.5 prompt"
+  default_prompt: "$promptify "
+
+policy:
+  allow_implicit_invocation: false
