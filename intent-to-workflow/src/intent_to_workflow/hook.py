@@ -10,10 +10,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from orchestration_planner.core import OrchError, init_workflow_with_metadata, session_short_from
+from intent_to_workflow.core import (
+    ItwError,
+    get_workflow,
+    init_workflow_with_metadata,
+    session_short_from,
+    state_path,
+)
 
 INVOCATION_RE = re.compile(
-    r"^\s*\$orchestration-planner\b\s*(?P<intention>.*)\Z",
+    r"^\s*\$intent-to-workflow\b\s*(?P<intention>.*)\Z",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -70,14 +76,23 @@ def text_from_payload(payload: object, *keys: str) -> str | None:
 def root_for_hook(cwd: Path, session_id: str | None) -> Path:
     today = datetime.now().date().isoformat()
     session_short = session_short_from(session_id) or "unknown"
-    return cwd / "orc" / f"{today}-{session_short}"
+    return cwd / "itw" / f"{today}-{session_short}"
+
+
+def empty_invocation_message(root: Path) -> str:
+    return (
+        "intent-to-workflow requires an explicit initial intention.\n"
+        "No intent-to-workflow root exists for this session.\n"
+        "Ask the human to invoke `$intent-to-workflow <initial intention>`.\n"
+        f"Expected root after init: `{root}`\n"
+    )
 
 
 def main() -> int:
     if any(argument in ("-h", "--help") for argument in sys.argv[1:]):
         sys.stdout.write(
-            "usage: orch-codex-user-prompt-submit < hook-payload.json\n"
-            "Detects leading $orchestration-planner prompts and runs orch init.\n"
+            "usage: itw-codex-user-prompt-submit < hook-payload.json\n"
+            "Detects leading $intent-to-workflow prompts and runs itw init/get.\n"
         )
         return 0
 
@@ -100,24 +115,29 @@ def main() -> int:
 
     session_id = (
         text_from_payload(payload, "session_id", "sessionId", "conversation_id")
-        or os.environ.get("ORCH_SESSION_ID")
+        or os.environ.get("ITW_SESSION_ID")
         or os.environ.get("CODEX_SESSION_ID")
     )
-    cwd_text = text_from_payload(payload, "cwd") or os.environ.get("ORCH_CWD") or os.getcwd()
+    cwd_text = text_from_payload(payload, "cwd") or os.environ.get("ITW_CWD") or os.getcwd()
     cwd = Path(cwd_text)
     root = root_for_hook(cwd, session_id)
+
     try:
-        output = init_workflow_with_metadata(
-            root=root,
-            intention=invocation.intention,
-            entry_point="UserPromptSubmit",
-            session_id=session_id,
-            cwd=str(cwd),
-            model=text_from_payload(payload, "model") or os.environ.get("ORCH_MODEL"),
-            transcript_path=text_from_payload(payload, "transcript_path", "transcriptPath")
-            or os.environ.get("ORCH_TRANSCRIPT_PATH"),
-        )
-    except OrchError as error:
+        if state_path(root).exists():
+            output = get_workflow(root)
+        elif invocation.intention == "":
+            output = empty_invocation_message(root)
+        else:
+            output = init_workflow_with_metadata(
+                root=root,
+                intention=invocation.intention,
+                session_id=session_id,
+                cwd=str(cwd),
+                model=text_from_payload(payload, "model") or os.environ.get("ITW_MODEL"),
+                transcript_path=text_from_payload(payload, "transcript_path", "transcriptPath")
+                or os.environ.get("ITW_TRANSCRIPT_PATH"),
+            )
+    except ItwError as error:
         sys.stderr.write(f"error={error}\n")
         return 1
 

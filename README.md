@@ -46,7 +46,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `goalify` | Convert rough intent into a compact Codex `/goal` command and first-turn prompt |
 | `handoff-prompt` | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
 | `humanizer` | Remove signs of AI-generated writing from text |
-| `orchestration-planner` | Human-gated planner for PRD-to-issues-to-workflow orchestration |
+| `intent-to-workflow` | Human-gated planner that turns explicit intent into local workflow artifacts |
 | `promptify` | Transform rough dictated intent into a compact GPT-5.5-optimized prompt |
 | `shrinkify` | Interactively reduce skills while preserving behavior and output contracts |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |

@@ -1,4 +1,4 @@
-"""Orchestration planner package."""
+"""Intent-to-workflow package."""
 
 __all__ = ["__version__"]
 

@@ -1,7 +1,7 @@
 [project]
-name = "orchestration-planner"
+name = "intent-to-workflow"
 version = "0.1.0"
-description = "Human-gated planner for PRD-to-issues-to-workflow orchestration."
+description = "Human-gated planner that turns an intention into staged workflow artifacts."
 authors = [
     { name = "Augustin BENGOLEA", email = "bengous@protonmail.com" }
 ]
@@ -9,8 +9,8 @@ requires-python = ">=3.13"
 dependencies = []
 
 [project.scripts]
-orch = "orchestration_planner.cli:main"
-orch-codex-user-prompt-submit = "orchestration_planner.hook:main"
+itw = "intent_to_workflow.cli:main"
+itw-codex-user-prompt-submit = "intent_to_workflow.hook:main"
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
