@@ -25,7 +25,30 @@ type Stage = Literal[
     "workflow_ready",
 ]
 
-type Language = Literal["fr", "en", "unknown"]
+type Language = Literal[
+    "en",
+    "fr",
+    "es",
+    "de",
+    "it",
+    "pt",
+    "nl",
+    "pl",
+    "ru",
+    "uk",
+    "ja",
+    "ko",
+    "zh",
+    "ar",
+    "hi",
+    "tr",
+    "sv",
+    "da",
+    "no",
+    "fi",
+    "cs",
+    "ro",
+]
 type JsonScalar = str | int | None
 type JsonObject = dict[str, JsonScalar]
 
@@ -66,6 +89,33 @@ ISSUE_FIELDS = (
     "Validation:",
     "Agent:",
 )
+
+DEFAULT_LANGUAGE: Language = "en"
+
+LANGUAGE_NAMES: dict[Language, str] = {
+    "en": "English",
+    "fr": "French",
+    "es": "Spanish",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ru": "Russian",
+    "uk": "Ukrainian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "tr": "Turkish",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "cs": "Czech",
+    "ro": "Romanian",
+}
 
 TEMPLATE_TOKENS = frozenset(
     {
@@ -179,7 +229,7 @@ def is_stage(value: object) -> TypeGuard[Stage]:
 
 
 def is_language(value: object) -> TypeGuard[Language]:
-    return value in ("fr", "en", "unknown")
+    return isinstance(value, str) and value in LANGUAGE_NAMES
 
 
 def utc_now() -> str:
@@ -339,7 +389,7 @@ def init_workflow_with_metadata(
         cwd=cwd,
         model=model,
         transcript_path=transcript_path,
-        language=detect_language(captured_intention),
+        language=DEFAULT_LANGUAGE,
     )
 
     (root / "intake").write_text(captured_intention + "\n", encoding="utf-8")
@@ -359,31 +409,22 @@ def status_workflow(root: Path) -> str:
 def set_language_workflow(
     root: Path,
     language: str | None,
-    from_intake: bool,
     force: bool,
 ) -> str:
-    if language is not None and from_intake:
-        raise ItwError("choose language or --from-intake, not both")
-    if language is None and not from_intake:
-        raise ItwError("language or --from-intake required")
+    if language is None:
+        raise ItwError("language required")
 
     state = load_state(root)
-    if state.language != "unknown" and not force:
+    if state.language != DEFAULT_LANGUAGE and not force:
         raise ItwError(f"language already set: {state.language}; use --force to override")
 
-    next_language: Language
-    if from_intake:
-        errors = validate_intake(root)
-        if errors:
-            raise ItwError("missing: " + ", ".join(errors))
-        next_language = detect_language(read_text(root / "intake"))
-    else:
-        if not is_language(language):
-            raise ItwError("invalid language")
-        next_language = language
+    if not is_language(language):
+        supported = ", ".join(LANGUAGE_NAMES)
+        raise ItwError(f"unsupported language: {language}; supported: {supported}")
+    next_language = language
 
     write_state(root, state.with_language(next_language))
-    return f"language={next_language} root={root}\n"
+    return f"language={next_language} name={LANGUAGE_NAMES[next_language]} root={root}\n"
 
 
 def get_workflow(root: Path) -> str:
@@ -414,8 +455,6 @@ def advance_workflow(root: Path) -> str:
     write_state(root, next_state)
 
     output = compact_status(root, next_state)
-    if target == "workflow_ready":
-        return output + final_handoff_prompt(root)
     return output + phase_prompt_for_stage(target, root, validation_errors_for_stage(root, target))
 
 
@@ -430,8 +469,6 @@ def validate_current_stage(root: Path, stage: Stage) -> None:
 
 def blockers_for_state(root: Path, state: WorkflowState) -> tuple[str, ...]:
     errors = list(validation_errors_for_stage(root, state.stage))
-    if state.language == "unknown":
-        errors.append("language")
     return tuple(dict.fromkeys(errors))
 
 
@@ -457,36 +494,6 @@ def validate_intake(root: Path) -> tuple[str, ...]:
     if text == "" or text == "TODO" or text.startswith("TODO:"):
         errors.append("intake initial intention")
     return tuple(errors)
-
-
-def detect_language(text: str) -> Language:
-    normalized = f" {text.lower()} "
-    french_markers = (
-        " je ",
-        " tu ",
-        " nous ",
-        " vous ",
-        " le ",
-        " la ",
-        " les ",
-        " des ",
-        " une ",
-        " pour ",
-        " avec ",
-        " dans ",
-        " est-ce ",
-        " que ",
-        " qui ",
-        " pas ",
-    )
-    if any(marker in normalized for marker in french_markers) or re.search(
-        r"[àâçéèêëîïôùûü]",
-        normalized,
-    ):
-        return "fr"
-    if normalized.strip():
-        return "en"
-    return "unknown"
 
 
 def validate_clarification(root: Path) -> tuple[str, ...]:
@@ -673,7 +680,7 @@ def phase_prompt_for_stage(stage: Stage, root: Path, blockers: Sequence[str]) ->
             "ARTIFACT_STATUS": artifact_status(root),
             "BLOCKERS": blocker_text(blockers),
             "INITIAL_INTENTION": read_text(root / "intake").strip(),
-            "LANGUAGE_INSTRUCTION": language_instruction(load_state(root).language),
+            "LANGUAGE_INSTRUCTION": language_instruction(load_state(root).language, root),
             "NEXT_COMMAND": next_command_for(stage, root),
             "READ_FIRST": read_first_for(stage, root),
             "REFERENCE_CONTENT": reference_content,
@@ -719,12 +726,15 @@ def blocker_text(blockers: Sequence[str]) -> str:
     return "\n".join(f"- {blocker}" for blocker in blockers)
 
 
-def language_instruction(language: Language) -> str:
-    if language == "fr":
-        return "Respond in French."
-    if language == "en":
-        return "Respond in English."
-    return "Respond in the same language as the initial intention."
+def language_instruction(language: Language, root: Path) -> str:
+    name = LANGUAGE_NAMES[language]
+    if language == DEFAULT_LANGUAGE:
+        return (
+            f"Default language is {name}. If the initial intention is not in {name}, "
+            f"first run `itw set-language {root} <language-code>` and then "
+            f"respond in that language; otherwise respond in {name}."
+        )
+    return f"Respond in {name}."
 
 
 def next_command_for(stage: Stage, root: Path) -> str:
@@ -831,7 +841,7 @@ def workflow_template(root: Path, issues: Sequence[Issue]) -> str:
 - Worker prompts live under `prompts/`.
 - Workers follow the local TDD contract embedded in their prompts.
 - Workers commit local scoped slices after validation and accepted reviews.
-- Push only after the whole workflow is complete.
+- Keep execution artifacts local unless the human explicitly asks otherwise.
 - Do not execute work outside this workflow root's scope.
 
 ## Issue Order
@@ -902,7 +912,7 @@ Scope:
 - Keep `tracker.md` current.
 - Run the issue validation.
 - Commit the scoped slice locally after validation and accepted reviews.
-- Do not push.
+- Keep all execution artifacts local unless the human explicitly asks otherwise.
 
 ## TDD Contract
 
@@ -932,18 +942,4 @@ Rules:
 - Write findings with file/line references when possible.
 - Save the review to `{root / "reviews" / f"{issue.slug}-review.md"}` if possible.
 - Otherwise report it to the workflow owner.
-"""
-
-
-def final_handoff_prompt(root: Path) -> str:
-    return f"""Execute the following workflow:
->>>
-Read `{root / "workflow.md"}`, `{root / "tracker.md"}`, and `{root / "issues.md"}`.
-Treat `tracker.md` as the execution authority.
-Use prompts under `{root / "prompts"}`.
-Keep scope to the active issue.
-Workers commit local scoped slices after validation/review.
-Do not push until the workflow is complete.
-Final report: completed issues, commits, validation, blockers.
-<<<
 """

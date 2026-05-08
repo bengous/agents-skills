@@ -75,7 +75,13 @@ def text_from_payload(payload: object, *keys: str) -> str | None:
 
 def root_for_hook(cwd: Path, session_id: str | None) -> Path:
     today = datetime.now().date().isoformat()
-    session_short = session_short_from(session_id) or "unknown"
+    # TODO: non-Codex harnesses should pass ITW_SESSION_ID or ITW_SESSION_SHORT explicitly.
+    session_short = session_short_from(session_id)
+    if session_short is None:
+        raise ItwError(
+            "missing session id; run in a Codex session with hook metadata or use "
+            "manual `itw init <root> <initial intention>`"
+        )
     return cwd / "itw" / f"{today}-{session_short}"
 
 
@@ -120,10 +126,14 @@ def main() -> int:
     )
     cwd_text = text_from_payload(payload, "cwd") or os.environ.get("ITW_CWD") or os.getcwd()
     cwd = Path(cwd_text)
-    root = root_for_hook(cwd, session_id)
-
     try:
+        root = root_for_hook(cwd, session_id)
         if state_path(root).exists():
+            if invocation.intention != "":
+                raise ItwError(
+                    "workflow already active for this session; invoke `$intent-to-workflow` "
+                    "to resume or start a new session for a new intention"
+                )
             output = get_workflow(root)
         elif invocation.intention == "":
             output = empty_invocation_message(root)

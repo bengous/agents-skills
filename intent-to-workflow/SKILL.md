@@ -36,6 +36,9 @@ If `itw` is not installed globally, run it from this skill package with
 - `itw status <root>` is compact human status.
 - `itw get <root>` is the agent-facing phase prompt and recovery surface.
 - At the start of every phase, run `itw get <root>` or ask the human for the root.
+- English is the default state language. If `intake` is clearly not English,
+  run `itw set-language <root> <language-code>` before continuing, then follow
+  the refreshed `itw get <root>` prompt.
 - Work only inside the current phase.
 - End each phase by saying the phase is complete and asking the human to run
   `itw advance <root>`.
@@ -43,8 +46,8 @@ If `itw` is not installed globally, run it from this skill package with
   human-gate contract.
 - Keep planning artifacts under `itw/<id>/` unless the user chose another root.
 - `tracker.md` tracks the future execution workflow, not this planning process.
-- Do not create GitHub issues, publish artifacts, push, or write outside the
-  workflow root from this skill.
+- Do not write remote artifacts or write outside the workflow root from this
+  skill.
 
 ## Phase Map
 

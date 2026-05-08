@@ -17,6 +17,8 @@ Language: {{LANGUAGE_INSTRUCTION}}
 ### Current Work
 Clarify scope, constraints, risks, and acceptance boundaries. Record each question, recommendation, answer, and decision in `clarification.md`.
 
+If the raw `intake` depends on earlier conversation context, ask the human which prior context should be included. Record that context scope in `clarification.md`. Do not rewrite `intake`.
+
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}
 

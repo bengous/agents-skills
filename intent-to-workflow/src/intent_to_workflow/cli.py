@@ -7,6 +7,7 @@ from pathlib import Path
 
 from intent_to_workflow import __version__
 from intent_to_workflow.core import (
+    LANGUAGE_NAMES,
     ItwError,
     advance_workflow,
     get_workflow,
@@ -40,10 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     advance_parser = subparsers.add_parser("advance", help="advance exactly one phase")
     advance_parser.add_argument("root")
 
-    language_parser = subparsers.add_parser("set-language", help="set or infer workflow language")
+    language_parser = subparsers.add_parser("set-language", help="set workflow language")
     language_parser.add_argument("root")
-    language_parser.add_argument("language", nargs="?", choices=("fr", "en", "unknown"))
-    language_parser.add_argument("--from-intake", action="store_true")
+    language_parser.add_argument("language", choices=tuple(LANGUAGE_NAMES))
     language_parser.add_argument("--force", action="store_true")
 
     return parser
@@ -72,7 +72,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 set_language_workflow(
                     Path(parsed.root),
                     language=parsed.language,
-                    from_intake=parsed.from_intake,
                     force=parsed.force,
                 )
             )

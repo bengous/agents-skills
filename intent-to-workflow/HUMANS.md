@@ -6,7 +6,7 @@ This implementation intentionally owns that workflow locally instead of dependin
 
 - local artifacts first;
 - human-gated phase transitions;
-- no GitHub publishing behavior;
+- local-only artifact behavior;
 - no companion skill requirements;
 - deterministic `itw get` and `itw advance` phase prompts.
 
