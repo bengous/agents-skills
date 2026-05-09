@@ -1,0 +1,7 @@
+interface:
+  display_name: "Intent To Workflow"
+  short_description: "Turn explicit intent into a local, human-gated workflow."
+  default_prompt: "$intent-to-workflow "
+
+policy:
+  allow_implicit_invocation: false
