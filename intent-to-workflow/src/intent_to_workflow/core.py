@@ -138,9 +138,9 @@ ANY_TEMPLATE_TOKEN_RE = re.compile(r"{{(.*?)}}", flags=re.DOTALL)
 REFERENCE_BY_STAGE: dict[Stage, str | None] = {
     "clarification": "grill.md",
     "prd": "prd.md",
-    "prd_review": "prd.md",
+    "prd_review": "prd_review.md",
     "issues": "issues.md",
-    "issues_review": "issues.md",
+    "issues_review": "issues_review.md",
     "workflow": "artifacts.md",
     "workflow_review": "artifacts.md",
     "workflow_ready": None,

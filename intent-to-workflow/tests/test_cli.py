@@ -584,9 +584,15 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert all("{{" not in prompt and "}}" not in prompt for prompt in rendered.values())
     assert "grill.md" in rendered["clarification"]
     assert "prd.md" in rendered["prd"]
+    assert "prd_review.md" in rendered["prd_review"]
     assert "issues.md" in rendered["issues"]
+    assert "issues_review.md" in rendered["issues_review"]
     assert "artifacts.md" in rendered["workflow"]
     assert "grill.md" not in rendered["prd"]
+    assert "Do not continue PRD generation" in rendered["prd_review"]
+    assert "Write the PRD using the template" not in rendered["prd_review"]
+    assert "Do not create `workflow.md`" in rendered["issues_review"]
+    assert "Write the local issues" not in rendered["issues_review"]
     assert "prior context should be included" in rendered["clarification"]
 
 
