@@ -1,4 +1,4 @@
-This reference takes the current conversation context and codebase understanding and produces a local PRD in `prd.md`.
+This reference takes the current conversation context, codebase understanding, and local terminology model and produces a local PRD in `prd.md`.
 
 Do NOT interview the user - just synthesize what you already know.
 
@@ -12,7 +12,11 @@ A deep module (as opposed to a shallow module) is one which encapsulates a lot o
 
 Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
 
-3. Write the PRD using the template below and save it to `prd.md` in the current ITW root.
+3. Read `terminology.md`. Use its canonical actor and term names in the PRD. Do not duplicate the whole glossary in `prd.md`; keep `terminology.md` as the language source.
+
+4. Before PRD review, finalize `terminology.md` by replacing placeholders with precise entries or `None identified`.
+
+5. Write the PRD using the template below and save it to `prd.md` in the current ITW root.
 
 <prd-template>
 
@@ -35,6 +39,7 @@ A LONG, numbered list of user stories. Each user story should be in the format o
 </user-story-example>
 
 This list of user stories should be extremely extensive and cover all aspects of the feature.
+Use actor names from `terminology.md`.
 
 ## Implementation Decisions
 

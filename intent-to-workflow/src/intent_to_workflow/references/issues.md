@@ -6,7 +6,7 @@ Break a plan into independently-grabbable local issues using vertical slices (tr
 
 ### 1. Gather context
 
-Work from whatever is already in the conversation context and local ITW artifacts.
+Work from whatever is already in the conversation context and local ITW artifacts. Read `terminology.md` and use its canonical actor and term names when slicing.
 
 ### 2. Explore the codebase (optional)
 
@@ -81,3 +81,4 @@ Short guidance for the future agent that will implement this slice.
 </issue-template>
 
 Do not modify `prd.md` while writing `issues.md` unless the human explicitly asks for a PRD correction.
+Do not modify `terminology.md` while writing `issues.md` unless the human explicitly asks for a terminology correction.

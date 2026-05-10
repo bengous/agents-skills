@@ -81,6 +81,40 @@ def write_prd(path: Path) -> None:
     )
 
 
+def write_terminology(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "# Terminology",
+                "",
+                "## Actors and Roles",
+                "",
+                "| Actor | Definition | Responsibilities | Decision Power | Constraints |",
+                "| --- | --- | --- | --- | --- |",
+                "| Planner user | Workflow planner | Clarifies intent | Approves gates | "
+                "Preserves intake |",
+                "",
+                "## Canonical Terms",
+                "",
+                "| Term | Definition | Aliases to Avoid |",
+                "| --- | --- | --- |",
+                "| Intake | Raw captured initial intention | intake.md, rewritten prompt |",
+                "| Clarification | Question-driven understanding log | glossary phase |",
+                "",
+                "## Relationships",
+                "",
+                "- A Planner user approves gates before the workflow advances.",
+                "- Clarification derives understanding from Intake without rewriting it.",
+                "",
+                "## Flagged Ambiguities",
+                "",
+                "- None identified",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_issues(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -159,9 +193,11 @@ def test_init_captures_raw_intake_and_starts_at_clarification(tmp_path: Path) ->
         ".itw-state.json",
         "clarification.md",
         "intake",
+        "terminology.md",
     ]
     assert (root / "intake").read_text(encoding="utf-8") == "do X because Y\n"
     assert not any(child.name == "intake" + ".md" for child in root.iterdir())
+    assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
 
     state = json.loads((root / ".itw-state.json").read_text(encoding="utf-8"))
     assert state["stage"] == "clarification"
@@ -291,12 +327,57 @@ def test_advance_does_not_require_companion_skills(tmp_path: Path) -> None:
     assert (root / "prd.md").exists()
 
 
+def test_clarification_blocks_if_terminology_is_missing(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    (root / "terminology.md").unlink()
+
+    result = run_cli(["advance", str(root)])
+
+    assert result.exit_code == 1
+    assert "terminology.md" in result.stderr
+    assert "stage=clarification" in run_cli(["status", str(root)]).stdout
+
+
+def test_prd_blocks_on_incomplete_terminology(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_prd(root / "prd.md")
+
+    result = run_cli(["advance", str(root)])
+
+    assert result.exit_code == 1
+    assert "terminology.md placeholder TODO" in result.stderr
+    assert "stage=prd" in run_cli(["status", str(root)]).stdout
+
+
+def test_prd_review_rechecks_terminology_before_issues(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    (root / "terminology.md").write_text("# Terminology\n\nTODO\n", encoding="utf-8")
+
+    result = run_cli(["advance", str(root)])
+
+    assert result.exit_code == 1
+    assert "terminology.md placeholder TODO" in result.stderr
+    assert "stage=prd_review" in run_cli(["status", str(root)]).stdout
+
+
 def test_review_gates_create_expected_artifacts(tmp_path: Path) -> None:
     root = tmp_path / "itw" / "demo"
     assert run_cli(["init", str(root), "plan something"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
 
     assert "stage=prd_review" in run_cli(["advance", str(root)]).stdout
     assert not (root / "issues.md").exists()
@@ -311,6 +392,7 @@ def test_degraded_prd_review_blocks_issues(tmp_path: Path) -> None:
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     (root / "prd.md").write_text("# PRD\n\nTODO\n", encoding="utf-8")
 
@@ -327,6 +409,7 @@ def test_issue_validation_applies_to_each_issue(tmp_path: Path) -> None:
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     assert run_cli(["advance", str(root)]).exit_code == 0
     (root / "issues.md").write_text(
@@ -376,6 +459,7 @@ def test_degraded_issues_review_blocks_workflow(tmp_path: Path) -> None:
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_issues(root / "issues.md")
@@ -395,6 +479,7 @@ def test_workflow_package_uses_self_contained_worker_prompts(tmp_path: Path) -> 
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_issues(root / "issues.md")
@@ -417,6 +502,7 @@ def test_missing_prompt_reference_blocks_workflow_review(tmp_path: Path) -> None
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_issues(root / "issues.md")
@@ -437,6 +523,7 @@ def test_workflow_ready_prints_packaged_phase_prompt(tmp_path: Path) -> None:
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
     assert run_cli(["advance", str(root)]).exit_code == 0
     assert run_cli(["advance", str(root)]).exit_code == 0
     write_issues(root / "issues.md")
@@ -594,6 +681,18 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert "Do not create `workflow.md`" in rendered["issues_review"]
     assert "Write the local issues" not in rendered["issues_review"]
     assert "prior context should be included" in rendered["clarification"]
+    assert "terminology.md" in rendered["clarification"]
+    assert "actor, role" in rendered["clarification"]
+    assert "canonical actor and term names" in rendered["prd"]
+    assert "against `terminology.md`" in rendered["prd_review"]
+    assert "from `prd.md` and `terminology.md`" in rendered["issues"]
+
+    rendered_text = "\n".join(rendered.values())
+    assert "UBIQUITOUS_LANGUAGE.md" not in rendered_text
+    assert "$" + "ubiquitous-language" not in rendered_text
+    assert "GitHub" not in rendered_text
+    assert "publish" not in rendered_text
+    assert "remote" not in rendered_text
 
 
 def test_strict_template_renderer_fails_closed() -> None:

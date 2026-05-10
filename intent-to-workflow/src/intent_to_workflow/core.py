@@ -80,6 +80,14 @@ PRD_SECTIONS = (
     "## Implementation Decisions",
 )
 
+TERMINOLOGY_FILE = "terminology.md"
+TERMINOLOGY_SECTIONS = (
+    "## Actors and Roles",
+    "## Canonical Terms",
+    "## Relationships",
+    "## Flagged Ambiguities",
+)
+
 ISSUE_FIELDS = (
     "Type:",
     "Depends on:",
@@ -394,6 +402,7 @@ def init_workflow_with_metadata(
 
     (root / "intake").write_text(captured_intention + "\n", encoding="utf-8")
     write_if_missing(root / "clarification.md", clarification_template())
+    write_if_missing(root / TERMINOLOGY_FILE, terminology_template())
     write_state(root, state)
     return compact_status(root, state) + phase_prompt_for_stage(
         "clarification",
@@ -498,6 +507,7 @@ def validate_intake(root: Path) -> tuple[str, ...]:
 
 def validate_clarification(root: Path) -> tuple[str, ...]:
     errors = list(file_errors(root, "clarification.md", require_non_empty=True))
+    errors.extend(file_errors(root, TERMINOLOGY_FILE))
     if (root / "clarification.md").exists():
         errors.extend(placeholder_errors("clarification.md", read_text(root / "clarification.md")))
     return tuple(errors)
@@ -505,6 +515,7 @@ def validate_clarification(root: Path) -> tuple[str, ...]:
 
 def validate_prd(root: Path) -> tuple[str, ...]:
     errors = list(file_errors(root, "prd.md", require_non_empty=True))
+    errors.extend(validate_terminology(root))
     text = (root / "prd.md").read_text(encoding="utf-8") if (root / "prd.md").exists() else ""
     errors.extend(section for section in PRD_SECTIONS if section not in text)
     errors.extend(placeholder_errors("prd.md", text))
@@ -513,6 +524,15 @@ def validate_prd(root: Path) -> tuple[str, ...]:
 
 def validate_prd_review(root: Path) -> tuple[str, ...]:
     return validate_prd(root)
+
+
+def validate_terminology(root: Path) -> tuple[str, ...]:
+    errors = list(file_errors(root, TERMINOLOGY_FILE, require_non_empty=True))
+    if (root / TERMINOLOGY_FILE).exists():
+        text = read_text(root / TERMINOLOGY_FILE)
+        errors.extend(section for section in TERMINOLOGY_SECTIONS if section not in text)
+        errors.extend(placeholder_errors(TERMINOLOGY_FILE, text))
+    return tuple(errors)
 
 
 def validate_issues(root: Path) -> tuple[str, ...]:
@@ -597,6 +617,9 @@ def clarification_template() -> str:
     return """# Clarification
 
 Record each question before asking the next one.
+Keep `terminology.md` current when an answer clarifies an actor, role,
+canonical term, relationship, or language ambiguity. Do not update it
+mechanically after every answer.
 
 ## Q001
 
@@ -607,6 +630,35 @@ Reco: TODO
 Answer: TODO
 
 Decision: TODO
+"""
+
+
+def terminology_template() -> str:
+    return """# Terminology
+
+Working language model for the intention. Keep this file current during
+clarification when the understanding changes; finalize it before PRD review.
+Use `None identified` when a required section has no useful entry.
+
+## Actors and Roles
+
+| Actor | Definition | Responsibilities | Decision Power | Constraints |
+| --- | --- | --- | --- | --- |
+| TODO | TODO | TODO | TODO | TODO |
+
+## Canonical Terms
+
+| Term | Definition | Aliases to Avoid |
+| --- | --- | --- |
+| TODO | TODO | TODO |
+
+## Relationships
+
+- TODO
+
+## Flagged Ambiguities
+
+- TODO
 """
 
 
@@ -746,11 +798,11 @@ def next_command_for(stage: Stage, root: Path) -> str:
 def read_first_for(stage: Stage, root: Path) -> str:
     common = [root / "intake"]
     phase_files: dict[Stage, tuple[str, ...]] = {
-        "clarification": ("clarification.md",),
-        "prd": ("clarification.md", "prd.md"),
-        "prd_review": ("prd.md",),
-        "issues": ("prd.md", "issues.md"),
-        "issues_review": ("issues.md",),
+        "clarification": ("clarification.md", TERMINOLOGY_FILE),
+        "prd": ("clarification.md", TERMINOLOGY_FILE, "prd.md"),
+        "prd_review": ("clarification.md", TERMINOLOGY_FILE, "prd.md"),
+        "issues": (TERMINOLOGY_FILE, "prd.md", "issues.md"),
+        "issues_review": ("prd.md", "issues.md"),
         "workflow": ("prd.md", "issues.md", "workflow.md", "tracker.md"),
         "workflow_review": ("workflow.md", "tracker.md", "prompts/"),
         "workflow_ready": ("workflow.md", "tracker.md", "prompts/"),
@@ -770,6 +822,7 @@ def artifact_status(root: Path) -> str:
     artifacts: tuple[str, ...] = (
         "intake",
         "clarification.md",
+        TERMINOLOGY_FILE,
         "prd.md",
         "issues.md",
         "workflow.md",

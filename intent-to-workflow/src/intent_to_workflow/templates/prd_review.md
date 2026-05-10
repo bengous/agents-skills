@@ -15,7 +15,7 @@ Language: {{LANGUAGE_INSTRUCTION}}
 {{BLOCKERS}}
 
 ### Current Work
-Human validates `prd.md`. Do not create issues before approval.
+Human validates `prd.md` against `terminology.md`. Do not create issues before approval.
 
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}

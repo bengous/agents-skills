@@ -15,7 +15,7 @@ Language: {{LANGUAGE_INSTRUCTION}}
 {{BLOCKERS}}
 
 ### Current Work
-Write `issues.md` as independently grabbable vertical slices with dependencies, acceptance criteria, TDD notes, validation, and agent routing.
+Write `issues.md` from `prd.md` and `terminology.md` as independently grabbable vertical slices with dependencies, acceptance criteria, TDD notes, validation, and agent routing.
 
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}

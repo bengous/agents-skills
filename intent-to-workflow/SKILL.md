@@ -3,8 +3,8 @@ name: intent-to-workflow
 disable-model-invocation: true
 description: >
   Human-invoked meta-skill for turning a broad intention into staged local
-  artifacts: intake, clarification, PRD, issues, workflow, tracker, prompts,
-  and final execution handoff. Use only when the user explicitly invokes
+  artifacts: intake, clarification, terminology, PRD, issues, workflow,
+  tracker, prompts, and final execution handoff. Use only when the user explicitly invokes
   $intent-to-workflow or asks to scaffold this PRD-to-issues-to-workflow
   process with human gates.
 ---
@@ -33,6 +33,9 @@ If `itw` is not installed globally, run it from this skill package with
   reinvocation resumes with `itw get`.
 - `intake` is raw extensionless text captured from the initial intention. Do not
   rewrite it; put interpretation and corrections in `clarification.md`.
+- `terminology.md` is the local language model for actors, roles, canonical
+  terms, relationships, and ambiguities. Keep it current when clarification
+  changes understanding; do not update it mechanically after every answer.
 - `itw status <root>` is compact human status.
 - `itw get <root>` is the agent-facing phase prompt and recovery surface.
 - At the start of every phase, run `itw get <root>` or ask the human for the root.
@@ -46,8 +49,7 @@ If `itw` is not installed globally, run it from this skill package with
   human-gate contract.
 - Keep planning artifacts under `itw/<id>/` unless the user chose another root.
 - `tracker.md` tracks the future execution workflow, not this planning process.
-- Do not write remote artifacts or write outside the workflow root from this
-  skill.
+- Do not write artifacts outside the workflow root from this skill.
 
 ## Phase Map
 
@@ -70,7 +72,9 @@ Packaged references live under `src/intent_to_workflow/references/`:
 
 - `grill.md`
 - `prd.md`
+- `prd_review.md`
 - `issues.md`
+- `issues_review.md`
 - `tdd.md`
 - `artifacts.md`
 
