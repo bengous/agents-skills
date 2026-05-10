@@ -45,8 +45,28 @@ uv run itw get /tmp/itw-demo
 uv run itw status /tmp/itw-demo
 ```
 
+From an installed skill copy without a global `itw` command, call the launcher
+by its installed skill path:
+
+```bash
+"<installed-skill-dir>/scripts/itw" --help
+"<installed-skill-dir>/scripts/itw" init /tmp/itw-demo build X because Y
+"<installed-skill-dir>/scripts/itw" get /tmp/itw-demo
+"<installed-skill-dir>/scripts/itw" status /tmp/itw-demo
+```
+
+On Windows PowerShell:
+
+```powershell
+& "<installed-skill-dir>\scripts\itw.ps1" --help
+& "<installed-skill-dir>\scripts\itw.ps1" init C:\Temp\itw-demo "build X because Y"
+& "<installed-skill-dir>\scripts\itw.ps1" get C:\Temp\itw-demo
+& "<installed-skill-dir>\scripts\itw.ps1" status C:\Temp\itw-demo
+```
+
 ## Global Install
 
+Global install is optional convenience, not required by the skill launcher.
 Do not install globally unless the human asks. A typical local install is:
 
 ```bash

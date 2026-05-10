@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf '%s\n' 'error: uv is required: https://docs.astral.sh/uv/' >&2
+  exit 127
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+skill_dir="$(cd -- "${script_dir}/.." && pwd -P)"
+exec uv run --project "$skill_dir" --locked itw "$@"

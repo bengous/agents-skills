@@ -22,8 +22,9 @@ itw get <root>
 itw advance <root>
 ```
 
-If `itw` is not installed globally, run it from this skill package with
-`uv run itw ...`.
+Always run the gate. Use `itw`; if missing, use the installed skill path:
+`<skill-dir>/scripts/itw` on Unix or `& '<skill-dir>\scripts\itw.ps1'` on
+Windows. Never hand-roll workflow state. Stop on launcher failure.
 
 ## Operating Rules
 
