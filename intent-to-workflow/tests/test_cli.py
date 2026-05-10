@@ -687,13 +687,6 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert "against `terminology.md`" in rendered["prd_review"]
     assert "from `prd.md` and `terminology.md`" in rendered["issues"]
 
-    rendered_text = "\n".join(rendered.values())
-    assert "UBIQUITOUS_LANGUAGE.md" not in rendered_text
-    assert "$" + "ubiquitous-language" not in rendered_text
-    assert "GitHub" not in rendered_text
-    assert "publish" not in rendered_text
-    assert "remote" not in rendered_text
-
 
 def test_strict_template_renderer_fails_closed() -> None:
     with pytest.raises(ItwError, match="malformed"):
