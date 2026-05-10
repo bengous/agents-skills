@@ -15,7 +15,7 @@ Language: {{LANGUAGE_INSTRUCTION}}
 {{BLOCKERS}}
 
 ### Current Work
-Write `prd.md` from `intake`, `clarification.md`, and `terminology.md`. Keep it local to this root. Finalize `terminology.md` before PRD review: replace placeholders with precise entries or `None identified`.
+Write `prd.md` from `intake`, `clarification.md`, and `terminology.md`. Keep it local to this root. Finalize `terminology.md` before PRD review: replace placeholders with precise entries or the empty-section phrase required by the current phase language.
 
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}

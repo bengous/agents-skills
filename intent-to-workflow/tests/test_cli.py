@@ -115,6 +115,63 @@ def write_terminology(path: Path) -> None:
     )
 
 
+def write_french_prd(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "# PRD",
+                "",
+                "## Probleme",
+                "Il faut un planner.",
+                "",
+                "## Solution",
+                "Construire le workflow.",
+                "",
+                "## Parcours utilisateur",
+                "- En tant que Planner user, je veux une planification par etapes.",
+                "",
+                "## Decisions d'implementation",
+                "- Garder les gates manuelles.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_french_terminology(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "# Terminologie",
+                "",
+                "## Acteurs et roles",
+                "",
+                "| Acteur | Definition | Responsabilites | Pouvoir de decision | Contraintes |",
+                "| --- | --- | --- | --- | --- |",
+                "| Planner user | Utilisateur du workflow | Clarifie l'intention | "
+                "Approuve les gates | Preserve intake |",
+                "",
+                "## Termes canoniques",
+                "",
+                "| Terme | Definition | Alias a eviter |",
+                "| --- | --- | --- |",
+                "| Intake | Intention initiale brute capturee | intake.md, prompt reecrit |",
+                "| Clarification | Journal de comprehension par questions | glossary phase |",
+                "",
+                "## Relations",
+                "",
+                "- Le Planner user approuve les gates avant l'avancee du workflow.",
+                "- Clarification derive la comprehension depuis Intake sans le reecrire.",
+                "",
+                "## Ambiguites signalees",
+                "",
+                "- Aucune identifiee",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_issues(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -215,9 +272,38 @@ def test_set_language_updates_get_prompt(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "language=fr name=French" in result.stdout
     assert "Respond in French." in run_cli(["get", str(root)]).stdout
+    assert "Use French for human-facing prose" in run_cli(["get", str(root)]).stdout
+    assert "## Acteurs et roles" in (root / "terminology.md").read_text(encoding="utf-8")
+    assert "Recommandation: TODO" in (root / "clarification.md").read_text(encoding="utf-8")
 
     state = json.loads((root / ".itw-state.json").read_text(encoding="utf-8"))
     assert state["language"] == "fr"
+
+
+def test_non_localized_language_is_instruction_only(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+
+    result = run_cli(["set-language", str(root), "zh"])
+    prompt = run_cli(["get", str(root)]).stdout
+
+    assert result.exit_code == 0
+    assert "language=zh name=Chinese" in result.stdout
+    assert "Chinese is instruction-only for artifacts" in prompt
+    assert "keep English Markdown headings" in prompt
+    assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
+
+
+def test_set_language_does_not_overwrite_edited_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    (root / "clarification.md").write_text("# Clarification\n\ncustom\n", encoding="utf-8")
+
+    result = run_cli(["set-language", str(root), "fr"])
+
+    assert result.exit_code == 0
+    assert (root / "clarification.md").read_text(encoding="utf-8") == "# Clarification\n\ncustom\n"
+    assert "## Acteurs et roles" in (root / "terminology.md").read_text(encoding="utf-8")
 
 
 def test_set_language_rejects_unsupported_code(tmp_path: Path) -> None:
@@ -234,6 +320,7 @@ def test_set_language_refuses_overwrite_without_force(tmp_path: Path) -> None:
     root = tmp_path / "itw" / "demo"
     assert run_cli(["init", str(root), "plan something"]).exit_code == 0
     assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    assert "## Acteurs et roles" in (root / "terminology.md").read_text(encoding="utf-8")
 
     blocked = run_cli(["set-language", str(root), "es"])
     forced = run_cli(["set-language", str(root), "es", "--force"])
@@ -242,6 +329,37 @@ def test_set_language_refuses_overwrite_without_force(tmp_path: Path) -> None:
     assert "language already set: fr" in blocked.stderr
     assert forced.exit_code == 0
     assert "Respond in Spanish." in run_cli(["get", str(root)]).stdout
+    assert "Spanish is instruction-only for artifacts" in run_cli(["get", str(root)]).stdout
+    assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
+    assert "## Acteurs et roles" not in (root / "terminology.md").read_text(encoding="utf-8")
+
+
+def test_force_language_to_default_refreshes_localized_placeholders(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+
+    result = run_cli(["set-language", str(root), "en", "--force"])
+
+    assert result.exit_code == 0
+    assert "language=en name=English" in result.stdout
+    assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
+    assert "Recommandation: TODO" not in (root / "clarification.md").read_text(encoding="utf-8")
+
+
+def test_force_language_refreshes_existing_prd_placeholder(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert "## Probleme" in (root / "prd.md").read_text(encoding="utf-8")
+
+    result = run_cli(["set-language", str(root), "en", "--force"])
+
+    assert result.exit_code == 0
+    assert "## Problem Statement" in (root / "prd.md").read_text(encoding="utf-8")
+    assert "## Probleme" not in (root / "prd.md").read_text(encoding="utf-8")
 
 
 def test_set_language_from_intake_flag_is_not_supported(tmp_path: Path) -> None:
@@ -327,6 +445,35 @@ def test_advance_does_not_require_companion_skills(tmp_path: Path) -> None:
     assert (root / "prd.md").exists()
 
 
+def test_french_advance_creates_localized_prd_placeholder(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+
+    result = run_cli(["advance", str(root)])
+
+    assert result.exit_code == 0
+    assert "## Probleme" in (root / "prd.md").read_text(encoding="utf-8")
+    assert "## Problem Statement" not in (root / "prd.md").read_text(encoding="utf-8")
+
+
+def test_french_prd_prompt_does_not_leak_english_empty_section_phrase(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+
+    prompt = run_cli(["get", str(root)]).stdout
+
+    assert "Stage: `prd`" in prompt
+    assert "None identified" not in prompt
+    assert "empty-section phrase required by the current phase language" in prompt
+
+
 def test_clarification_blocks_if_terminology_is_missing(tmp_path: Path) -> None:
     root = tmp_path / "itw" / "demo"
     assert run_cli(["init", str(root), "plan something"]).exit_code == 0
@@ -369,6 +516,61 @@ def test_prd_review_rechecks_terminology_before_issues(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "terminology.md placeholder TODO" in result.stderr
     assert "stage=prd_review" in run_cli(["status", str(root)]).stdout
+
+
+def test_french_prd_and_terminology_validate_through_review_gate(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_french_prd(root / "prd.md")
+    write_french_terminology(root / "terminology.md")
+
+    result = run_cli(["advance", str(root)])
+
+    assert result.exit_code == 0
+    assert "stage=prd_review" in result.stdout
+
+
+def test_french_issues_phase_keeps_execution_artifacts_english(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_french_prd(root / "prd.md")
+    write_french_terminology(root / "terminology.md")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", str(root)]).exit_code == 0
+
+    prompt = run_cli(["get", str(root)]).stdout
+
+    assert "Stage: `issues`" in prompt
+    assert "Respond in French" not in prompt
+    assert "Use English for generated execution artifacts" in prompt
+    assert "`issues.md`, `workflow.md`, `tracker.md`, and `prompts/*.md`" in prompt
+
+
+def test_french_workflow_phase_keeps_execution_artifacts_english(tmp_path: Path) -> None:
+    root = tmp_path / "itw" / "demo"
+    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_french_prd(root / "prd.md")
+    write_french_terminology(root / "terminology.md")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    write_issues(root / "issues.md")
+    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", str(root)]).exit_code == 0
+
+    prompt = run_cli(["get", str(root)]).stdout
+
+    assert "Stage: `workflow`" in prompt
+    assert "Respond in French" not in prompt
+    assert "Use English for generated execution artifacts" in prompt
 
 
 def test_review_gates_create_expected_artifacts(tmp_path: Path) -> None:

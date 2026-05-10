@@ -62,6 +62,12 @@ STAGES: tuple[Stage, ...] = (
     "workflow_review",
     "workflow_ready",
 )
+LOCALIZED_PLANNING_STAGES: frozenset[Stage] = frozenset(
+    {"clarification", "prd", "prd_review"}
+)
+ENGLISH_EXECUTION_ARTIFACT_STAGES: frozenset[Stage] = frozenset(
+    {"issues", "issues_review", "workflow", "workflow_review", "workflow_ready"}
+)
 
 NEXT_STAGE: dict[Stage, Stage] = {
     "clarification": "prd",
@@ -79,6 +85,14 @@ PRD_SECTIONS = (
     "## User Stories",
     "## Implementation Decisions",
 )
+LOCALIZED_PRD_SECTIONS: dict[Language, tuple[str, ...]] = {
+    "fr": (
+        "## Probleme",
+        "## Solution",
+        "## Parcours utilisateur",
+        "## Decisions d'implementation",
+    ),
+}
 
 TERMINOLOGY_FILE = "terminology.md"
 TERMINOLOGY_SECTIONS = (
@@ -87,6 +101,14 @@ TERMINOLOGY_SECTIONS = (
     "## Relationships",
     "## Flagged Ambiguities",
 )
+LOCALIZED_TERMINOLOGY_SECTIONS: dict[Language, tuple[str, ...]] = {
+    "fr": (
+        "## Acteurs et roles",
+        "## Termes canoniques",
+        "## Relations",
+        "## Ambiguites signalees",
+    ),
+}
 
 ISSUE_FIELDS = (
     "Type:",
@@ -99,6 +121,7 @@ ISSUE_FIELDS = (
 )
 
 DEFAULT_LANGUAGE: Language = "en"
+LOCALIZED_ARTIFACT_LANGUAGES: frozenset[Language] = frozenset({"fr"})
 
 LANGUAGE_NAMES: dict[Language, str] = {
     "en": "English",
@@ -123,6 +146,19 @@ LANGUAGE_NAMES: dict[Language, str] = {
     "fi": "Finnish",
     "cs": "Czech",
     "ro": "Romanian",
+}
+
+LANGUAGE_ARTIFACT_POLICIES: dict[Language, str] = {
+    "fr": (
+        "Use French for human-facing prose and Markdown headings/body in "
+        "`clarification.md`, `terminology.md`, and `prd.md`. Keep `issues.md`, "
+        "`workflow.md`, `tracker.md`, and `prompts/*.md` in their established English "
+        "structure. Keep file names, commands, code identifiers, required machine field "
+        "labels, and canonical product/technical terms in English when those terms "
+        "should map to code or international product vocabulary. In `terminology.md`, "
+        "define those English canonical terms with French explanations and French "
+        "aliases to avoid."
+    ),
 }
 
 TEMPLATE_TOKENS = frozenset(
@@ -401,8 +437,8 @@ def init_workflow_with_metadata(
     )
 
     (root / "intake").write_text(captured_intention + "\n", encoding="utf-8")
-    write_if_missing(root / "clarification.md", clarification_template())
-    write_if_missing(root / TERMINOLOGY_FILE, terminology_template())
+    write_if_missing(root / "clarification.md", clarification_template(DEFAULT_LANGUAGE))
+    write_if_missing(root / TERMINOLOGY_FILE, terminology_template(DEFAULT_LANGUAGE))
     write_state(root, state)
     return compact_status(root, state) + phase_prompt_for_stage(
         "clarification",
@@ -433,7 +469,53 @@ def set_language_workflow(
     next_language = language
 
     write_state(root, state.with_language(next_language))
+    refresh_placeholder_artifacts_for_language(root, next_language)
     return f"language={next_language} name={LANGUAGE_NAMES[next_language]} root={root}\n"
+
+
+def refresh_placeholder_artifacts_for_language(root: Path, language: Language) -> None:
+    target_language = language if language in LOCALIZED_ARTIFACT_LANGUAGES else DEFAULT_LANGUAGE
+    replacements = (
+        (
+            "clarification.md",
+            known_clarification_templates(),
+            clarification_template(target_language),
+        ),
+        (
+            TERMINOLOGY_FILE,
+            known_terminology_templates(),
+            terminology_template(target_language),
+        ),
+        ("prd.md", known_prd_templates(), prd_template(target_language)),
+    )
+    for relative, known_placeholders, target_content in replacements:
+        path = root / relative
+        if path.exists() and path.read_text(encoding="utf-8") in known_placeholders:
+            path.write_text(target_content, encoding="utf-8")
+
+
+def known_clarification_templates() -> frozenset[str]:
+    languages = (DEFAULT_LANGUAGE, *LOCALIZED_ARTIFACT_LANGUAGES)
+    return frozenset(
+        clarification_template(language)
+        for language in languages
+    )
+
+
+def known_terminology_templates() -> frozenset[str]:
+    languages = (DEFAULT_LANGUAGE, *LOCALIZED_ARTIFACT_LANGUAGES)
+    return frozenset(
+        terminology_template(language)
+        for language in languages
+    )
+
+
+def known_prd_templates() -> frozenset[str]:
+    languages = (DEFAULT_LANGUAGE, *LOCALIZED_ARTIFACT_LANGUAGES)
+    return frozenset(
+        prd_template(language)
+        for language in languages
+    )
 
 
 def get_workflow(root: Path) -> str:
@@ -454,7 +536,7 @@ def advance_workflow(root: Path) -> str:
     target = NEXT_STAGE[state.stage]
 
     if target == "prd":
-        write_if_missing(root / "prd.md", prd_template())
+        write_if_missing(root / "prd.md", prd_template(state.language))
     elif target == "issues":
         write_if_missing(root / "issues.md", issues_template())
     elif target == "workflow":
@@ -517,7 +599,7 @@ def validate_prd(root: Path) -> tuple[str, ...]:
     errors = list(file_errors(root, "prd.md", require_non_empty=True))
     errors.extend(validate_terminology(root))
     text = (root / "prd.md").read_text(encoding="utf-8") if (root / "prd.md").exists() else ""
-    errors.extend(section for section in PRD_SECTIONS if section not in text)
+    errors.extend(section for section in prd_sections_for(root) if section not in text)
     errors.extend(placeholder_errors("prd.md", text))
     return tuple(errors)
 
@@ -530,9 +612,17 @@ def validate_terminology(root: Path) -> tuple[str, ...]:
     errors = list(file_errors(root, TERMINOLOGY_FILE, require_non_empty=True))
     if (root / TERMINOLOGY_FILE).exists():
         text = read_text(root / TERMINOLOGY_FILE)
-        errors.extend(section for section in TERMINOLOGY_SECTIONS if section not in text)
+        errors.extend(section for section in terminology_sections_for(root) if section not in text)
         errors.extend(placeholder_errors(TERMINOLOGY_FILE, text))
     return tuple(errors)
+
+
+def prd_sections_for(root: Path) -> tuple[str, ...]:
+    return LOCALIZED_PRD_SECTIONS.get(load_state(root).language, PRD_SECTIONS)
+
+
+def terminology_sections_for(root: Path) -> tuple[str, ...]:
+    return LOCALIZED_TERMINOLOGY_SECTIONS.get(load_state(root).language, TERMINOLOGY_SECTIONS)
 
 
 def validate_issues(root: Path) -> tuple[str, ...]:
@@ -613,7 +703,25 @@ def validate_prompt_references(root: Path) -> tuple[str, ...]:
     return tuple(errors)
 
 
-def clarification_template() -> str:
+def clarification_template(language: Language = DEFAULT_LANGUAGE) -> str:
+    if language == "fr":
+        return """# Clarification
+
+Consigner chaque question avant de poser la suivante.
+Garder `terminology.md` a jour quand une reponse clarifie un acteur, un role,
+un terme canonique, une relation ou une ambiguite de langue. Ne pas le mettre
+a jour mecaniquement apres chaque reponse.
+
+## Q001
+
+Question: TODO
+
+Recommandation: TODO
+
+Reponse: TODO
+
+Decision: TODO
+"""
     return """# Clarification
 
 Record each question before asking the next one.
@@ -633,7 +741,36 @@ Decision: TODO
 """
 
 
-def terminology_template() -> str:
+def terminology_template(language: Language = DEFAULT_LANGUAGE) -> str:
+    if language == "fr":
+        return """# Terminologie
+
+Modele de langage local pour l'intention. Garder ce fichier a jour pendant la
+clarification quand la comprehension change; le finaliser avant la revue PRD.
+Utiliser `Aucun identifie` quand une section requise n'a pas d'entree utile.
+Les termes canoniques produit/techniques peuvent rester en anglais quand ils
+doivent se traduire en code ou en vocabulaire produit international.
+
+## Acteurs et roles
+
+| Acteur | Definition | Responsabilites | Pouvoir de decision | Contraintes |
+| --- | --- | --- | --- | --- |
+| TODO | TODO | TODO | TODO | TODO |
+
+## Termes canoniques
+
+| Terme | Definition | Alias a eviter |
+| --- | --- | --- |
+| TODO | TODO | TODO |
+
+## Relations
+
+- TODO
+
+## Ambiguites signalees
+
+- TODO
+"""
     return """# Terminology
 
 Working language model for the intention. Keep this file current during
@@ -662,7 +799,30 @@ Use `None identified` when a required section has no useful entry.
 """
 
 
-def prd_template() -> str:
+def prd_template(language: Language = DEFAULT_LANGUAGE) -> str:
+    if language == "fr":
+        return """# PRD
+
+## Probleme
+
+TODO
+
+## Solution
+
+TODO
+
+## Parcours utilisateur
+
+- TODO
+
+## Decisions d'implementation
+
+- TODO
+
+## Hors perimetre
+
+- TODO
+"""
     return """# PRD
 
 ## Problem Statement
@@ -732,7 +892,7 @@ def phase_prompt_for_stage(stage: Stage, root: Path, blockers: Sequence[str]) ->
             "ARTIFACT_STATUS": artifact_status(root),
             "BLOCKERS": blocker_text(blockers),
             "INITIAL_INTENTION": read_text(root / "intake").strip(),
-            "LANGUAGE_INSTRUCTION": language_instruction(load_state(root).language, root),
+            "LANGUAGE_INSTRUCTION": language_instruction(load_state(root).language, root, stage),
             "NEXT_COMMAND": next_command_for(stage, root),
             "READ_FIRST": read_first_for(stage, root),
             "REFERENCE_CONTENT": reference_content,
@@ -778,7 +938,7 @@ def blocker_text(blockers: Sequence[str]) -> str:
     return "\n".join(f"- {blocker}" for blocker in blockers)
 
 
-def language_instruction(language: Language, root: Path) -> str:
+def language_instruction(language: Language, root: Path, stage: Stage) -> str:
     name = LANGUAGE_NAMES[language]
     if language == DEFAULT_LANGUAGE:
         return (
@@ -786,7 +946,24 @@ def language_instruction(language: Language, root: Path) -> str:
             f"first run `itw set-language {root} <language-code>` and then "
             f"respond in that language; otherwise respond in {name}."
         )
-    return f"Respond in {name}."
+    if language in LOCALIZED_ARTIFACT_LANGUAGES and stage in ENGLISH_EXECUTION_ARTIFACT_STAGES:
+        return (
+            f"Use English for generated execution artifacts in this phase, including "
+            f"`issues.md`, `workflow.md`, `tracker.md`, and `prompts/*.md` prose/body, "
+            f"headings, and machine-facing labels. You may answer the human in {name} "
+            f"outside those artifacts."
+        )
+    artifact_policy = (
+        LANGUAGE_ARTIFACT_POLICIES[language]
+        if language in LOCALIZED_ARTIFACT_LANGUAGES and stage in LOCALIZED_PLANNING_STAGES
+        else (
+            f"{name} is instruction-only for artifacts: use {name} for human-facing prose "
+            "inside artifact sections, but keep English Markdown headings, file names, "
+            "commands, code identifiers, required machine field labels, and canonical "
+            "product/technical terms."
+        )
+    )
+    return f"Respond in {name}. {artifact_policy}"
 
 
 def next_command_for(stage: Stage, root: Path) -> str:

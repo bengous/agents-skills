@@ -42,6 +42,18 @@ If `itw` is not installed globally, run it from this skill package with
 - English is the default state language. If `intake` is clearly not English,
   run `itw set-language <root> <language-code>` before continuing, then follow
   the refreshed `itw get <root>` prompt.
+- `en` is the native artifact language. `fr` is structurally localized for
+  `clarification.md`, `terminology.md`, and `prd.md`: human-facing prose and
+  Markdown headings/body in those artifacts use French.
+- Other supported language codes are instruction-only until localized templates
+  exist: write human-facing prose in that language inside artifact sections, but
+  keep English Markdown headings, file names, commands, code identifiers,
+  required machine field labels, and canonical product/technical terms.
+- `issues.md`, `workflow.md`, `tracker.md`, and `prompts/*.md` keep their
+  established English structure and machine-facing labels.
+- In `terminology.md`, canonical product/technical terms may be English, but
+  definitions, relationships, ambiguities, and aliases to avoid follow the
+  workflow language.
 - Work only inside the current phase.
 - End each phase by saying the phase is complete and asking the human to run
   `itw advance <root>`.

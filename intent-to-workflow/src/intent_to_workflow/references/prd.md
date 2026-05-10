@@ -14,9 +14,16 @@ Check with the user that these modules match their expectations. Check with the 
 
 3. Read `terminology.md`. Use its canonical actor and term names in the PRD. Do not duplicate the whole glossary in `prd.md`; keep `terminology.md` as the language source.
 
-4. Before PRD review, finalize `terminology.md` by replacing placeholders with precise entries or `None identified`.
+4. Before PRD review, finalize `terminology.md` by replacing placeholders with
+   precise entries or the empty-section phrase required by the current scaffold.
+   Instruction-only languages use the English empty-section phrase from their
+   English scaffold.
 
-5. Write the PRD using the template below and save it to `prd.md` in the current ITW root.
+5. Write the PRD to `prd.md` in the current ITW root. If `prd.md` already
+   exists, preserve its current section headings and fill that scaffold. If no
+   scaffold exists, ask the human to rerun `itw get <root>` or recreate the
+   scaffold from the current phase language before writing. Use the template
+   below only for native English or instruction-only language workflows.
 
 <prd-template>
 
