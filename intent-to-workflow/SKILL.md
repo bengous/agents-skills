@@ -22,9 +22,10 @@ itw get <root>
 itw advance <root>
 ```
 
-Always run the gate. Use `itw`; if missing, use the installed skill path:
-`<skill-dir>/scripts/itw` on Unix or `& '<skill-dir>\scripts\itw.ps1'` on
-Windows. Never hand-roll workflow state. Stop on launcher failure.
+Use the gate for workflow state and phase boundaries. Use `itw`; if missing,
+use the installed skill path: `<skill-dir>/scripts/itw` on Unix or
+`& '<skill-dir>\scripts\itw.ps1'` on Windows. Never hand-roll workflow state.
+Stop on launcher failure.
 
 ## Operating Rules
 
@@ -39,7 +40,13 @@ Windows. Never hand-roll workflow state. Stop on launcher failure.
   changes understanding; do not update it mechanically after every answer.
 - `itw status <root>` is compact human status.
 - `itw get <root>` is the agent-facing phase prompt and recovery surface.
-- At the start of every phase, run `itw get <root>` or ask the human for the root.
+- Run `itw get <root>` at phase boundaries: initial phase entry, same-session
+  reinvocation, context compaction/resume, after any interruption, before
+  asking the human to run `itw advance <root>`, or whenever the root, stage,
+  expected artifacts, language state, or current instructions are uncertain.
+- During one continuous interview in the same active phase and root, do not
+  rerun `itw get` before every micro-question. If you just read or wrote the
+  relevant phase artifacts and state is clear, keep the conversation moving.
 - English is the default state language. If `intake` is clearly not English,
   run `itw set-language <root> <language-code>` before continuing, then follow
   the refreshed `itw get <root>` prompt.
