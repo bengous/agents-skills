@@ -41,6 +41,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 
 | Skill | Description |
 |-------|-------------|
+| `batch-update` | Update repo dependencies and tooling in researched, validated, committed batches |
 | `content-architect` | Design content architecture for digital products: screen inventory, user journeys, navigation |
 | `design-system-creator` | Create design systems based on physical/sensory anchoring |
 | `goalify` | Convert rough intent into a compact Codex `/goal` command and first-turn prompt |

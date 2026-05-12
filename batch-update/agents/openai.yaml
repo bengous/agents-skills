@@ -1,0 +1,7 @@
+interface:
+  display_name: "Batch Update"
+  short_description: "Update repo dependencies and tooling in validated, committed batches."
+  default_prompt: "$batch-update"
+
+policy:
+  allow_implicit_invocation: false
