@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Sync"
+  short_description: "Commit, push, and deploy skill changes through the managed live path."
+  default_prompt: "$skill-sync "
+
+policy:
+  allow_implicit_invocation: false
