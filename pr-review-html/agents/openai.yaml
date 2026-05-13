@@ -1,0 +1,7 @@
+interface:
+  display_name: "PR Review HTML"
+  short_description: "Build annotated HTML PR review artifacts"
+  default_prompt: "Use $pr-review-html to review this PR as an annotated HTML artifact."
+
+policy:
+  allow_implicit_invocation: false

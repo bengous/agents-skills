@@ -49,6 +49,7 @@ The Rust workspace follows strict formatting and linting conventions (see `rustf
 | `humanizer` | Remove signs of AI-generated writing from text |
 | `intent-to-workflow` | Human-gated planner that turns explicit intent into local workflow artifacts |
 | `promptify` | Transform rough dictated intent into a compact GPT-5.5-optimized prompt |
+| `pr-review-html` | Create annotated HTML artifacts for PR reviews and unfamiliar code paths |
 | `shrinkify` | Interactively reduce skills while preserving behavior and output contracts |
 | `skill-eval-methodology` | Operational discipline for running skill evaluations and benchmarks |
 | `slop-detector` | Detect, score, and rewrite AI-generated or generic text |

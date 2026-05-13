@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR Review Artifact</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --ink: #18212f;
+      --muted: #667085;
+      --line: #d9e0ea;
+      --code: #111827;
+      --add: #e7f7ed;
+      --del: #fdeaea;
+      --ctx: #f8fafc;
+      --blocking: #b42318;
+      --major: #b54708;
+      --minor: #a16207;
+      --nit: #475467;
+      --positive: #027a48;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    a { color: inherit; }
+    header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .eyebrow {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 8px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 20px;
+      padding: 20px 32px 40px;
+    }
+    nav {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      display: grid;
+      gap: 12px;
+    }
+    section, nav .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    .stack { display: grid; gap: 16px; }
+    .toc {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .toc a {
+      text-decoration: none;
+      color: var(--muted);
+    }
+    .severity-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+    }
+    .finding {
+      border-left: 4px solid var(--nit);
+      background: #fff;
+      border-radius: 6px;
+      padding: 10px 12px;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+    .finding[data-severity="blocking"] { border-left-color: var(--blocking); }
+    .finding[data-severity="major"] { border-left-color: var(--major); }
+    .finding[data-severity="minor"] { border-left-color: var(--minor); }
+    .finding[data-severity="positive"] { border-left-color: var(--positive); }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .tag.blocking { background: var(--blocking); }
+    .tag.major { background: var(--major); }
+    .tag.minor { background: var(--minor); }
+    .tag.nit { background: var(--nit); }
+    .tag.positive { background: var(--positive); }
+    .concept {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .concept-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcff;
+    }
+    .file {
+      padding: 0;
+      overflow: hidden;
+    }
+    .file-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    .diff-row {
+      display: grid;
+      grid-template-columns: 70px minmax(0, 1fr) minmax(220px, 320px);
+      min-height: 28px;
+      border-bottom: 1px solid #edf1f6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .ln {
+      padding: 6px 8px;
+      color: var(--muted);
+      text-align: right;
+      user-select: none;
+      border-right: 1px solid var(--line);
+      background: #fff;
+    }
+    .code {
+      padding: 6px 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--code);
+    }
+    .ann {
+      padding: 6px 10px;
+      border-left: 1px solid var(--line);
+      background: #fff;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .diff-row.add .code { background: var(--add); }
+    .diff-row.del .code { background: var(--del); }
+    .diff-row.ctx .code { background: var(--ctx); }
+    .diff-row.hunk .code {
+      background: #e9eef7;
+      color: #344054;
+      font-weight: 700;
+    }
+    .note-link {
+      display: inline-block;
+      margin-bottom: 4px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .evidence {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; padding: 16px; }
+      nav { position: static; }
+      .concept { grid-template-columns: 1fr; }
+      .diff-row { grid-template-columns: 54px minmax(0, 1fr); }
+      .ann { grid-column: 2; border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">OWNER/REPO | PR #NUMBER | BASE -> HEAD</p>
+    <h1>PR title goes here</h1>
+    <div class="meta">
+      <span class="pill">Focus: streaming/backpressure</span>
+      <span class="pill">+000 / -000</span>
+      <span class="pill">0 blocking | 0 major | 0 minor</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <nav aria-label="Artifact navigation">
+      <div class="panel">
+        <h2>Jump To</h2>
+        <div class="toc">
+          <a href="#findings">Findings</a>
+          <a href="#concept">Concept Model</a>
+          <a href="#diff">Annotated Diff</a>
+          <a href="#evidence">Evidence</a>
+        </div>
+      </div>
+    </nav>
+
+    <div class="stack">
+      <section id="findings">
+        <h2>Findings</h2>
+        <div class="severity-grid">
+          <article class="finding" data-severity="blocking" id="finding-1">
+            <span class="tag blocking">Blocking</span>
+            <h3>Finding title anchored to changed behavior</h3>
+            <p>Impact and fix direction. Link to <a href="#line-42">changed line</a>.</p>
+          </article>
+          <article class="finding" data-severity="positive">
+            <span class="tag positive">Positive</span>
+            <h3>Useful improvement worth keeping</h3>
+            <p>Short note about a change that reduces risk or improves clarity.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="concept">
+        <h2>Concept Model</h2>
+        <div class="concept">
+          <div class="concept-step">
+            <h3>Normal Path</h3>
+            <p>Producer emits chunks, transform applies policy, consumer drains.</p>
+          </div>
+          <div class="concept-step">
+            <h3>Pressure Path</h3>
+            <p>When the consumer slows, the producer must stop or await readiness.</p>
+          </div>
+          <div class="concept-step">
+            <h3>Failure Path</h3>
+            <p>Cancellation and errors must release resources and notify callers.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="file" id="diff">
+        <div class="file-header">
+          <span>src/path/to/file.ts</span>
+          <span>+00 -00</span>
+        </div>
+        <div class="diff-row hunk">
+          <div class="ln">@@</div>
+          <div class="code">@@ -40,6 +40,9 @@ function streamExample()</div>
+          <div class="ann"></div>
+        </div>
+        <div class="diff-row ctx">
+          <div class="ln">41</div>
+          <div class="code"> const writer = stream.getWriter();</div>
+          <div class="ann"></div>
+        </div>
+        <div class="diff-row add" id="line-42">
+          <div class="ln">42</div>
+          <div class="code">+writer.write(chunk);</div>
+          <div class="ann">
+            <a class="note-link" href="#finding-1">Blocking</a>
+            <div>Write result is not awaited, so the producer can outrun the sink.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="evidence">
+        <h2>Evidence</h2>
+        <div class="evidence">
+          <div>
+            <h3>Commands Run</h3>
+            <pre>git diff base...head
+test command here</pre>
+          </div>
+          <div>
+            <h3>Unknowns</h3>
+            <p>List missing runtime evidence, skipped tests, or assumptions.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
