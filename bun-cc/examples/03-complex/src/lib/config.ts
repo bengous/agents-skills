@@ -36,7 +36,8 @@ export function hashPath(path: string): string {
 }
 
 export const getConfigDir = () => CONFIG_DIR;
-export const getProjectDir = (projectPath: string) => join(PROJECTS_DIR, hashPath(projectPath));
+export const getProjectDir = (projectPath: string) =>
+  join(PROJECTS_DIR, hashPath(projectPath));
 
 // ============================================================================
 // SIDE-EFFECTING FUNCTIONS
@@ -61,7 +62,9 @@ export async function saveGlobalConfig(config: GlobalConfig): Promise<void> {
   await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-export async function loadProjectMeta(projectPath: string): Promise<ProjectMeta | null> {
+export async function loadProjectMeta(
+  projectPath: string,
+): Promise<ProjectMeta | null> {
   const file = Bun.file(join(getProjectDir(projectPath), "meta.json"));
   if (!(await file.exists())) return null;
   try {
@@ -71,7 +74,10 @@ export async function loadProjectMeta(projectPath: string): Promise<ProjectMeta 
   }
 }
 
-export async function saveProjectMeta(projectPath: string, meta: ProjectMeta): Promise<void> {
+export async function saveProjectMeta(
+  projectPath: string,
+  meta: ProjectMeta,
+): Promise<void> {
   const dir = getProjectDir(projectPath);
   await mkdir(dir, { recursive: true });
   await Bun.write(join(dir, "meta.json"), JSON.stringify(meta, null, 2));

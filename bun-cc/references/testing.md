@@ -48,15 +48,25 @@ bun test
 bun test path/or/name
 bun test --test-name-pattern "config"
 bun test --concurrent --max-concurrency 4
+bun test --isolate
+bun test --parallel
+bun test --parallel=4
+bun test --shard=1/3
+bun test --changed
+bun test --changed=main
 bun test --rerun-each 50
 bun test --retry 2
-bun test --randomize --seed 12345
+bun test --randomize
+bun test --seed 12345
+bun test --bail=1
 bun test --reporter=junit --reporter-outfile=./bun.xml
 bun test --coverage
 ```
 
-Use `--rerun-each` or `--randomize --seed` when chasing order-dependent or flaky
-tests. Use `test.serial` for shared state that cannot be isolated cheaply.
+Use `--rerun-each`, `--randomize`, or `--seed` when chasing order-dependent or
+flaky tests. `--seed` implies `--randomize`. Use `test.serial` for shared state
+that cannot be isolated cheaply, and `--isolate`/`--parallel` for larger suites
+where file-level isolation and worker processes help.
 
 ## Parameterized and Async Tests
 

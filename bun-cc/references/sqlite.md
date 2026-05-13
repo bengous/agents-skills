@@ -13,6 +13,7 @@ const db = new Database("app.sqlite");
 const memoryDb = new Database(":memory:");
 const readonlyDb = new Database("app.sqlite", { readonly: true });
 const strictDb = new Database(":memory:", { strict: true });
+const safeIntDb = new Database(":memory:", { safeIntegers: true });
 ```
 
 Set journal mode deliberately instead of assuming defaults:
@@ -66,6 +67,9 @@ const db = new Database(":memory:", { strict: true });
 db.query("SELECT $message").all({ message: "hello" });
 ```
 
+`strict: true` also throws when a required named parameter is missing. Without
+strict mode, missing named parameters do not throw.
+
 ## Writes and Transactions
 
 ```typescript
@@ -107,6 +111,8 @@ db.close();
   request paths or isolate them in workers/processes.
 - Do not concatenate SQL. Bind parameters.
 - Choose `strict: true` deliberately; it changes named parameter object keys.
+- Choose `safeIntegers: true` deliberately when SQLite integers may exceed
+  JavaScript's safe number range.
 - Close databases owned by the current process, especially in tests.
 - Test transaction behavior with a real database or `:memory:`, not mocked statements.
 

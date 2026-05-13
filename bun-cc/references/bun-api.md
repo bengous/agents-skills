@@ -7,6 +7,7 @@ Runtime APIs that matter most for Bun CLIs and small Bun-native tools.
 - [Bun Shell](#bun-shell)
 - [Spawn](#spawn)
 - [File I/O](#file-io)
+- [Glob](#glob)
 - [Archive](#archive)
 - [Utilities](#utilities)
 
@@ -70,6 +71,15 @@ await $`bash -c ${script}`; // bash interprets script
 Avoid `bash -c` for user-controlled strings. If you need raw shell scripts, build
 the script from constants and pass untrusted data as separate args or environment.
 
+Bun Shell cannot know whether an external program treats an argument as a flag:
+
+```typescript
+const branch = "--upload-pack=echo pwned";
+await $`git ls-remote origin ${branch}`; // one safe argument, but dangerous to git
+```
+
+Validate user-controlled arguments against the target command's own semantics.
+
 ---
 
 ## Spawn
@@ -84,8 +94,8 @@ const proc = Bun.spawn(["git", "status", "--short"], {
 });
 
 const [stdout, stderr, exitCode] = await Promise.all([
-  new Response(proc.stdout).text(),
-  new Response(proc.stderr).text(),
+  proc.stdout.text(),
+  proc.stderr.text(),
   proc.exited,
 ]);
 
@@ -146,6 +156,39 @@ writer.end();
 
 ---
 
+## Glob
+
+Use `Bun.Glob` for fast file pattern matching without adding a dependency.
+
+```typescript
+import { Glob } from "bun";
+
+const glob = new Glob("src/**/*.{ts,tsx}");
+
+for await (const path of glob.scan({ cwd: process.cwd() })) {
+  console.log(path);
+}
+
+const files = Array.from(new Glob("*.json").scanSync({ cwd: "config" }));
+console.log(new Glob("*.test.ts").match("cli.test.ts")); // true
+```
+
+Common scan options:
+
+| Option | Use |
+|---|---|
+| `cwd` | root directory for matching |
+| `dot` | include entries beginning with `.` |
+| `absolute` | return absolute paths |
+| `followSymlinks` | traverse symlinked directories |
+| `throwErrorOnBrokenSymlink` | fail on broken symlinks |
+| `onlyFiles` | return only files; defaults to `true` |
+
+Supported patterns include `?`, `*`, `**`, character classes, nested braces,
+leading `!` negation, and backslash escapes.
+
+---
+
 ## Archive
 
 `Bun.Archive` works with tar and tar.gz data. It can create archives from an object
@@ -172,6 +215,10 @@ const compressed = new Bun.Archive(
   { compress: "gzip", level: 9 },
 );
 await Bun.write("src.tar.gz", compressed);
+
+await Bun.Archive.write("src.tar.gz", {
+  "src/index.ts": await Bun.file("src/index.ts").text(),
+}, { compress: "gzip" });
 ```
 
 Extracting:
@@ -192,8 +239,12 @@ console.log(`Extracted ${count} entries`);
 Notes:
 
 - `extract()` creates the target directory and overwrites existing files.
+- `extract()` returns the number of extracted entries, including files, directories,
+  and symlinks on POSIX systems.
 - Negative glob patterns require a positive pattern such as `**` first.
 - `files()` returns regular files only and loads contents into memory.
+- Bun rejects absolute archive paths and normalizes `..` traversal during extraction,
+  but still validate untrusted archive contents against your own allowlist.
 
 ---
 

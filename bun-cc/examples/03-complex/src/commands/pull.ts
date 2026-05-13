@@ -18,7 +18,10 @@ export async function pull(log: Log): Promise<number> {
     return 1;
   }
 
-  if ((await Bun.file(".env").exists()) && !(await confirm("Overwrite existing .env?"))) {
+  if (
+    (await Bun.file(".env").exists()) &&
+    !(await confirm("Overwrite existing .env?"))
+  ) {
     log.info("Aborted.");
     return 0;
   }
@@ -35,7 +38,9 @@ export async function pull(log: Log): Promise<number> {
     log.success("Decrypted .env written successfully.");
     return 0;
   } catch (e) {
-    log.error(e instanceof Error ? e.message : "Decryption failed. Wrong password?");
+    log.error(
+      e instanceof Error ? e.message : "Decryption failed. Wrong password?",
+    );
     return 1;
   }
 }

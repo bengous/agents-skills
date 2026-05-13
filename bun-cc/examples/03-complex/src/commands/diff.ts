@@ -74,7 +74,10 @@ export async function diff(log: Log): Promise<number> {
   try {
     const storedContent = await loadEncryptedEnv(projectPath, password);
     const localContent = await Bun.file(ENV_FILE).text();
-    const { added, removed, changed } = computeDiff(parseEnvFile(localContent), parseEnvFile(storedContent));
+    const { added, removed, changed } = computeDiff(
+      parseEnvFile(localContent),
+      parseEnvFile(storedContent),
+    );
 
     if (!added.length && !removed.length && !changed.length) {
       log.success("No differences found.");
@@ -82,10 +85,13 @@ export async function diff(log: Log): Promise<number> {
     }
     for (const key of added) console.log(`${c.g}+ ${key}${c.x}`);
     for (const key of removed) console.log(`${c.r}- ${key}${c.x}`);
-    for (const key of changed) console.log(`${c.y}~ ${key}${c.x} (value changed)`);
+    for (const key of changed)
+      console.log(`${c.y}~ ${key}${c.x} (value changed)`);
     return 0;
   } catch (e) {
-    log.error(e instanceof Error ? e.message : "Decryption failed. Wrong password?");
+    log.error(
+      e instanceof Error ? e.message : "Decryption failed. Wrong password?",
+    );
     return 1;
   }
 }

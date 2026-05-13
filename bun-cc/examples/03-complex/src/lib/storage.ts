@@ -2,7 +2,7 @@
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { type ProjectMeta, getConfigDir, getProjectDir } from "./config";
+import { getConfigDir, getProjectDir, type ProjectMeta } from "./config";
 import { decrypt, encrypt } from "./crypto";
 
 // ============================================================================
@@ -16,12 +16,19 @@ const PROJECTS_DIR = join(getConfigDir(), "projects");
 // SIDE-EFFECTING FUNCTIONS
 // ============================================================================
 
-export async function saveEncryptedEnv(projectPath: string, content: string, password: string): Promise<void> {
+export async function saveEncryptedEnv(
+  projectPath: string,
+  content: string,
+  password: string,
+): Promise<void> {
   const encrypted = await encrypt(content, password);
   await Bun.write(join(getProjectDir(projectPath), ENV_FILE), encrypted);
 }
 
-export async function loadEncryptedEnv(projectPath: string, password: string): Promise<string> {
+export async function loadEncryptedEnv(
+  projectPath: string,
+  password: string,
+): Promise<string> {
   const file = Bun.file(join(getProjectDir(projectPath), ENV_FILE));
   if (!(await file.exists())) {
     throw new Error("No encrypted .env found. Run 'env-sync push' first.");
@@ -33,7 +40,9 @@ export async function hasStoredEnv(projectPath: string): Promise<boolean> {
   return Bun.file(join(getProjectDir(projectPath), ENV_FILE)).exists();
 }
 
-export async function listProjects(): Promise<Array<{ hash: string; meta: ProjectMeta }>> {
+export async function listProjects(): Promise<
+  Array<{ hash: string; meta: ProjectMeta }>
+> {
   let entries: string[];
   try {
     entries = await readdir(PROJECTS_DIR);

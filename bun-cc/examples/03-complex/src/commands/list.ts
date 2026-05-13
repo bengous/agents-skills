@@ -17,7 +17,9 @@ export async function list(log: Log): Promise<number> {
 
   console.log("\nSynced projects:\n");
   for (const { meta } of projects) {
-    console.log(`  ${meta.name}\n    Path: ${meta.path}\n    Created: ${meta.createdAt}\n`);
+    console.log(
+      `  ${meta.name}\n    Path: ${meta.path}\n    Created: ${meta.createdAt}\n`,
+    );
   }
   return 0;
 }

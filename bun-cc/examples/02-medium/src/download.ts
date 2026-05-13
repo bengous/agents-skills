@@ -18,7 +18,10 @@ export function formatSize(bytes: number): string {
 // SIDE-EFFECTING FUNCTIONS
 // ============================================================================
 
-export async function downloadAndExtract(asset: Asset, outputDir: string): Promise<number> {
+export async function downloadAndExtract(
+  asset: Asset,
+  outputDir: string,
+): Promise<number> {
   await mkdir(outputDir, { recursive: true });
   process.stdout.write(`Downloading ${asset.name}`);
   const res = await fetch(asset.browser_download_url);

@@ -13,8 +13,23 @@ const result = await Bun.build({
   target: "bun",
 });
 
-if (!result.success) {
-  throw new AggregateError(result.logs, "Build failed");
+console.log(result.outputs.map((output) => output.path));
+```
+
+`Bun.build()` rejects on failure by default. Catch `AggregateError` for normal
+failure handling:
+
+```typescript
+try {
+  await Bun.build({
+    entrypoints: ["./src/index.ts"],
+    outdir: "./dist",
+    target: "bun",
+  });
+} catch (error) {
+  const aggregate = error as AggregateError;
+  console.error(aggregate.errors);
+  process.exit(1);
 }
 ```
 
@@ -56,7 +71,7 @@ for (const output of result.outputs) {
 
 Notes:
 
-- If an entrypoint has `#!/usr/bin/env bun`, Bun defaults to `target: "bun"`.
+- JavaScript API builds default to `target: "browser"` unless you set `target`.
 - Bundles with `target: "bun"` include a `// @bun` pragma so Bun does not
   retranspile them at runtime.
 - `packages: "external"` is useful for server builds that should keep runtime
@@ -73,14 +88,14 @@ const result = await Bun.build({
     target: "bun-linux-x64",
     outfile: "./dist/mycli",
     execArgv: ["--smol"],
+    autoloadDotenv: false,
+    autoloadBunfig: false,
   },
   minify: true,
   bytecode: true,
 });
 
-if (!result.success) {
-  throw new AggregateError(result.logs, "Executable build failed");
-}
+console.log(result.outputs[0]?.path);
 ```
 
 CLI equivalent:
@@ -90,22 +105,40 @@ bun build ./src/cli.ts --compile --outfile mycli
 bun build ./src/cli.ts --compile --target=bun-linux-x64 --outfile mycli-linux
 ```
 
-Supported target families:
+Common documented targets:
 
 | Target | OS | Arch | Libc |
 |---|---|---|---|
 | `bun-linux-x64` | Linux | x64 | glibc |
+| `bun-linux-x64-baseline` | Linux | x64 | glibc |
+| `bun-linux-x64-modern` | Linux | x64 | glibc |
 | `bun-linux-arm64` | Linux | arm64 | glibc |
 | `bun-linux-x64-musl` | Linux | x64 | musl |
+| `bun-linux-x64-musl-baseline` | Linux | x64 | musl |
+| `bun-linux-x64-musl-modern` | Linux | x64 | musl |
 | `bun-linux-arm64-musl` | Linux | arm64 | musl |
 | `bun-darwin-x64` | macOS | x64 | system |
+| `bun-darwin-x64-baseline` | macOS | x64 | system |
 | `bun-darwin-arm64` | macOS | arm64 | system |
 | `bun-windows-x64` | Windows | x64 | system |
+| `bun-windows-x64-baseline` | Windows | x64 | system |
+| `bun-windows-x64-modern` | Windows | x64 | system |
 | `bun-windows-arm64` | Windows | arm64 | system |
 
-For x64 targets, append `-baseline` for older CPUs or `-modern` for newer CPUs.
-Use `-baseline` when users report `Illegal instruction` on older Linux/Windows
-machines.
+Prefer documented `arm64` target strings in build scripts. Bun's types also accept
+some `aarch64` aliases. Use `-baseline` when users report `Illegal instruction`
+on older x64 machines; `-modern` is most relevant for Linux and Windows x64.
+
+`compile` accepts three JavaScript API forms:
+
+```typescript
+compile: true;
+compile: "bun-linux-x64";
+compile: { target: "bun-linux-x64", outfile: "./mycli" };
+```
+
+With `target: "browser"` and HTML entrypoints, `--compile` produces self-contained
+HTML rather than a native executable.
 
 ## Guardrails
 

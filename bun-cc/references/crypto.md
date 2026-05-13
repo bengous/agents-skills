@@ -7,7 +7,7 @@ standardizes on those APIs.
 ## Password Hashing
 
 `Bun.password` generates salts automatically and stores the algorithm in the hash.
-`verify()` auto-detects PHC/MCF formats.
+The default algorithm is `argon2id`; `verify()` auto-detects PHC/MCF formats.
 
 ```typescript
 const hash = await Bun.password.hash("my-password");
@@ -28,6 +28,11 @@ const bcryptHash = await Bun.password.hash("my-password", {
   cost: 12,
 });
 ```
+
+Supported password algorithms are `argon2id`, `argon2d`, `argon2i`, and `bcrypt`.
+For bcrypt, be careful with passwords longer than bcrypt's native input limit;
+Bun pre-hashes long inputs, and implementation details can differ between async
+and sync APIs.
 
 Sync variants exist, but they are CPU-expensive and block the runtime:
 
@@ -59,8 +64,9 @@ hmac.update("hello world");
 console.log(hmac.digest("hex"));
 ```
 
-Do not reuse an HMAC hasher after `digest()`. Use `.copy()` before digesting when
-you need variants.
+For non-HMAC hashers, `digest()` finalizes and resets the hasher so it can be
+reused. For HMAC, do not rely on reuse after `digest()`; use `.copy()` before
+digesting when you need variants from the same intermediate state.
 
 ## Non-Cryptographic Hashing
 

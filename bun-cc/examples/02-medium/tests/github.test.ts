@@ -27,19 +27,30 @@ describe("parseTarget", () => {
 });
 
 describe("matchAsset", () => {
-  const assets: Asset[] = [
-    { name: "app-linux.tar.gz", browser_download_url: "url1", size: 1000 },
-    { name: "app-darwin.tar.gz", browser_download_url: "url2", size: 2000 },
-    { name: "app.zip", browser_download_url: "url3", size: 500 },
-  ];
+  const linuxAsset: Asset = {
+    name: "app-linux.tar.gz",
+    browser_download_url: "url1",
+    size: 1000,
+  };
+  const darwinAsset: Asset = {
+    name: "app-darwin.tar.gz",
+    browser_download_url: "url2",
+    size: 2000,
+  };
+  const zipAsset: Asset = {
+    name: "app.zip",
+    browser_download_url: "url3",
+    size: 500,
+  };
+  const assets: Asset[] = [linuxAsset, darwinAsset, zipAsset];
 
   test("returns first asset when no pattern", () => {
-    expect(matchAsset(assets)).toEqual(assets[0]);
+    expect(matchAsset(assets)).toEqual(linuxAsset);
   });
 
   test("matches glob pattern", () => {
-    expect(matchAsset(assets, "*darwin*")).toEqual(assets[1]);
-    expect(matchAsset(assets, "*.zip")).toEqual(assets[2]);
+    expect(matchAsset(assets, "*darwin*")).toEqual(darwinAsset);
+    expect(matchAsset(assets, "*.zip")).toEqual(zipAsset);
   });
 
   test("returns null when no match", () => {

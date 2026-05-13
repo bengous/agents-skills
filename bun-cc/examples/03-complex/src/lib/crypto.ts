@@ -34,10 +34,17 @@ export function splitEncryptedData(data: Uint8Array) {
 // SIDE-EFFECTING FUNCTIONS
 // ============================================================================
 
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
-    "deriveKey",
-  ]);
+async function deriveKey(
+  password: string,
+  salt: Uint8Array,
+): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
   return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
@@ -52,15 +59,25 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
-export async function encrypt(plaintext: string, password: string): Promise<Uint8Array> {
+export async function encrypt(
+  plaintext: string,
+  password: string,
+): Promise<Uint8Array> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
   const key = await deriveKey(password, salt);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(plaintext),
+  );
   return concatBuffers(salt, iv, new Uint8Array(encrypted));
 }
 
-export async function decrypt(data: Uint8Array, password: string): Promise<string> {
+export async function decrypt(
+  data: Uint8Array,
+  password: string,
+): Promise<string> {
   const { salt, iv, ciphertext } = splitEncryptedData(data);
   const key = await deriveKey(password, salt);
   const decrypted = await crypto.subtle.decrypt(

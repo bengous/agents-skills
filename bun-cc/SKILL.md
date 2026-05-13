@@ -49,7 +49,7 @@ Load only the reference needed for the task.
 
 | File | Answers |
 |---|---|
-| `references/bun-api.md` | Shell `$`, spawn, file I/O, archives, utilities |
+| `references/bun-api.md` | Shell `$`, spawn, file I/O, `Bun.Glob`, archives, utilities |
 | `references/testing.md` | `bun:test`, mocks, CLI integration tests, CI flags |
 | `references/patterns.md` | CLI logging, confirmation, errors, parallel work |
 | `references/http-server.md` | `Bun.serve`, routing, WebSocket upgrades |
@@ -63,11 +63,13 @@ Load only the reference needed for the task.
    scripts, current Bun version, and existing test/build commands.
 2. Use Bun MCP tools when they are actually loaded. If not, use Bash for local Bun
    commands and fetch official docs for API uncertainty.
-3. Keep root code plain TypeScript unless the project already uses a framework. Bun is
+3. For Bun API changes, verify the current release with official Bun docs and source
+   before updating guidance; Bun APIs move quickly.
+4. Keep root code plain TypeScript unless the project already uses a framework. Bun is
    the runtime/toolkit, not an excuse to add abstractions.
-4. Export pure functions from CLI entrypoints for direct tests; keep side effects in
+5. Export pure functions from CLI entrypoints for direct tests; keep side effects in
    `main()` or thin adapters.
-5. Run the smallest project-native validation first (`bun test`, targeted tests,
+6. Run the smallest project-native validation first (`bun test`, targeted tests,
    typecheck/lint/build as configured), then broaden only when the change touches shared
    behavior.
 
@@ -146,11 +148,14 @@ if (import.meta.main) {
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
+    "types": ["bun"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "strict": true,
+    "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
     "skipLibCheck": true,
     "noEmit": true
   }
@@ -164,6 +169,10 @@ if (import.meta.main) {
 - Install Bun globals with `@types/bun`; do not use stale `bun-types` tsconfig entries.
 - Bun Shell interpolation is escaped by default, but protection ends when handing
   data to another shell such as `bash -c`.
+- Bun Shell does not prevent argument injection into tools that interpret a safely
+  passed string as a flag. Validate untrusted arguments before passing them to commands.
+- `Bun.build()` rejects on failure by default. Use `try/catch`, or set `throw: false`
+  only when you intend to inspect `result.success` and `result.logs`.
 - Use `node:fs/promises` for directory operations not covered by `Bun.file` or
   `Bun.write`.
 - Prefer absolute paths or `Bun.which()` when invoking a security-sensitive binary.
@@ -174,11 +183,20 @@ Use official Bun docs when API details matter:
 
 | Need | Source |
 |---|---|
-| Runtime APIs | `https://bun.sh/docs/runtime/...` |
+| Current releases | `https://github.com/oven-sh/bun/releases` |
+| Shell | `https://bun.sh/docs/runtime/shell` |
+| Spawn | `https://bun.sh/docs/runtime/child-process` |
+| File I/O | `https://bun.sh/docs/runtime/file-io` |
+| Glob | `https://bun.sh/docs/runtime/glob` |
+| Archive | `https://bun.sh/docs/runtime/archive` |
 | Test runner | `https://bun.sh/docs/test` |
-| Bundler/executables | `https://bun.sh/docs/bundler` |
+| HTTP server | `https://bun.sh/docs/runtime/http/server` |
+| Routing | `https://bun.sh/docs/runtime/http/routing` |
+| WebSockets | `https://bun.sh/docs/runtime/http/websockets` |
+| Bundler | `https://bun.sh/docs/bundler` |
+| Executables | `https://bun.sh/docs/bundler/executables` |
 | TypeScript config | `https://bun.sh/docs/typescript` |
 | Package manager/install | `https://bun.sh/docs/pm` |
 
 !`echo "## Bun MCP"`
-!`~/.claude/skills/bun-cc/scripts/probe-bun-mcp.sh`
+!`~/.agents/skills/bun-cc/scripts/probe-bun-mcp.sh`

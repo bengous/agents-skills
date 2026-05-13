@@ -67,7 +67,13 @@ async function fetchWithRetry(url: string): Promise<Response> {
   throw new Error("Max retries exceeded");
 }
 
-export async function fetchRelease(owner: string, repo: string, version?: string): Promise<Release> {
+export async function fetchRelease(
+  owner: string,
+  repo: string,
+  version?: string,
+): Promise<Release> {
   const path = version ? `releases/tags/${version}` : "releases/latest";
-  return (await fetchWithRetry(`${API_BASE}/repos/${owner}/${repo}/${path}`)).json() as Promise<Release>;
+  return (
+    await fetchWithRetry(`${API_BASE}/repos/${owner}/${repo}/${path}`)
+  ).json() as Promise<Release>;
 }

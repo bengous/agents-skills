@@ -22,7 +22,10 @@ const CONFIG_PATH = join(homedir(), ".gh-release.json");
 // PURE FUNCTIONS (exported for testing)
 // ============================================================================
 
-export function mergeWithDefaults(config: Config, overrides: { output?: string; asset?: string }) {
+export function mergeWithDefaults(
+  config: Config,
+  overrides: { output?: string; asset?: string },
+) {
   return {
     output: overrides.output ?? config.defaultOutput ?? ".",
     assetPattern: overrides.asset ?? config.defaultAssetPattern,

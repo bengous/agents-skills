@@ -1,8 +1,8 @@
 # HTTP Server and WebSockets
 
-Use `Bun.serve()` for Bun-native HTTP servers. For new Bun versions, prefer the
-`routes` object for simple routing and `fetch` as fallback or when request handling
-is highly dynamic.
+Use `Bun.serve()` for Bun-native HTTP servers. On Bun v1.2.3+, prefer the `routes`
+object for simple routing and `fetch` as fallback or when request handling is
+highly dynamic.
 
 ## Routes
 
@@ -67,15 +67,15 @@ Useful properties and methods:
 - `server.requestIP(req)`
 - `server.timeout(req, seconds)` for per-request idle timeout
 
-Default idle timeout is short enough to affect long-lived streams. For SSE or
-slow streaming responses, call `server.timeout(req, 0)`.
+The default idle timeout is 10 seconds, the maximum is 255 seconds, and `0`
+disables it. For SSE or slow streaming responses, call `server.timeout(req, 0)`.
 
 ## WebSocket Upgrade
 
 ```typescript
 type WsData = { username: string; joinedAt: number };
 
-const server = Bun.serve<WsData>({
+const server: Bun.Server<WsData> = Bun.serve({
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
@@ -91,6 +91,7 @@ const server = Bun.serve<WsData>({
   },
 
   websocket: {
+    data: {} as WsData,
     open(ws) {
       ws.subscribe("chat");
       server.publish("chat", `${ws.data.username} joined`);
@@ -116,7 +117,8 @@ const server = Bun.serve<WsData>({
 Gotchas:
 
 - On successful `server.upgrade()`, return `undefined`, not a `Response`.
-- Type WebSocket `data` with `Bun.serve<WsData>()` or `satisfies`.
+- Type WebSocket `data` with `const server: Bun.Server<WsData> = Bun.serve(...)`
+  and `websocket.data: {} as WsData`.
 - `server.publish()` returns bytes sent, `0` if dropped, and `-1` on backpressure.
 
 ## Static and File Responses

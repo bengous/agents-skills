@@ -97,7 +97,9 @@ async function main(): Promise<void> {
   if (opts.asset) overrides.asset = opts.asset;
   const { output, assetPattern } = mergeWithDefaults(config, overrides);
 
-  log.info(`Fetching ${parsed.owner}/${parsed.repo}${parsed.version ? `@${parsed.version}` : " (latest)"}`);
+  log.info(
+    `Fetching ${parsed.owner}/${parsed.repo}${parsed.version ? `@${parsed.version}` : " (latest)"}`,
+  );
 
   const release = await fetchRelease(parsed.owner, parsed.repo, parsed.version);
   log.info(`Release: ${release.tag_name}`);

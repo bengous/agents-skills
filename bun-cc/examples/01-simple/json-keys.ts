@@ -15,7 +15,13 @@ const colors = {
 // PURE FUNCTIONS (exported for testing)
 // ============================================================================
 
-export function extractKeys(obj: unknown, maxDepth = -1, filter?: RegExp, prefix = "", depth = 0): string[] {
+export function extractKeys(
+  obj: unknown,
+  maxDepth = -1,
+  filter?: RegExp,
+  prefix = "",
+  depth = 0,
+): string[] {
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) return [];
   if (maxDepth !== -1 && depth >= maxDepth) return [];
 
@@ -47,7 +53,8 @@ export function parseArgs(args: string[]): {
     const arg = args[i];
     if (!arg) continue;
     if (arg === "--count") result.count = true;
-    else if (arg === "--depth") result.depth = Number.parseInt(args[++i] || "0", 10);
+    else if (arg === "--depth")
+      result.depth = Number.parseInt(args[++i] || "0", 10);
     else if (arg === "--filter") {
       const val = args[++i];
       if (val) result.filter = val;
@@ -69,7 +76,9 @@ async function main(): Promise<void> {
   const { file, count, depth, filter } = parseArgs(Bun.argv.slice(2));
 
   if (!file) {
-    console.error("Usage: json-keys <file.json> [--count] [--depth N] [--filter regex]");
+    console.error(
+      "Usage: json-keys <file.json> [--count] [--depth N] [--filter regex]",
+    );
     process.exit(1);
   }
 
