@@ -16,10 +16,10 @@ Plan a future execution workflow. Do not execute that workflow.
 The deterministic gate is `itw`:
 
 ```bash
-itw init <root> <intention...>
-itw status <root>
-itw get <root>
-itw advance <root>
+itw init <id>
+itw status <id>
+itw get <id>
+itw advance <id>
 ```
 
 Use the gate for workflow state and phase boundaries. Use `itw`; if missing,
@@ -30,26 +30,28 @@ Stop on launcher failure.
 ## Operating Rules
 
 - Human-invoked only. Do not activate implicitly.
-- `$intent-to-workflow` requires an explicit initial intention. Empty invocation
-  creates no root unless the current session already has one; same-session
-  reinvocation resumes with `itw get`.
-- `intake` is raw extensionless text captured from the initial intention. Do not
-  rewrite it; put interpretation and corrections in `clarification.md`.
+- `$intent-to-workflow` requires an explicit initial intention for first use in
+  a repo. The hook scaffolds `.itw/<id>/`; then edit `.itw/<id>/intake` with the
+  raw initial intention before running `itw get <id>`.
+- Empty invocation resumes an existing repo workflow with `itw get <id>`.
+- `intake` is raw extensionless text captured from the initial intention. Edit
+  it once from the user's actual prompt/context; after that, do not rewrite it.
+  Put interpretation and corrections in `clarification.md`.
 - `terminology.md` is the local language model for actors, roles, canonical
   terms, relationships, and ambiguities. Keep it current when clarification
   changes understanding; do not update it mechanically after every answer.
-- `itw status <root>` is compact human status.
-- `itw get <root>` is the agent-facing phase prompt and recovery surface.
-- Run `itw get <root>` at phase boundaries: initial phase entry, same-session
+- `itw status <id>` is compact human status.
+- `itw get <id>` is the agent-facing phase prompt and recovery surface.
+- Run `itw get <id>` at phase boundaries: initial phase entry, same-session
   reinvocation, context compaction/resume, after any interruption, before
-  asking the human to run `itw advance <root>`, or whenever the root, stage,
+  asking the human to run `itw advance <id>`, or whenever the root, stage,
   expected artifacts, language state, or current instructions are uncertain.
 - During one continuous interview in the same active phase and root, do not
   rerun `itw get` before every micro-question. If you just read or wrote the
   relevant phase artifacts and state is clear, keep the conversation moving.
 - English is the default state language. If `intake` is clearly not English,
-  run `itw set-language <root> <language-code>` before continuing, then follow
-  the refreshed `itw get <root>` prompt.
+  run `itw set-language <id> <language-code>` before continuing, then follow
+  the refreshed `itw get <id>` prompt.
 - `en` is the native artifact language. `fr` is structurally localized for
   `clarification.md`, `terminology.md`, and `prd.md`: human-facing prose and
   Markdown headings/body in those artifacts use French.
@@ -64,10 +66,11 @@ Stop on launcher failure.
   workflow language.
 - Work only inside the current phase.
 - End each phase by saying the phase is complete and asking the human to run
-  `itw advance <root>`.
+  `itw advance <id>`.
 - Never run `itw advance` yourself unless the user explicitly overrides the
   human-gate contract.
-- Keep planning artifacts under `itw/<id>/` unless the user chose another root.
+- Keep planning artifacts under `.itw/<id>/`.
+- Never edit `.itw/<id>/.itw-state.json`; it is internal CLI state.
 - `tracker.md` tracks the future execution workflow, not this planning process.
 - Do not write artifacts outside the workflow root from this skill.
 

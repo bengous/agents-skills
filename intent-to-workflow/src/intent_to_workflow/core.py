@@ -11,8 +11,14 @@ from pathlib import Path
 from typing import Literal, TypeGuard, cast
 
 CLI_NAME = "itw"
+WORKFLOW_DIR = ".itw"
 STATE_FILE = ".itw-state.json"
 STATE_VERSION = 1
+GITIGNORE_ENTRY = (
+    ".itw/\n"
+    "# If you do want to track .itw, remove the line above. If you do not want to track "
+    "it but not add this line to gitignore, move it to .git/info/exclude."
+)
 
 type Stage = Literal[
     "clarification",
@@ -284,6 +290,54 @@ def state_path(root: Path) -> Path:
     return root / STATE_FILE
 
 
+def validate_workflow_id(value: str | Path) -> str:
+    workflow_id = str(value).strip()
+    path = Path(workflow_id)
+    if (
+        workflow_id == ""
+        or path.is_absolute()
+        or len(path.parts) != 1
+        or workflow_id in {".", ".."}
+    ):
+        raise ItwError(
+            "invalid workflow id; use a plain id like `etch-v2`, not a path. "
+            f"Received: {value}"
+        )
+    return workflow_id
+
+
+def git_root_for(start: Path) -> Path | None:
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def workspace_root() -> Path:
+    return git_root_for(Path.cwd()) or Path.cwd()
+
+
+def workflow_root_for_id(workflow_id: str | Path, base: Path | None = None) -> Path:
+    root_base = workspace_root() if base is None else (git_root_for(base) or base)
+    return root_base / WORKFLOW_DIR / validate_workflow_id(workflow_id)
+
+
+def ensure_gitignore_excludes_workflow_dir(base: Path) -> None:
+    if not (base / ".git").exists():
+        return
+
+    gitignore = base / ".gitignore"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if stripped == ".itw/" or stripped.startswith(".itw/ "):
+            return
+
+    separator = "" if existing == "" or existing.endswith("\n") else "\n"
+    gitignore.write_text(existing + separator + GITIGNORE_ENTRY + "\n", encoding="utf-8")
+
+
 def read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -359,11 +413,16 @@ def write_state(root: Path, state: WorkflowState) -> None:
     state_path(root).write_text(json.dumps(state.to_json(), indent=2) + "\n", encoding="utf-8")
 
 
+def workflow_id_for_root(root: Path) -> str:
+    return root.name
+
+
 def compact_status(root: Path, state: WorkflowState) -> str:
+    workflow_id = workflow_id_for_root(root)
     next_command = "-"
     if state.stage in NEXT_STAGE:
-        next_command = f"{CLI_NAME} advance {root}"
-    return f"stage={state.stage} root={root} next={next_command}\n"
+        next_command = f"{CLI_NAME} advance {workflow_id}"
+    return f"stage={state.stage} id={workflow_id} root={root} next={next_command}\n"
 
 
 def env_value(*names: str) -> str | None:
@@ -383,18 +442,17 @@ def session_short_from(session_id: str | None) -> str | None:
     return compact[:8]
 
 
-def init_workflow(root: Path, intention_parts: Sequence[str]) -> str:
+def init_workflow(workflow_id: str | Path) -> str:
+    root = workflow_root_for_id(workflow_id)
     if state_path(root).exists():
-        raise ItwError(f"already initialized: {root}")
+        raise ItwError(f"already initialized: {validate_workflow_id(workflow_id)}")
 
-    intention = " ".join(intention_parts).strip()
     session_id = env_value("ITW_SESSION_ID", "CODEX_SESSION_ID")
     cwd = env_value("ITW_CWD") or str(Path.cwd())
     model = env_value("ITW_MODEL", "CODEX_MODEL")
     transcript_path = env_value("ITW_TRANSCRIPT_PATH", "CODEX_TRANSCRIPT_PATH")
     return init_workflow_with_metadata(
-        root=root,
-        intention=intention,
+        workflow_id=validate_workflow_id(workflow_id),
         session_id=session_id,
         cwd=cwd,
         model=model,
@@ -403,19 +461,16 @@ def init_workflow(root: Path, intention_parts: Sequence[str]) -> str:
 
 
 def init_workflow_with_metadata(
-    root: Path,
-    intention: str,
+    workflow_id: str,
     session_id: str | None,
     cwd: str,
     model: str | None,
     transcript_path: str | None,
+    base: Path | None = None,
 ) -> str:
+    root = workflow_root_for_id(workflow_id, base=base)
     if state_path(root).exists():
-        raise ItwError(f"already initialized: {root}")
-
-    captured_intention = intention.strip()
-    if captured_intention == "":
-        raise ItwError("initial intention required")
+        raise ItwError(f"already initialized: {workflow_id}")
 
     if root.exists() and not root.is_dir():
         raise ItwError(f"root is not a directory: {root}")
@@ -423,6 +478,7 @@ def init_workflow_with_metadata(
         raise ItwError(f"root is not empty: {root}")
 
     root.mkdir(parents=True, exist_ok=True)
+    ensure_gitignore_excludes_workflow_dir(root.parent.parent)
     state = WorkflowState(
         version=STATE_VERSION,
         stage="clarification",
@@ -436,29 +492,28 @@ def init_workflow_with_metadata(
         language=DEFAULT_LANGUAGE,
     )
 
-    (root / "intake").write_text(captured_intention + "\n", encoding="utf-8")
+    (root / "intake").write_text("", encoding="utf-8")
     write_if_missing(root / "clarification.md", clarification_template(DEFAULT_LANGUAGE))
     write_if_missing(root / TERMINOLOGY_FILE, terminology_template(DEFAULT_LANGUAGE))
     write_state(root, state)
-    return compact_status(root, state) + phase_prompt_for_stage(
-        "clarification",
-        root,
-        validation_errors_for_stage(root, "clarification"),
-    )
+    return compact_status(root, state)
 
 
-def status_workflow(root: Path) -> str:
+def status_workflow(workflow_id: str | Path, base: Path | None = None) -> str:
+    root = workflow_root_for_id(workflow_id, base=base)
     return compact_status(root, load_state(root))
 
 
 def set_language_workflow(
-    root: Path,
+    workflow_id: str | Path,
     language: str | None,
     force: bool,
+    base: Path | None = None,
 ) -> str:
     if language is None:
         raise ItwError("language required")
 
+    root = workflow_root_for_id(workflow_id, base=base)
     state = load_state(root)
     if state.language != DEFAULT_LANGUAGE and not force:
         raise ItwError(f"language already set: {state.language}; use --force to override")
@@ -470,7 +525,10 @@ def set_language_workflow(
 
     write_state(root, state.with_language(next_language))
     refresh_placeholder_artifacts_for_language(root, next_language)
-    return f"language={next_language} name={LANGUAGE_NAMES[next_language]} root={root}\n"
+    return (
+        f"language={next_language} name={LANGUAGE_NAMES[next_language]} "
+        f"id={workflow_id_for_root(root)} root={root}\n"
+    )
 
 
 def refresh_placeholder_artifacts_for_language(root: Path, language: Language) -> None:
@@ -518,7 +576,8 @@ def known_prd_templates() -> frozenset[str]:
     )
 
 
-def get_workflow(root: Path) -> str:
+def get_workflow(workflow_id: str | Path, base: Path | None = None) -> str:
+    root = workflow_root_for_id(workflow_id, base=base)
     state = load_state(root)
     return compact_status(root, state) + phase_prompt_for_stage(
         state.stage,
@@ -527,7 +586,8 @@ def get_workflow(root: Path) -> str:
     )
 
 
-def advance_workflow(root: Path) -> str:
+def advance_workflow(workflow_id: str | Path, base: Path | None = None) -> str:
+    root = workflow_root_for_id(workflow_id, base=base)
     state = load_state(root)
     if state.stage == "workflow_ready":
         raise ItwError("already at workflow_ready")
@@ -940,10 +1000,11 @@ def blocker_text(blockers: Sequence[str]) -> str:
 
 def language_instruction(language: Language, root: Path, stage: Stage) -> str:
     name = LANGUAGE_NAMES[language]
+    workflow_id = workflow_id_for_root(root)
     if language == DEFAULT_LANGUAGE:
         return (
             f"Default language is {name}. If the initial intention is not in {name}, "
-            f"first run `itw set-language {root} <language-code>` and then "
+            f"first run `itw set-language {workflow_id} <language-code>` and then "
             f"respond in that language; otherwise respond in {name}."
         )
     if language in LOCALIZED_ARTIFACT_LANGUAGES and stage in ENGLISH_EXECUTION_ARTIFACT_STAGES:
@@ -969,7 +1030,7 @@ def language_instruction(language: Language, root: Path, stage: Stage) -> str:
 def next_command_for(stage: Stage, root: Path) -> str:
     if stage == "workflow_ready":
         return "-"
-    return f"{CLI_NAME} advance {root}"
+    return f"{CLI_NAME} advance {workflow_id_for_root(root)}"
 
 
 def read_first_for(stage: Stage, root: Path) -> str:
@@ -1005,7 +1066,6 @@ def artifact_status(root: Path) -> str:
         "workflow.md",
         "tracker.md",
         "prompts/",
-        STATE_FILE,
     )
     lines: list[str] = []
     for artifact in artifacts:

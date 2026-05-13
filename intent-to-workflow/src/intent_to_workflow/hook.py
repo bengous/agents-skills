@@ -6,16 +6,17 @@ import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from intent_to_workflow.core import (
     ItwError,
     get_workflow,
+    git_root_for,
     init_workflow_with_metadata,
-    session_short_from,
     state_path,
+    validate_workflow_id,
+    workflow_root_for_id,
 )
 
 INVOCATION_RE = re.compile(
@@ -73,24 +74,32 @@ def text_from_payload(payload: object, *keys: str) -> str | None:
     return None
 
 
-def root_for_hook(cwd: Path, session_id: str | None) -> Path:
-    today = datetime.now().date().isoformat()
-    # TODO: non-Codex harnesses should pass ITW_SESSION_ID or ITW_SESSION_SHORT explicitly.
-    session_short = session_short_from(session_id)
-    if session_short is None:
-        raise ItwError(
-            "missing session id; run in a Codex session with hook metadata or use "
-            "manual `itw init <root> <initial intention>`"
-        )
-    return cwd / "itw" / f"{today}-{session_short}"
+def workflow_id_for_hook(cwd: Path) -> str:
+    base = git_root_for(cwd) or cwd
+    return validate_workflow_id(base.name)
+
+
+def root_for_hook(cwd: Path, session_id: str | None = None) -> Path:
+    del session_id
+    return workflow_root_for_id(workflow_id_for_hook(cwd), base=cwd)
 
 
 def empty_invocation_message(root: Path) -> str:
     return (
         "intent-to-workflow requires an explicit initial intention.\n"
-        "No intent-to-workflow root exists for this session.\n"
+        "No intent-to-workflow root exists for this repo.\n"
         "Ask the human to invoke `$intent-to-workflow <initial intention>`.\n"
         f"Expected root after init: `{root}`\n"
+    )
+
+
+def intake_edit_message(workflow_id: str, root: Path) -> str:
+    return (
+        f"stage=clarification id={workflow_id} root={root} next=edit {root / 'intake'}\n"
+        "Intent-to-workflow scaffold created.\n"
+        f"Edit `{root / 'intake'}` with the raw initial intention, then run "
+        f"`itw get {workflow_id}`.\n"
+        f"Do not edit `{root / '.itw-state.json'}`.\n"
     )
 
 
@@ -127,26 +136,28 @@ def main() -> int:
     cwd_text = text_from_payload(payload, "cwd") or os.environ.get("ITW_CWD") or os.getcwd()
     cwd = Path(cwd_text)
     try:
+        workflow_id = workflow_id_for_hook(cwd)
         root = root_for_hook(cwd, session_id)
         if state_path(root).exists():
             if invocation.intention != "":
                 raise ItwError(
-                    "workflow already active for this session; invoke `$intent-to-workflow` "
-                    "to resume or start a new session for a new intention"
+                    f"workflow already active for `{workflow_id}`; invoke "
+                    "`$intent-to-workflow` to resume or start a different repo for a new intention"
                 )
-            output = get_workflow(root)
+            output = get_workflow(workflow_id, base=cwd)
         elif invocation.intention == "":
             output = empty_invocation_message(root)
         else:
-            output = init_workflow_with_metadata(
-                root=root,
-                intention=invocation.intention,
+            init_workflow_with_metadata(
+                workflow_id=workflow_id,
                 session_id=session_id,
                 cwd=str(cwd),
                 model=text_from_payload(payload, "model") or os.environ.get("ITW_MODEL"),
                 transcript_path=text_from_payload(payload, "transcript_path", "transcriptPath")
                 or os.environ.get("ITW_TRANSCRIPT_PATH"),
+                base=cwd,
             )
+            output = intake_edit_message(workflow_id, root)
     except ItwError as error:
         sys.stderr.write(f"error={error}\n")
         return 1

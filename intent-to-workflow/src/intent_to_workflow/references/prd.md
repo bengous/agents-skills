@@ -21,7 +21,7 @@ Check with the user that these modules match their expectations. Check with the 
 
 5. Write the PRD to `prd.md` in the current ITW root. If `prd.md` already
    exists, preserve its current section headings and fill that scaffold. If no
-   scaffold exists, ask the human to rerun `itw get <root>` or recreate the
+   scaffold exists, ask the human to rerun `itw get <id>` or recreate the
    scaffold from the current phase language before writing. Use the template
    below only for native English or instruction-only language workflows.
 

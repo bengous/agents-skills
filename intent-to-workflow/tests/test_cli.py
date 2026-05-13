@@ -23,6 +23,11 @@ class CliRun:
     stderr: str
 
 
+@pytest.fixture(autouse=True)
+def test_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+
 def normalize_exit_code(code: object) -> int:
     if code is None:
         return 0
@@ -56,6 +61,13 @@ def run_hook(payload: object) -> CliRun:
         sys.stdin = original_stdin
 
     return CliRun(exit_code=exit_code, stdout=stdout.getvalue(), stderr=stderr.getvalue())
+
+
+def init_demo(root: Path, intake: str = "plan something") -> CliRun:
+    result = run_cli(["init", "demo"])
+    if result.exit_code == 0:
+        (root / "intake").write_text(intake + "\n", encoding="utf-8")
+    return result
 
 
 def write_prd(path: Path) -> None:
@@ -218,31 +230,10 @@ def test_help_lists_supported_commands() -> None:
     assert "advance" in result.stdout
 
 
-def test_init_requires_explicit_intention_and_does_not_create_root(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
+def test_init_scaffolds_empty_intake_and_starts_at_clarification(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
 
-    result = run_cli(["init", str(root)])
-
-    assert result.exit_code == 1
-    assert "initial intention required" in result.stderr
-    assert not root.exists()
-
-
-def test_init_refuses_non_empty_root_before_writing_intake(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    root.mkdir(parents=True)
-    (root / "intake").write_text("preexisting text\n", encoding="utf-8")
-
-    result = run_cli(["init", str(root), "new intention"])
-
-    assert result.exit_code == 1
-    assert "root is not empty" in result.stderr
-    assert (root / "intake").read_text(encoding="utf-8") == "preexisting text\n"
-
-
-def test_init_captures_raw_intake_and_starts_at_clarification(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    result = run_cli(["init", str(root), "do", "X", "because", "Y"])
+    result = run_cli(["init", "demo"])
 
     assert result.exit_code == 0
     assert "stage=clarification" in result.stdout
@@ -252,27 +243,73 @@ def test_init_captures_raw_intake_and_starts_at_clarification(tmp_path: Path) ->
         "intake",
         "terminology.md",
     ]
-    assert (root / "intake").read_text(encoding="utf-8") == "do X because Y\n"
-    assert not any(child.name == "intake" + ".md" for child in root.iterdir())
+    assert (root / "intake").read_text(encoding="utf-8") == ""
     assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
 
     state = json.loads((root / ".itw-state.json").read_text(encoding="utf-8"))
     assert state["stage"] == "clarification"
     assert state["root"] == str(root)
     assert state["language"] == "en"
-    assert "# Phase Prompt" in result.stdout
+    assert "# Phase Prompt" not in result.stdout
+
+
+def test_init_rejects_argv_intention(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
+
+    result = run_cli(["init", "demo", "do", "X"])
+
+    assert result.exit_code == 2
+    assert "unrecognized arguments" in result.stderr
+    assert not root.exists()
+
+
+def test_init_rejects_path_like_id(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
+
+    result = run_cli(["init", "itw/demo"])
+
+    assert result.exit_code == 1
+    assert "invalid workflow id" in result.stderr
+    assert not root.exists()
+
+
+def test_init_refuses_non_empty_root_before_writing_intake(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
+    root.mkdir(parents=True)
+    (root / "intake").write_text("preexisting text\n", encoding="utf-8")
+
+    result = run_cli(["init", "demo"])
+
+    assert result.exit_code == 1
+    assert "root is not empty" in result.stderr
+    assert (root / "intake").read_text(encoding="utf-8") == "preexisting text\n"
+
+
+def test_gitignore_excludes_workflow_dir_once(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    root = tmp_path / ".itw" / "demo"
+
+    first = run_cli(["init", "demo"])
+    second = run_cli(["init", "other"])
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert root.exists()
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert gitignore.count(".itw/") == 1
+    assert "If you do want to track" in gitignore
 
 
 def test_set_language_updates_get_prompt(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["set-language", str(root), "fr"])
+    result = run_cli(["set-language", "demo", "fr"])
 
     assert result.exit_code == 0
     assert "language=fr name=French" in result.stdout
-    assert "Respond in French." in run_cli(["get", str(root)]).stdout
-    assert "Use French for human-facing prose" in run_cli(["get", str(root)]).stdout
+    assert "Respond in French." in run_cli(["get", "demo"]).stdout
+    assert "Use French for human-facing prose" in run_cli(["get", "demo"]).stdout
     assert "## Acteurs et roles" in (root / "terminology.md").read_text(encoding="utf-8")
     assert "Recommandation: TODO" in (root / "clarification.md").read_text(encoding="utf-8")
 
@@ -281,11 +318,11 @@ def test_set_language_updates_get_prompt(tmp_path: Path) -> None:
 
 
 def test_non_localized_language_is_instruction_only(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["set-language", str(root), "zh"])
-    prompt = run_cli(["get", str(root)]).stdout
+    result = run_cli(["set-language", "demo", "zh"])
+    prompt = run_cli(["get", "demo"]).stdout
 
     assert result.exit_code == 0
     assert "language=zh name=Chinese" in result.stdout
@@ -295,11 +332,11 @@ def test_non_localized_language_is_instruction_only(tmp_path: Path) -> None:
 
 
 def test_set_language_does_not_overwrite_edited_artifacts(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("# Clarification\n\ncustom\n", encoding="utf-8")
 
-    result = run_cli(["set-language", str(root), "fr"])
+    result = run_cli(["set-language", "demo", "fr"])
 
     assert result.exit_code == 0
     assert (root / "clarification.md").read_text(encoding="utf-8") == "# Clarification\n\ncustom\n"
@@ -307,39 +344,39 @@ def test_set_language_does_not_overwrite_edited_artifacts(tmp_path: Path) -> Non
 
 
 def test_set_language_rejects_unsupported_code(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["set-language", str(root), "xx"])
+    result = run_cli(["set-language", "demo", "xx"])
 
     assert result.exit_code == 2
     assert "invalid choice" in result.stderr
 
 
 def test_set_language_refuses_overwrite_without_force(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     assert "## Acteurs et roles" in (root / "terminology.md").read_text(encoding="utf-8")
 
-    blocked = run_cli(["set-language", str(root), "es"])
-    forced = run_cli(["set-language", str(root), "es", "--force"])
+    blocked = run_cli(["set-language", "demo", "es"])
+    forced = run_cli(["set-language", "demo", "es", "--force"])
 
     assert blocked.exit_code == 1
     assert "language already set: fr" in blocked.stderr
     assert forced.exit_code == 0
-    assert "Respond in Spanish." in run_cli(["get", str(root)]).stdout
-    assert "Spanish is instruction-only for artifacts" in run_cli(["get", str(root)]).stdout
+    assert "Respond in Spanish." in run_cli(["get", "demo"]).stdout
+    assert "Spanish is instruction-only for artifacts" in run_cli(["get", "demo"]).stdout
     assert "## Actors and Roles" in (root / "terminology.md").read_text(encoding="utf-8")
     assert "## Acteurs et roles" not in (root / "terminology.md").read_text(encoding="utf-8")
 
 
 def test_force_language_to_default_refreshes_localized_placeholders(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
 
-    result = run_cli(["set-language", str(root), "en", "--force"])
+    result = run_cli(["set-language", "demo", "en", "--force"])
 
     assert result.exit_code == 0
     assert "language=en name=English" in result.stdout
@@ -348,14 +385,14 @@ def test_force_language_to_default_refreshes_localized_placeholders(tmp_path: Pa
 
 
 def test_force_language_refreshes_existing_prd_placeholder(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     assert "## Probleme" in (root / "prd.md").read_text(encoding="utf-8")
 
-    result = run_cli(["set-language", str(root), "en", "--force"])
+    result = run_cli(["set-language", "demo", "en", "--force"])
 
     assert result.exit_code == 0
     assert "## Problem Statement" in (root / "prd.md").read_text(encoding="utf-8")
@@ -363,34 +400,34 @@ def test_force_language_refreshes_existing_prd_placeholder(tmp_path: Path) -> No
 
 
 def test_set_language_from_intake_flag_is_not_supported(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["set-language", str(root), "--from-intake"])
+    result = run_cli(["set-language", "demo", "--from-intake"])
 
     assert result.exit_code == 2
     assert "the following arguments are required: language" in result.stderr
 
 
 def test_invalid_state_language_fails_closed(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     state_path = root / ".itw-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["language"] = "xx"
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
-    result = run_cli(["status", str(root)])
+    result = run_cli(["status", "demo"])
 
     assert result.exit_code == 1
     assert "invalid state field: language" in result.stderr
 
 
 def test_status_is_compact_human_output(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["status", str(root)])
+    result = run_cli(["status", "demo"])
 
     assert result.exit_code == 0
     assert result.stdout.startswith("stage=clarification")
@@ -400,15 +437,15 @@ def test_status_is_compact_human_output(tmp_path: Path) -> None:
 
 
 def test_get_is_read_only_and_agent_facing(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     before = {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
         for path in root.rglob("*")
         if path.is_file()
     }
 
-    result = run_cli(["get", str(root)])
+    result = run_cli(["get", "demo"])
 
     after = {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
@@ -423,22 +460,22 @@ def test_get_is_read_only_and_agent_facing(tmp_path: Path) -> None:
 
 
 def test_advance_blocks_on_untouched_clarification(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "clarification.md placeholder TODO" in result.stderr
-    assert "stage=clarification" in run_cli(["status", str(root)]).stdout
+    assert "stage=clarification" in run_cli(["status", "demo"]).stdout
 
 
 def test_advance_does_not_require_companion_skills(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 0
     assert "stage=prd" in result.stdout
@@ -446,12 +483,12 @@ def test_advance_does_not_require_companion_skills(tmp_path: Path) -> None:
 
 
 def test_french_advance_creates_localized_prd_placeholder(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 0
     assert "## Probleme" in (root / "prd.md").read_text(encoding="utf-8")
@@ -461,13 +498,13 @@ def test_french_advance_creates_localized_prd_placeholder(tmp_path: Path) -> Non
 def test_french_prd_prompt_does_not_leak_english_empty_section_phrase(
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
 
-    prompt = run_cli(["get", str(root)]).stdout
+    prompt = run_cli(["get", "demo"]).stdout
 
     assert "Stage: `prd`" in prompt
     assert "None identified" not in prompt
@@ -475,76 +512,76 @@ def test_french_prd_prompt_does_not_leak_english_empty_section_phrase(
 
 
 def test_clarification_blocks_if_terminology_is_missing(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
     (root / "terminology.md").unlink()
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "terminology.md" in result.stderr
-    assert "stage=clarification" in run_cli(["status", str(root)]).stdout
+    assert "stage=clarification" in run_cli(["status", "demo"]).stdout
 
 
 def test_prd_blocks_on_incomplete_terminology(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "terminology.md placeholder TODO" in result.stderr
-    assert "stage=prd" in run_cli(["status", str(root)]).stdout
+    assert "stage=prd" in run_cli(["status", "demo"]).stdout
 
 
 def test_prd_review_rechecks_terminology_before_issues(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     (root / "terminology.md").write_text("# Terminology\n\nTODO\n", encoding="utf-8")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "terminology.md placeholder TODO" in result.stderr
-    assert "stage=prd_review" in run_cli(["status", str(root)]).stdout
+    assert "stage=prd_review" in run_cli(["status", "demo"]).stdout
 
 
 def test_french_prd_and_terminology_validate_through_review_gate(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_french_prd(root / "prd.md")
     write_french_terminology(root / "terminology.md")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 0
     assert "stage=prd_review" in result.stdout
 
 
 def test_french_issues_phase_keeps_execution_artifacts_english(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_french_prd(root / "prd.md")
     write_french_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
 
-    prompt = run_cli(["get", str(root)]).stdout
+    prompt = run_cli(["get", "demo"]).stdout
 
     assert "Stage: `issues`" in prompt
     assert "Respond in French" not in prompt
@@ -553,20 +590,20 @@ def test_french_issues_phase_keeps_execution_artifacts_english(tmp_path: Path) -
 
 
 def test_french_workflow_phase_keeps_execution_artifacts_english(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
-    assert run_cli(["set-language", str(root), "fr"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    assert run_cli(["set-language", "demo", "fr"]).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_french_prd(root / "prd.md")
     write_french_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_issues(root / "issues.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
 
-    prompt = run_cli(["get", str(root)]).stdout
+    prompt = run_cli(["get", "demo"]).stdout
 
     assert "Stage: `workflow`" in prompt
     assert "Respond in French" not in prompt
@@ -574,46 +611,46 @@ def test_french_workflow_phase_keeps_execution_artifacts_english(tmp_path: Path)
 
 
 def test_review_gates_create_expected_artifacts(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
 
-    assert "stage=prd_review" in run_cli(["advance", str(root)]).stdout
+    assert "stage=prd_review" in run_cli(["advance", "demo"]).stdout
     assert not (root / "issues.md").exists()
 
-    assert "stage=issues" in run_cli(["advance", str(root)]).stdout
+    assert "stage=issues" in run_cli(["advance", "demo"]).stdout
     assert (root / "issues.md").exists()
 
 
 def test_degraded_prd_review_blocks_issues(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     (root / "prd.md").write_text("# PRD\n\nTODO\n", encoding="utf-8")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "prd.md placeholder TODO" in result.stderr
-    assert "stage=prd_review" in run_cli(["status", str(root)]).stdout
+    assert "stage=prd_review" in run_cli(["status", "demo"]).stdout
 
 
 def test_issue_validation_applies_to_each_issue(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     (root / "issues.md").write_text(
         "\n".join(
             [
@@ -648,46 +685,46 @@ def test_issue_validation_applies_to_each_issue(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "issues.md issue 1 Type:" in result.stderr
-    assert "stage=issues" in run_cli(["status", str(root)]).stdout
+    assert "stage=issues" in run_cli(["status", "demo"]).stdout
 
 
 def test_degraded_issues_review_blocks_workflow(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_issues(root / "issues.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     (root / "issues.md").write_text("# Issues\n\n### 1. TODO\n\nTODO\n", encoding="utf-8")
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "issues.md issue 1 title" in result.stderr
-    assert "stage=issues_review" in run_cli(["status", str(root)]).stdout
+    assert "stage=issues_review" in run_cli(["status", "demo"]).stdout
 
 
 def test_workflow_package_uses_self_contained_worker_prompts(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_issues(root / "issues.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     worker_prompt = (root / "prompts" / "issue-01-worker.md").read_text(encoding="utf-8")
     assert result.exit_code == 0
@@ -699,41 +736,41 @@ def test_workflow_package_uses_self_contained_worker_prompts(tmp_path: Path) -> 
 
 
 def test_missing_prompt_reference_blocks_workflow_review(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_issues(root / "issues.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     (root / "prompts" / "issue-01-worker.md").unlink()
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 1
     assert "prompts/issue-01-worker.md" in result.stderr
-    assert "stage=workflow" in run_cli(["status", str(root)]).stdout
+    assert "stage=workflow" in run_cli(["status", "demo"]).stdout
 
 
 def test_workflow_ready_prints_packaged_phase_prompt(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
     (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_prd(root / "prd.md")
     write_terminology(root / "terminology.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
     write_issues(root / "issues.md")
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
-    assert run_cli(["advance", str(root)]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
 
-    result = run_cli(["advance", str(root)])
+    result = run_cli(["advance", "demo"])
 
     assert result.exit_code == 0
     assert "stage=workflow_ready" in result.stdout
@@ -748,9 +785,9 @@ def test_workflow_ready_prints_packaged_phase_prompt(tmp_path: Path) -> None:
         for path in root.rglob("*")
         if path.is_file()
     }
-    status = run_cli(["status", str(root)])
-    get = run_cli(["get", str(root)])
-    advance = run_cli(["advance", str(root)])
+    status = run_cli(["status", "demo"])
+    get = run_cli(["get", "demo"])
+    advance = run_cli(["advance", "demo"])
     after = {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
         for path in root.rglob("*")
@@ -797,12 +834,15 @@ def test_empty_hook_invocation_creates_no_root_unless_resuming(tmp_path: Path) -
 
     assert init_result.exit_code == 0
     assert root.exists()
+    assert (root / "intake").read_text(encoding="utf-8") == ""
+    assert "Edit `" in init_result.stdout
+    (root / "intake").write_text("build a local handoff planner\n", encoding="utf-8")
     assert resume_result.exit_code == 0
     assert "# Phase Prompt" in resume_result.stdout
     assert "stage=clarification" in resume_result.stdout
 
 
-def test_hook_requires_stable_session_identity(
+def test_hook_does_not_require_stable_session_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for name in ("ITW_SESSION_ID", "CODEX_SESSION_ID", "ITW_SESSION_SHORT", "CODEX_SESSION_SHORT"):
@@ -810,9 +850,9 @@ def test_hook_requires_stable_session_identity(
 
     result = run_hook({"prompt": "$intent-to-workflow build it", "cwd": str(tmp_path)})
 
-    assert result.exit_code == 1
-    assert "missing session id" in result.stderr
-    assert not (tmp_path / "itw").exists()
+    assert result.exit_code == 0
+    assert "Edit `" in result.stdout
+    assert (tmp_path / ".itw" / tmp_path.name).exists()
 
 
 def test_hook_refuses_new_intention_when_session_root_exists(tmp_path: Path) -> None:
@@ -833,11 +873,11 @@ def test_hook_refuses_new_intention_when_session_root_exists(tmp_path: Path) -> 
     )
 
     assert result.exit_code == 1
-    assert "workflow already active for this session" in result.stderr
-    assert (root / "intake").read_text(encoding="utf-8") == "build a local handoff planner\n"
+    assert "workflow already active" in result.stderr
+    assert (root / "intake").read_text(encoding="utf-8") == ""
 
 
-def test_hook_preserves_structured_intake(tmp_path: Path) -> None:
+def test_hook_scaffolds_and_leaves_structured_intake_for_agent_edit(tmp_path: Path) -> None:
     prompt = """$intent-to-workflow
 # Build the thing
 
@@ -852,20 +892,14 @@ const value = 1;
     result = run_hook({"prompt": prompt, "cwd": str(tmp_path), "session_id": "abc-123"})
 
     assert result.exit_code == 0
-    assert (root / "intake").read_text(encoding="utf-8") == (
-        "# Build the thing\n"
-        "\n"
-        "Keep this code sample:\n"
-        "\n"
-        "```ts\n"
-        "const value = 1;\n"
-        "```\n"
-    )
+    assert (root / "intake").read_text(encoding="utf-8") == ""
+    assert "Edit `" in result.stdout
+    assert "itw get" in result.stdout
 
 
 def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
-    root = tmp_path / "itw" / "demo"
-    assert run_cli(["init", str(root), "plan something"]).exit_code == 0
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
 
     rendered = {stage: phase_prompt_for_stage(stage, root, ()) for stage in STAGES}
 

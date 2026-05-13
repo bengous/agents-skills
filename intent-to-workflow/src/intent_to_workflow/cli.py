@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 
 from intent_to_workflow import __version__
 from intent_to_workflow.core import (
@@ -28,21 +27,20 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command", metavar="{init,status,get,advance,set-language}"
     )
 
-    init_parser = subparsers.add_parser("init", help="initialize a workflow root")
-    init_parser.add_argument("root")
-    init_parser.add_argument("intention", nargs=argparse.REMAINDER)
+    init_parser = subparsers.add_parser("init", help="initialize a workflow")
+    init_parser.add_argument("id")
 
     status_parser = subparsers.add_parser("status", help="print compact human status")
-    status_parser.add_argument("root")
+    status_parser.add_argument("id")
 
     get_parser = subparsers.add_parser("get", help="print the current agent-facing phase prompt")
-    get_parser.add_argument("root")
+    get_parser.add_argument("id")
 
     advance_parser = subparsers.add_parser("advance", help="advance exactly one phase")
-    advance_parser.add_argument("root")
+    advance_parser.add_argument("id")
 
     language_parser = subparsers.add_parser("set-language", help="set workflow language")
-    language_parser.add_argument("root")
+    language_parser.add_argument("id")
     language_parser.add_argument("language", choices=tuple(LANGUAGE_NAMES))
     language_parser.add_argument("--force", action="store_true")
 
@@ -60,17 +58,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if command == "init":
-            sys.stdout.write(init_workflow(Path(parsed.root), parsed.intention))
+            sys.stdout.write(init_workflow(parsed.id))
         elif command == "status":
-            sys.stdout.write(status_workflow(Path(parsed.root)))
+            sys.stdout.write(status_workflow(parsed.id))
         elif command == "get":
-            sys.stdout.write(get_workflow(Path(parsed.root)))
+            sys.stdout.write(get_workflow(parsed.id))
         elif command == "advance":
-            sys.stdout.write(advance_workflow(Path(parsed.root)))
+            sys.stdout.write(advance_workflow(parsed.id))
         elif command == "set-language":
             sys.stdout.write(
                 set_language_workflow(
-                    Path(parsed.root),
+                    parsed.id,
                     language=parsed.language,
                     force=parsed.force,
                 )
