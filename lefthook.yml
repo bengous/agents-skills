@@ -2,13 +2,9 @@ min_version: 2.1.4
 
 pre-commit:
   commands:
-    rustfmt:
-      glob: "*.rs"
-      run: cargo fmt --all
-      stage_fixed: true
-    clippy:
-      glob: "*.rs"
-      run: cargo clippy -q -p skills-tools --all-targets -- -D warnings
+    rust-quality:
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,**/*.rs}"
+      run: scripts/check-rust.sh
     skill-frontmatter:
       glob: "**/SKILL.md"
       run: cargo run --quiet -p skills-tools -- validate frontmatter {staged_files}

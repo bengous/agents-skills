@@ -26,9 +26,14 @@ cargo run -p skills-tools -- validate frontmatter
 
 # Validate a single skill
 cargo run -p skills-tools -- validate frontmatter content-architect/SKILL.md
+
+# Validate the Rust workspace
+scripts/check-rust.sh
 ```
 
-The Rust workspace follows strict formatting and linting conventions (see `rustfmt.toml`, `clippy.toml`, and `Cargo.toml` workspace lints).
+If the Rust dependency tools are missing, install them with `cargo install cargo-deny cargo-machete --locked`.
+
+The Rust workspace follows strict formatting, linting, dependency, license, and unused-dependency checks (see `rustfmt.toml`, `clippy.toml`, `Cargo.toml`, `deny.toml`, and `scripts/check-rust.sh`).
 
 ## Naming convention
 

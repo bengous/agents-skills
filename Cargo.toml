@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/skills-tools"]
+members = ["crates/skills-tools", "goalify/script/codex-goal"]
 resolver = "3"
 
 [workspace.package]
@@ -7,10 +7,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.1"
 
+[workspace.metadata.cargo-machete]
+ignored = []
+
 [workspace.lints.rust]
-unsafe_code = "deny"
-unused_imports = "warn"
-dead_code = "warn"
+warnings = "deny"
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -20,9 +22,9 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 todo = "warn"
 dbg_macro = "warn"
 print_stdout = "warn"

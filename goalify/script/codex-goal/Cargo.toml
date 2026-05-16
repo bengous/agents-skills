@@ -1,15 +1,15 @@
 [package]
-name = "skills-tools"
+name = "codex-goal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
-serde_yaml = "0.9"
+rustix = { version = "1.1.2", features = ["fs", "process"] }
 
 [dev-dependencies]
-tempfile = "3.19.1"
+tempfile = "3.23.0"
 
 [lints]
 workspace = true
