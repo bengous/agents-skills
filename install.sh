@@ -72,7 +72,8 @@ ensure_rustup() {
   local tmpdir script_path
   tmpdir="$(mktemp -d)"
   script_path="$tmpdir/rustup-init.sh"
-  trap 'rm -rf "$tmpdir"' RETURN
+  # RETURN traps can fire after local scope is gone when set -u is active.
+  trap 'rm -rf "${tmpdir:-}"' RETURN
 
   run_cmd curl -fsSL "$RUSTUP_INIT_URL" -o "$script_path"
   run_cmd sh "$script_path" -y --profile minimal
@@ -132,7 +133,7 @@ install_lefthook() {
 
   tmpdir="$(mktemp -d)"
   archive_path="$tmpdir/lefthook.tar.gz"
-  trap 'rm -rf "$tmpdir"' RETURN
+  trap 'rm -rf "${tmpdir:-}"' RETURN
 
   run_cmd curl -fsSL "$download_url" -o "$archive_path"
   run_cmd tar -xzf "$archive_path" -C "$tmpdir"
@@ -175,7 +176,7 @@ install_gitleaks() {
 
   tmpdir="$(mktemp -d)"
   archive_path="$tmpdir/gitleaks.tar.gz"
-  trap 'rm -rf "$tmpdir"' RETURN
+  trap 'rm -rf "${tmpdir:-}"' RETURN
 
   run_cmd curl -fsSL "$download_url" -o "$archive_path"
   run_cmd tar -xzf "$archive_path" -C "$tmpdir"
