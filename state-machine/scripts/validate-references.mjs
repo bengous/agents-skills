@@ -769,18 +769,44 @@ function validateToml() {
   }
 }
 
-function validateMarkdown() {
-  run("markdownlint-cli2", localBin("markdownlint-cli2"), [
-    "--config",
-    path.join(validationDir, "toolchains", "npm", "markdownlint-cli2.jsonc"),
-    "SKILL.md",
-    "references/**/*.md",
-  ]);
+function validatePortableFrontmatter(skillFile) {
+  const source = readFileSync(skillFile, "utf8");
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source);
+  if (!match) {
+    throw new Error(`${rel(skillFile)} is missing YAML frontmatter delimiters`);
+  }
+
+  const frontmatter = match[1];
+  const errors = [];
+  if (!/^name:\s*\S/m.test(frontmatter)) {
+    errors.push("missing non-empty name field");
+  }
+  if (!/^description:\s*(?:\S|[>|])/m.test(frontmatter)) {
+    errors.push("missing non-empty description field");
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `portable frontmatter validation failed for ${rel(skillFile)}:\n${errors.map((e) => `- ${e}`).join("\n")}`,
+    );
+  }
+
+  console.log(`validated portable frontmatter metadata for ${rel(skillFile)}`);
+}
+
+function validateSkillFrontmatter() {
+  const repoManifest = path.join(repoRoot, "Cargo.toml");
+  const skillsToolsManifest = path.join(repoRoot, "crates", "skills-tools", "Cargo.toml");
+  if (!existsSync(repoManifest) || !existsSync(skillsToolsManifest)) {
+    console.log("\n==> frontmatter validator");
+    console.log(`skills-tools workspace not found under ${repoRoot}; using portable frontmatter checks`);
+    validatePortableFrontmatter(path.join(rootDir, "SKILL.md"));
+    return;
+  }
 
   run("frontmatter validator", "cargo", [
     "run",
     "--manifest-path",
-    path.join(repoRoot, "Cargo.toml"),
+    repoManifest,
     "-p",
     "skills-tools",
     "--",
@@ -793,6 +819,17 @@ function validateMarkdown() {
       CARGO_TARGET_DIR: path.join(workRoot, "repo-target"),
     },
   });
+}
+
+function validateMarkdown() {
+  run("markdownlint-cli2", localBin("markdownlint-cli2"), [
+    "--config",
+    path.join(validationDir, "toolchains", "npm", "markdownlint-cli2.jsonc"),
+    "SKILL.md",
+    "references/**/*.md",
+  ]);
+
+  validateSkillFrontmatter();
 
   const linkConfig = path.join(validationDir, "toolchains", "npm", "markdown-link-check.json");
   for (const file of listMarkdownFiles()) {
