@@ -13,17 +13,26 @@ The helper also makes `.codex/goals` root-owned and `.codex` immutable after `.c
 Installation writes:
 
 ```text
-/usr/local/bin/codex-goal
-/etc/sudoers.d/codex-goal
+/usr/local/bin/codex-goal                  # agent-facing wrapper
+/usr/local/libexec/codex-goal-helper       # privileged Rust helper
+/etc/sudoers.d/codex-goal                  # narrow sudoers rule
 ```
 
-The sudoers rule is narrow:
+Agents and skills call only:
+
+```bash
+/usr/local/bin/codex-goal --root "$PWD" --slug "$SLUG"
+```
+
+The wrapper pins `PATH` to system directories and runs `/usr/bin/sudo -n -- /usr/local/libexec/codex-goal-helper "$@"`.
+Keeping sudo inside the wrapper makes the agent contract simple while
+preserving an explicit sudoers policy boundary. The sudoers rule is narrow:
 
 ```text
-<user> ALL=(root) NOPASSWD: /usr/local/bin/codex-goal
+<user> ALL=(root) NOPASSWD: /usr/local/libexec/codex-goal-helper
 ```
 
-It does not use `SETENV`, shell wrappers, or custom `env_keep`.
+It does not use `SETENV` or custom `env_keep`.
 
 ## Install
 
@@ -37,27 +46,32 @@ sudo script/install-codex-goal.sh
 The installer:
 
 - verifies `script/dist/arch-x86_64/codex-goal.sha256`
-- stages the binary into a root-owned temporary file before installation
+- stages the helper binary into a root-owned temporary file before installation
+- stages `script/codex-goal-wrapper.sh` into a root-owned temporary file before installation
 - ships `script/dist/arch-x86_64/build.json` with the binary hash and source-file hashes
-- refuses to overwrite a different existing `/usr/local/bin/codex-goal`
-- installs the binary as `root:root` with mode `0755`
+- refuses to overwrite an unrelated existing `/usr/local/bin/codex-goal`
+- migrates the old v1 layout where `/usr/local/bin/codex-goal` was the privileged binary
+- installs `/usr/local/bin/codex-goal` as a root-owned wrapper with mode `0755`
+- installs `/usr/local/libexec/codex-goal-helper` as the root-owned helper with mode `0755`
 - validates sudoers with `visudo -cf`
 - installs `/etc/sudoers.d/codex-goal` with mode `0440`
-- verifies `sudo -n /usr/local/bin/codex-goal --version`
+- verifies `/usr/local/bin/codex-goal --version` as the target user
 
 ## Verify
 
 ```bash
-command -v codex-goal
-sudo -n /usr/local/bin/codex-goal --version
+test -x /usr/local/bin/codex-goal
+test ! -L /usr/local/bin/codex-goal
+[[ "$(/usr/bin/stat -c '%u:%g:%a' /usr/local/bin/codex-goal)" == "0:0:755" ]]
+/usr/local/bin/codex-goal --version
 ```
 
 Manual privileged write check:
 
 ```bash
 tmp_root="$(mktemp -d)"
-sudo chown "$USER:$(id -gn)" "$tmp_root"
-sudo -n /usr/local/bin/codex-goal --root "$tmp_root" --slug smoke-test <<'EOF'
+cd "$tmp_root"
+/usr/local/bin/codex-goal --root "$tmp_root" --slug smoke-test <<'EOF'
 Objective:
 Smoke-test codex-goal immutable writes.
 EOF
@@ -76,7 +90,7 @@ Both `lsattr` outputs must include `i`.
 This does not remove any `.codex/goals/*.md` files.
 
 ```bash
-sudo rm -f /etc/sudoers.d/codex-goal /usr/local/bin/codex-goal
+sudo rm -f /etc/sudoers.d/codex-goal /usr/local/bin/codex-goal /usr/local/libexec/codex-goal-helper
 ```
 
 To delete a protected goal file manually:

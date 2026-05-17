@@ -2,7 +2,7 @@
 name: goalify
 description: Use this skill when the user wants to convert rough coding, product, architecture, audit, review, migration, cleanup, debugging, or orchestration intent into a compact Codex `/goal` payload. Trigger on "goalify", "Codex goal", "/goal", "make this a goal", "RALF loop", "turn this into a Codex prompt", "$goalify interactive", or requests to be questioned before creating a goal. Do not use for normal implementation or review unless the user explicitly asks to produce a Codex goal/prompt.
 license: MIT
-compatibility: Designed for Codex CLI 0.128+ with GPT-5.5 and the Agent Skills format. Requires the local `codex-goal` helper for protected long goal files.
+compatibility: Designed for Codex CLI 0.128+ with GPT-5.5 and the Agent Skills format. Requires the local Linux `codex-goal` helper for protected long goal files.
 metadata:
   version: "0.2.0"
   author: "bengous"
@@ -21,8 +21,10 @@ Do not create, set, update, pause, resume, clear, or complete an actual Codex go
 Before asking clarification questions or generating any goal payload, verify the mandatory helper:
 
 ```bash
-command -v codex-goal >/dev/null
-sudo -n /usr/local/bin/codex-goal --version >/dev/null
+test -x /usr/local/bin/codex-goal
+test ! -L /usr/local/bin/codex-goal
+[[ "$(/usr/bin/stat -c '%u:%g:%a' /usr/local/bin/codex-goal)" == "0:0:755" ]]
+/usr/local/bin/codex-goal --version >/dev/null
 ```
 
 If either command fails, stop. Explain briefly that `codex-goal` is required to write immutable goal files, especially when Codex runs with `danger-full-access`. Read `script/references/install.md`, summarize the exact system side effects, and ask for explicit approval before running any installer. Do not install automatically.
@@ -74,7 +76,7 @@ For payloads at or under 4000 characters, output only the raw goal payload. Do n
 For payloads over 4000 characters, write the payload automatically with `codex-goal` and do not reprint the payload:
 
 ```bash
-sudo -n /usr/local/bin/codex-goal --root "$PWD" --slug "$SLUG" <<'EOF'
+/usr/local/bin/codex-goal --root "$PWD" --slug "$SLUG" <<'EOF'
 <goal payload>
 EOF
 ```
@@ -125,7 +127,7 @@ Ask at most one question at a time in interactive mode. In default mode, ask onl
 
 ## Helper Contract
 
-`codex-goal` is the required local writer for protected long goal files. It writes under `.codex/goals/`, keeps the file owned by the invoking user, sets mode `0444`, sets the Linux immutable flag, and verifies protection before success.
+`codex-goal` is the required local writer for protected long goal files. Agents call `/usr/local/bin/codex-goal` directly; the installed wrapper performs the narrow non-interactive sudo call to the privileged helper. The helper writes under `.codex/goals/`, keeps the file owned by the invoking user, sets mode `0444`, sets the Linux immutable flag, and verifies protection before success.
 
 Do not fall back to weak `chmod`-only file writing.
 

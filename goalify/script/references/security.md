@@ -1,24 +1,25 @@
 # codex-goal security notes
 
-`codex-goal` is a privileged helper. Keep the surface small.
+`codex-goal` is an agent-facing wrapper around a privileged helper. Keep the privileged surface small.
 
-## v1 model
+## Current Linux Model
 
-- Installed binary: `/usr/local/bin/codex-goal`
-- Owner/mode: `root:root`, `0755`
+- Wrapper: `/usr/local/bin/codex-goal`
+- Helper: `/usr/local/libexec/codex-goal-helper`
+- Owner/mode for both files: `root:root`, `0755`
 - Sudoers file: `/etc/sudoers.d/codex-goal`
 - Sudoers mode: `0440`
 - Invocation from agents:
 
   ```bash
-  sudo -n /usr/local/bin/codex-goal --root "$PWD" --slug "$SLUG"
+  /usr/local/bin/codex-goal --root "$PWD" --slug "$SLUG"
   ```
 
-`sudo -n` must fail instead of asking for a password if the NOPASSWD rule is unavailable.
+The wrapper pins `PATH` to system directories and runs `/usr/bin/sudo -n -- /usr/local/libexec/codex-goal-helper "$@"`. `sudo -n` must fail instead of asking for a password if the NOPASSWD rule is unavailable. Agents do not invoke `sudo` directly.
 
 ## Identity
 
-The helper requires:
+The privileged helper requires:
 
 - effective uid is root
 - `SUDO_UID` and `SUDO_GID` exist
@@ -48,7 +49,7 @@ The goal file remains user-owned, mode `0444`, and immutable.
 
 Unit tests cover parsing, slug validation, target path construction, and stdin limits without requiring root.
 
-Immutable write validation is intentionally manual/opt-in because it requires sudo, `SUDO_UID`/`SUDO_GID`, and a filesystem that supports Linux inode flags. Use the smoke test in `install.md` after explicit approval to install the helper.
+Immutable write validation is intentionally manual/opt-in because it requires the installed sudoers rule, `SUDO_UID`/`SUDO_GID`, and a Linux filesystem that supports inode flags. Use the smoke test in `install.md` after explicit approval to install the helper.
 
 ## Future hardening
 
