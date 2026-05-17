@@ -1,22 +1,40 @@
 ---
 name: state-machine
 description: |
-  Use when modeling system behavior with multiple distinct modes (idle/loading/
-  success/error, draft/submitted/approved, connected/disconnected/reconnecting),
-  encountering boolean-flag explosion where isLoading, isError and isSuccess drift
-  out of sync, designing forms, wizards, auth flows, network protocols, embedded
-  controllers or workflow engines, or any time "impossible states" show up in
-  code or bug reports. Provides finite-state-machine and statechart patterns with
-  implementation references for 7 languages and runtimes: TypeScript discriminated
-  unions, XState v5, React useReducer, Svelte 5 runes, C, Java, Rust. NOT for:
-  single-boolean toggles, pure server-cache concerns better handled by TanStack
-  Query or SWR, or stateless pure transformations.
+  Use when designing explicit state-machine behavior for systems with multiple
+  modes (idle/loading/success/error, draft/submitted/approved,
+  connected/disconnected/reconnecting), boolean-flag explosion where isLoading,
+  isError and isSuccess drift out of sync, forms, wizards, auth flows, network
+  protocols, embedded controllers, workflow engines, or any code/bug report where
+  "impossible states" appear. Agent-facing design workflow: model states, events,
+  transitions, guards, actions, and impossible states before implementation.
+  Provides implementation references for TypeScript discriminated unions, XState
+  v5, React useReducer, Svelte 5 runes, C, Java, and Rust. NOT for installing
+  tools, single-boolean toggles, pure server-cache concerns better handled by
+  TanStack Query or SWR, or stateless pure transformations.
 ---
 
 # State Machine
 
 Model behavior as a finite state machine to eliminate impossible states and make
 every transition explicit.
+
+## Agent contract
+
+This skill is for state-machine design, not tool installation. Model first; choose
+tools later only when the model needs them.
+
+Before changing code, produce or hold in working context:
+
+1. Finite states with one-line meaning.
+2. Events that can occur.
+3. Transition table: current state, event, optional guard, actions, next state.
+4. Impossible states the model prevents.
+5. Smallest implementation shape that preserves the model.
+
+Inspect the repository first. Reuse existing state patterns and dependencies. Do
+not introduce a visualization tool or runtime library just because this skill
+triggered.
 
 ## When to use
 
@@ -31,6 +49,36 @@ every transition explicit.
 - Single boolean toggle with no side effects
 - Pure server cache (use TanStack Query or SWR; their internal FSM is enough)
 - Stateless pure transformations
+
+## Output contract
+
+Prefer explicit, reviewable artifacts:
+
+| Situation | Output |
+|---|---|
+| Design or review request | State list, event list, transition table, impossible states |
+| Human review needed | Mermaid `stateDiagram-v2` plus the transition table |
+| Simple TypeScript state | Discriminated union and transition function |
+| React local UI state | `useReducer` state/event reducer |
+| Complex app logic | XState only when hierarchy, parallel regions, history, actors, or inspection justify it |
+| Rust | Typestate or `statig`, matching repo style |
+| Embedded C/C++ | Explicit transition table or QP/QM if already part of the stack |
+
+Load only the implementation reference that matches the selected stack.
+
+## Human review gate
+
+Pause for human review before implementation when:
+
+- The machine has more than about seven states.
+- Transitions cross multiple user or business workflows.
+- Guards encode business policy.
+- States are hierarchical, parallel, historical, or actor-based.
+- The implementation would add a new runtime dependency.
+- The model affects persisted state, auth, payments, delivery, or irreversible actions.
+
+For review, use a text-first Mermaid diagram. Do not install visual tools unless
+the user explicitly asks for them.
 
 ## The 5 components
 
@@ -48,11 +96,11 @@ Full glossary with citations: `references/concepts.md`
 
 1. Enumerate states. Start with the happy path.
 2. Enumerate events.
-3. Draw transitions. Every state needs an exit (no dead ends).
+3. Draw transitions. Every non-final state needs an exit.
 4. List impossible state combinations and confirm they are unrepresentable.
-5. Add guards for conditional transitions.
-6. Define entry / exit actions per state.
-7. Sketch as Mermaid `stateDiagram-v2`. See `references/visual-notation.md`.
+5. Add guards only where a transition is conditional.
+6. Define entry / exit actions only where side effects are required.
+7. Sketch Mermaid `stateDiagram-v2` only when it improves review. See `references/visual-notation.md`.
 
 Worked example: `references/modeling-process.md`
 
