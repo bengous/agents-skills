@@ -1,0 +1,7 @@
+interface:
+  display_name: "Rekooh"
+  short_description: "Author, audit, register, and test Claude Code hooks."
+  default_prompt: "$rekooh-cc audit this repo's Claude Code hooks against the current official docs."
+
+policy:
+  allow_implicit_invocation: false

@@ -109,6 +109,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`effect-usage-cc`](effect-usage-cc/) | Decision support for Effect (effect-ts): when to use it, which patterns to prefer |
 | [`null-as-error-cc`](null-as-error-cc/) | Audit Effect codebases for silent error swallowing (`catchAll` to sentinel values) |
 | [`refactorlib-cc`](refactorlib-cc/) | Audit a codebase for handcrafted code replaceable by existing dependencies |
+| [`rekooh-cc`](rekooh-cc/) | Author, audit, register, and test Claude Code hooks against official docs |
 
 ## Maintenance
 
