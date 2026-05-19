@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_STDIN_BYTES: usize = 256 * 1024;
-const GOALS_DIR: &str = ".codex/goals";
+const GOALS_DIR: &str = ".agents/goals";
 const S_IFMT: u32 = 0o170_000;
 const S_IFREG: u32 = 0o100_000;
 
@@ -211,31 +211,40 @@ fn write_goal(
 ) -> Result<(), String> {
     let root_fd = open_directory_at(ABS, root, "root").map_err(OpenDirError::into_message)?;
     ensure_fd_user_owned(&root_fd, identity, "root")?;
-    let codex_fd = ensure_child_dir(&root_fd, ".codex", identity, ".codex")?;
-    let goals_fd = ensure_goals_dir(&codex_fd, identity)?;
-    secure_goals_dir(&goals_fd)?;
-    set_immutable(&codex_fd, &root.join(".codex"))?;
-    verify_path_still_resolves_to_fd(&root_fd, ".codex", &codex_fd, ".codex")?;
-    verify_path_still_resolves_to_fd(&codex_fd, "goals", &goals_fd, ".codex/goals")?;
+    let agents_fd = ensure_child_dir(&root_fd, ".agents", identity, ".agents")?;
+    let goals_fd = ensure_child_dir(&agents_fd, "goals", identity, ".agents/goals")?;
+    let goals_path = root.join(GOALS_DIR);
+    clear_immutable_for_write(&goals_fd, &goals_path)?;
+    verify_path_still_resolves_to_fd(&root_fd, ".agents", &agents_fd, ".agents")?;
+    verify_path_still_resolves_to_fd(&agents_fd, "goals", &goals_fd, ".agents/goals")?;
 
     let file_name = target
         .file_name()
         .ok_or_else(|| "target has no file name".to_owned())?;
-    let file = openat(
+    let file = match openat(
         &goals_fd,
         file_name,
         OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::RDWR | OFlags::CLOEXEC,
         Mode::from_raw_mode(0o444),
-    )
-    .map_err(|error| format!("failed to create {}: {error}", target.display()))?;
+    ) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = set_immutable(&goals_fd, &goals_path);
+            return Err(format!("failed to create {}: {error}", target.display()));
+        }
+    };
 
     let write_result =
         write_payload_and_protect(&goals_fd, file_name, &file, target, payload, identity);
     if let Err(error) = write_result {
         let _ = clear_immutable(&file);
         let _ = unlinkat(&goals_fd, file_name, AtFlags::empty());
+        let _ = set_immutable(&goals_fd, &goals_path);
         return Err(error);
     }
+    set_immutable(&goals_fd, &goals_path)?;
+    verify_path_still_resolves_to_fd(&root_fd, ".agents", &agents_fd, ".agents")?;
+    verify_path_still_resolves_to_fd(&agents_fd, "goals", &goals_fd, ".agents/goals")?;
 
     Ok(())
 }
@@ -281,6 +290,15 @@ fn clear_immutable(file: &impl AsFd) -> Result<(), Errno> {
     let mut flags = ioctl_getflags(file)?;
     flags.remove(IFlags::IMMUTABLE);
     ioctl_setflags(file, flags)
+}
+
+fn clear_immutable_for_write(file: &impl AsFd, target: &Path) -> Result<(), String> {
+    clear_immutable(file).map_err(|error| {
+        format!(
+            "failed to clear immutable flag on {} before write: {error}",
+            target.display()
+        )
+    })
 }
 
 fn assign_owner(file: &impl AsFd, target: &Path, identity: SudoIdentity) -> Result<(), String> {
@@ -416,37 +434,6 @@ fn ensure_child_dir(
     }
 }
 
-fn ensure_goals_dir(parent: &impl AsFd, identity: SudoIdentity) -> Result<OwnedFd, String> {
-    match open_directory_at(parent, "goals", ".codex/goals") {
-        Ok(dir) => {
-            ensure_fd_owned_by_user_or_root(&dir, identity, ".codex/goals")?;
-            Ok(dir)
-        }
-        Err(OpenDirError::NotFound) => {
-            mkdirat(parent, "goals", Mode::from_raw_mode(0o755))
-                .map_err(|error| format!("failed to create .codex/goals: {error}"))?;
-            let dir = open_directory_at(parent, "goals", ".codex/goals")
-                .map_err(OpenDirError::into_message)?;
-            fchown(
-                &dir,
-                Some(Uid::from_raw(identity.uid)),
-                Some(Gid::from_raw(identity.gid)),
-            )
-            .map_err(|error| format!("failed to assign ownership on .codex/goals: {error}"))?;
-            ensure_fd_user_owned(&dir, identity, ".codex/goals")?;
-            Ok(dir)
-        }
-        Err(OpenDirError::Other(error)) => Err(error),
-    }
-}
-
-fn secure_goals_dir(dir: &impl AsFd) -> Result<(), String> {
-    fchown(dir, Some(Uid::from_raw(0)), Some(Gid::from_raw(0)))
-        .map_err(|error| format!("failed to assign ownership on .codex/goals: {error}"))?;
-    fchmod(dir, Mode::from_raw_mode(0o755))
-        .map_err(|error| format!("failed to chmod .codex/goals: {error}"))
-}
-
 fn open_directory_at<P: rustix::path::Arg, Fd: AsFd>(
     parent: Fd,
     path: P,
@@ -487,22 +474,6 @@ fn ensure_fd_user_owned(
     let stat = fstat(file).map_err(|error| format!("failed to fstat {label}: {error}"))?;
     if stat.st_uid != identity.uid || stat.st_gid != identity.gid {
         return Err(format!("{label} must be owned by the invoking user"));
-    }
-    Ok(())
-}
-
-fn ensure_fd_owned_by_user_or_root(
-    file: &impl AsFd,
-    identity: SudoIdentity,
-    label: &str,
-) -> Result<(), String> {
-    let stat = fstat(file).map_err(|error| format!("failed to fstat {label}: {error}"))?;
-    let user_owned = stat.st_uid == identity.uid && stat.st_gid == identity.gid;
-    let root_owned = stat.st_uid == 0 && stat.st_gid == 0;
-    if !user_owned && !root_owned {
-        return Err(format!(
-            "{label} must be owned by root or the invoking user"
-        ));
     }
     Ok(())
 }
@@ -617,7 +588,7 @@ mod tests {
     fn builds_target_path() {
         assert_eq!(
             target_path(Path::new("/tmp/work"), "audit"),
-            PathBuf::from("/tmp/work/.codex/goals/audit.md")
+            PathBuf::from("/tmp/work/.agents/goals/audit.md")
         );
     }
 

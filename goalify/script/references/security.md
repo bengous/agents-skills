@@ -34,14 +34,14 @@ The helper refuses:
 - relative `--root`
 - missing or non-directory root
 - root directories not owned by the invoking user
-- symlink `.codex`
-- symlink `.codex/goals`
+- symlink `.agents`
+- symlink `.agents/goals`
 - existing target file or symlink
 - invalid slug
 - empty stdin
 - stdin over 256 KiB
 
-The `.codex/goals` directory is switched to `root:root` mode `0755` before a goal file is created. The `.codex` directory is made immutable after `.codex/goals` exists. This prevents a same-user process from renaming `.codex`, replacing `.codex/goals`, or swapping the printed `/goal` path during file finalization.
+The `.agents` directory remains owned by the invoking user and is not made immutable. The dedicated `.agents/goals` directory remains owned by the invoking user and is made immutable after each successful write. Before a later write, the helper clears the immutable flag on `.agents/goals`, creates the new goal file, then restores the immutable flag. This protects the goal artifact namespace without changing attributes on `.codex`.
 
 The goal file remains user-owned, mode `0444`, and immutable.
 

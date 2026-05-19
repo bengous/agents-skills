@@ -6,9 +6,9 @@ The user types `/goal` manually. `goalify` outputs either the payload to paste a
 
 ## Required helper
 
-`goalify` requires `codex-goal`, a small Linux helper that writes long goal payloads to `.codex/goals/*.md` and marks them immutable.
+`goalify` requires `codex-goal`, a small Linux helper that writes long goal payloads to `.agents/goals/*.md` and marks them immutable.
 
-This matters when Codex runs with `danger-full-access`: the normal Codex sandbox protection for `.codex/**` is not active, so a long goal file needs OS-level protection if it should not be modified during the task.
+This matters when Codex runs with `danger-full-access`: a long goal file needs OS-level protection if it should not be modified during the task. Goal files live under `.agents/goals/` so other agent harnesses can use the same artifact without treating it as Codex configuration.
 
 Install details and side effects are documented in [`script/references/install.md`](script/references/install.md). Installation writes an agent-facing wrapper to `/usr/local/bin/codex-goal`, a privileged helper to `/usr/local/libexec/codex-goal-helper`, and a narrow sudoers rule in `/etc/sudoers.d/codex-goal`, so an agent must ask for explicit approval before installing it.
 

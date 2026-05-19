@@ -4,9 +4,9 @@
 
 ## Why this exists
 
-Long goal payloads are written to `.codex/goals/*.md`. In normal `workspace-write` Codex sessions, `.codex/**` is protected by the sandbox. In `danger-full-access`, that protection does not apply. `codex-goal` writes the file and sets the Linux immutable flag so the executing agent cannot edit or delete the goal file without an explicit privileged unlock.
+Long goal payloads are written to `.agents/goals/*.md`. In `danger-full-access`, a normal file can be changed by the executing agent. `codex-goal` writes the file and sets the Linux immutable flag so the executing agent cannot edit or delete the goal file without an explicit privileged unlock.
 
-The helper also makes `.codex/goals` root-owned and `.codex` immutable after `.codex/goals` exists, so the printed path cannot be replaced by renaming the parent directory or swapping the goals directory.
+The helper also makes the dedicated `.agents/goals` directory immutable after the goal file exists, so the printed path cannot be replaced by swapping the goals directory. It does not change attributes on `.codex`.
 
 ## Side effects
 
@@ -75,11 +75,10 @@ cd "$tmp_root"
 Objective:
 Smoke-test codex-goal immutable writes.
 EOF
-lsattr "$tmp_root/.codex/goals/smoke-test.md"
-lsattr -d "$tmp_root/.codex"
-sudo chattr -i "$tmp_root/.codex/goals/smoke-test.md"
-sudo chattr -i "$tmp_root/.codex"
-sudo chown "$USER:$(id -gn)" "$tmp_root/.codex/goals"
+lsattr "$tmp_root/.agents/goals/smoke-test.md"
+lsattr -d "$tmp_root/.agents/goals"
+sudo chattr -i "$tmp_root/.agents/goals/smoke-test.md"
+sudo chattr -i "$tmp_root/.agents/goals"
 rm -rf "$tmp_root"
 ```
 
@@ -87,7 +86,7 @@ Both `lsattr` outputs must include `i`.
 
 ## Uninstall
 
-This does not remove any `.codex/goals/*.md` files.
+This does not remove any `.agents/goals/*.md` files.
 
 ```bash
 sudo rm -f /etc/sudoers.d/codex-goal /usr/local/bin/codex-goal /usr/local/libexec/codex-goal-helper
@@ -96,17 +95,18 @@ sudo rm -f /etc/sudoers.d/codex-goal /usr/local/bin/codex-goal /usr/local/libexe
 To delete a protected goal file manually:
 
 ```bash
-sudo chattr -i .codex/goals/<slug>.md
-rm .codex/goals/<slug>.md
+sudo chattr -i .agents/goals/<slug>.md
+sudo chattr -i .agents/goals
+rm .agents/goals/<slug>.md
+sudo chattr +i .agents/goals
 ```
 
-If you need to remove `.codex` itself:
+If you need to remove `.agents/goals` itself:
 
 ```bash
-sudo chattr -i .codex
-sudo chattr -i .codex/goals/*.md
-sudo chown -R "$USER:$(id -gn)" .codex
-rm -rf .codex
+sudo chattr -i .agents/goals
+sudo chattr -i .agents/goals/*.md
+rm -rf .agents/goals
 ```
 
 ## Unsupported platforms
@@ -115,4 +115,4 @@ v1 targets Arch Linux x86_64. macOS, Windows, and other Linux distributions are 
 
 ## Workspace ownership
 
-`codex-goal` only writes under a root directory owned by the invoking user. This prevents the sudo helper from creating user-owned `.codex` directories inside system-owned locations.
+`codex-goal` only writes under a root directory owned by the invoking user. This prevents the sudo helper from creating user-owned `.agents` directories inside system-owned locations.

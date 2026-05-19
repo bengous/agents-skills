@@ -86,11 +86,11 @@ Use a single-quoted heredoc delimiter so shell interpolation cannot alter the pa
 After a successful write, output only the helper result shape:
 
 ```text
-Wrote: .codex/goals/<slug>.md
+Wrote: .agents/goals/<slug>.md
 Protected: immutable
 
 Usage:
-/goal .codex/goals/<slug>.md
+/goal .agents/goals/<slug>.md
 ```
 
 If the target root is not the current working directory, use the absolute path printed by `codex-goal`.
@@ -127,7 +127,7 @@ Ask at most one question at a time in interactive mode. In default mode, ask onl
 
 ## Helper Contract
 
-`codex-goal` is the required local writer for protected long goal files. Agents call `/usr/local/bin/codex-goal` directly; the installed wrapper performs the narrow non-interactive sudo call to the privileged helper. The helper writes under `.codex/goals/`, keeps the file owned by the invoking user, sets mode `0444`, sets the Linux immutable flag, and verifies protection before success.
+`codex-goal` is the required local writer for protected long goal files. Agents call `/usr/local/bin/codex-goal` directly; the installed wrapper performs the narrow non-interactive sudo call to the privileged helper. The helper writes under `.agents/goals/`, keeps `.agents/` owned by the invoking user, locks only the dedicated `.agents/goals/` directory and the goal file with the Linux immutable flag, keeps the goal file owned by the invoking user with mode `0444`, and verifies protection before success. It must not change attributes on `.codex`.
 
 Do not fall back to weak `chmod`-only file writing.
 

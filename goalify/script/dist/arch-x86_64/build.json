@@ -1,16 +1,16 @@
 {
   "target": "x86_64-unknown-linux-gnu",
   "platform": "Arch Linux x86_64 first",
-  "built_on": "2026-05-16T15:30:04Z",
-  "rustc": "rustc 1.95.0 (59807616e 2026-04-14) (Arch Linux rust 1:1.95.0-1)",
-  "git_commit_at_build_time": "de5acae",
-  "source_state": "built from local working tree after commit de5acae; verify source_file_sha256 before distribution",
-  "binary_sha256": "624f984990ddf6ef2c6f2ba7d299d929981357f0af2eac3d7184394d5e31fd65",
+  "built_on": "2026-05-19T14:25:51Z",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "git_commit_at_build_time": "f53e9af",
+  "source_state": "built from local working tree after commit f53e9af; verify source_file_sha256 before distribution",
+  "binary_sha256": "82fb1f0bc294f5838ba905c92bb4723741a9797d9f609cf9d5237a2de109c40d",
   "source_path": "goalify/script/codex-goal",
   "source_file_sha256": [
     {"sha256": "e8def92bb57554a95394408510254d0ef8388aea095851100626e9469fc36284", "path": "Cargo.toml"},
-    {"sha256": "d004acb51addf98d1a3fa629906f699951dcab7fc72890962ffebfc44fad5d80", "path": "Cargo.lock"},
-    {"sha256": "753fc913a672c7b4af06b5f3b88d82344a2d16543b642585d40f151276369ed7", "path": "goalify/script/codex-goal/Cargo.toml"},
-    {"sha256": "02f9d0739d046cb252ad5165d2f733502108b70485e8c0e7deb044dcb3dbc5b9", "path": "goalify/script/codex-goal/src/main.rs"}
+    {"sha256": "a964662eb428b33649eefbe5edb20860829bde4694a1bfcff2057a470efb11eb", "path": "Cargo.lock"},
+    {"sha256": "9200064037adb602fcc1dd68fe79f612c4701b26645cff61df9678b1b1b8ba26", "path": "goalify/script/codex-goal/Cargo.toml"},
+    {"sha256": "7c7b7eb2c47eedb4d5b75ddd1181267ab925aa69e7bc7cbe2f109afa76412bfd", "path": "goalify/script/codex-goal/src/main.rs"}
   ]
 }
