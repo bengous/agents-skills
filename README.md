@@ -118,3 +118,7 @@ bootstrap files, and generated artifacts separate.
 
 The dotfiles-managed bootstrap for this machine lives at
 [`~/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh`](/home/b3ngous/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh).
+
+## License
+
+[MIT](LICENSE)
