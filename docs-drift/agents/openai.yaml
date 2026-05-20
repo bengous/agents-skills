@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docs Drift"
+  short_description: "Audit Codex instructions against recent code changes."
+  default_prompt: "Use $docs-drift to audit whether AGENTS.md and skill guidance drifted from recent code changes."
