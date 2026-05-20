@@ -1,6 +1,6 @@
 ---
 name: docs-drift
-description: "Audit Codex-facing repo guidance for drift against recent code changes. Use when the user invokes $docs-drift, asks whether AGENTS.md, AGENTS.override.md, .agents/skills, .codex/config.toml, project skill guidance, or other Codex instructions are stale, after a batch of commits, before shipping reusable agent workflows, or when documentation/guidance may no longer match the code. Optimized for GPT-5.5/Codex: inspect real files first, use official OpenAI Codex docs or live web search only for current Codex behavior, and produce evidence-backed findings before edits."
+description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $docs-drift or explicitly asks to audit Codex-facing repo guidance for drift against recent code changes. Audits AGENTS.md, AGENTS.override.md, .agents/skills, .codex/config.toml, project skill guidance, and other Codex instructions for stale or misleading guidance. Optimized for GPT-5.5/Codex: inspect real files first, use official OpenAI Codex docs or live web search only for current Codex behavior, and produce evidence-backed findings before edits."
 ---
 
 # Docs Drift
