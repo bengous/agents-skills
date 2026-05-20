@@ -95,6 +95,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`pr-review-html`](pr-review-html/) | Create annotated HTML artifacts for PR reviews and unfamiliar code paths |
 | [`shrinkify`](shrinkify/) | Interactively reduce skills while preserving behavior and output contracts |
 | [`skill-eval-methodology`](skill-eval-methodology/) | Operational discipline for running skill evaluations and benchmarks |
+| [`skills-maintenance`](skills-maintenance/) | Update installed global or project skills and persist related maintenance changes |
 | [`skill-sync`](skill-sync/) | Commit, push, and deploy skill changes while verifying source/live/dotfiles boundaries |
 | [`slop-detector`](slop-detector/) | Detect, score, and rewrite AI-generated or generic text |
 | [`state-machine`](state-machine/) | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |

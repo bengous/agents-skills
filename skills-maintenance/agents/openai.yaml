@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skills Maintenance"
+  short_description: "Update installed global or project skills safely"
+  default_prompt: "Use $skills-maintenance to update installed skills and handle any related locks or dotfiles changes."
+
+policy:
+  allow_implicit_invocation: false
