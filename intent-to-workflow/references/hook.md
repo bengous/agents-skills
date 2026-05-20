@@ -42,6 +42,7 @@ Mentions later in the prompt do not trigger the hook.
 From the source package:
 
 ```bash
+uv run itw setup status
 uv run itw --help
 uv run itw init demo
 uv run itw get demo
@@ -52,6 +53,7 @@ From an installed skill copy without a global `itw` command, call the launcher
 by its installed skill path:
 
 ```bash
+"<installed-skill-dir>/scripts/itw" setup status
 "<installed-skill-dir>/scripts/itw" --help
 "<installed-skill-dir>/scripts/itw" init demo
 "<installed-skill-dir>/scripts/itw" get demo
@@ -61,6 +63,7 @@ by its installed skill path:
 On Windows PowerShell:
 
 ```powershell
+& "<installed-skill-dir>\scripts\itw.ps1" setup status
 & "<installed-skill-dir>\scripts\itw.ps1" --help
 & "<installed-skill-dir>\scripts\itw.ps1" init demo
 & "<installed-skill-dir>\scripts\itw.ps1" get demo
@@ -79,6 +82,59 @@ uv tool install /home/b3ngous/projects/agents-skills/intent-to-workflow --force
 After install, verify:
 
 ```bash
+itw setup status
 itw --help
 itw-codex-user-prompt-submit --help
 ```
+
+## Codex Agent Types
+
+The public source for the Codex subagent personas used by generated workflows
+lives in:
+
+```text
+intent-to-workflow/src/intent_to_workflow/agents/codex/itw-*.toml
+```
+
+Those files are the role config layers. Codex agent types are registered from
+`config.toml` with `agents.<name>.description` and
+`agents.<name>.config_file`. See:
+
+```text
+intent-to-workflow/src/intent_to_workflow/agents/codex/config.example.toml
+```
+
+Use the single setup gate:
+
+```bash
+itw setup status
+```
+
+If it fails and the human wants to install the runtime setup:
+
+```bash
+"<installed-skill-dir>/scripts/setup"
+itw setup status
+```
+
+On Windows PowerShell:
+
+```powershell
+& "<installed-skill-dir>\scripts\setup.ps1"
+itw setup status
+```
+
+The setup script installs the global `itw` command, copies packaged
+`itw-*.toml` config layers to `~/.codex/agents/`, and appends or refreshes the
+matching `[agents.<name>]` declarations in `~/.codex/config.toml`. The generated
+declarations use `config_file = "agents/<name>.toml"` because Codex resolves
+relative `config_file` paths from the declaring `config.toml`.
+
+Before mutating an existing `~/.codex/config.toml`, setup writes a timestamped
+`config.toml.itw-backup-*` file next to it. The setup script also compares the
+packaged-resource fingerprint from the installed skill with the global `itw`
+command after installation; mismatch fails the setup.
+
+`~/.codex/agents/*.toml` and `~/.codex/config.toml` are live runtime state.
+Do not treat private dotfiles as the source of truth for these shared workflow
+agents.

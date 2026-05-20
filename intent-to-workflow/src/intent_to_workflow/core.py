@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal, TypeGuard, cast
+
+from intent_to_workflow import __version__
 
 CLI_NAME = "itw"
 WORKFLOW_DIR = ".itw"
@@ -57,6 +62,18 @@ type Language = Literal[
 ]
 type JsonScalar = str | int | None
 type JsonObject = dict[str, JsonScalar]
+
+
+@dataclass(frozen=True)
+class ReviewerType:
+    slug: str
+    persona: str
+    agent_type: str
+    description: str
+    capability: str
+    focus: str
+    usage: str
+
 
 STAGES: tuple[Stage, ...] = (
     "clarification",
@@ -191,10 +208,77 @@ REFERENCE_BY_STAGE: dict[Stage, str | None] = {
     "prd_review": "prd_review.md",
     "issues": "issues.md",
     "issues_review": "issues_review.md",
-    "workflow": "artifacts.md",
-    "workflow_review": "artifacts.md",
+    "workflow": "workflow_types.md",
+    "workflow_review": "workflow_types.md",
     "workflow_ready": None,
 }
+
+CODEX_WORKER_AGENT_TYPE = "itw-worker"
+CODEX_AGENT_RESOURCE_DIR = ("agents", "codex")
+CODEX_AGENT_RESOURCE_FILES = (
+    "itw-worker.toml",
+    "itw-simplification-reviewer.toml",
+    "itw-security-reviewer.toml",
+    "itw-contract-reviewer.toml",
+)
+CODEX_AGENT_CONFIG_EXAMPLE = "config.example.toml"
+CODEX_AGENT_CONFIG_BEGIN = "# BEGIN intent-to-workflow codex agents"
+CODEX_AGENT_CONFIG_END = "# END intent-to-workflow codex agents"
+REVIEWER_TYPES: tuple[ReviewerType, ...] = (
+    ReviewerType(
+        slug="simplification",
+        persona="Simplification Reviewer",
+        agent_type="itw-simplification-reviewer",
+        description="simplification reviewer in report-only mode",
+        capability=(
+            "$source-command-simplify-wip preferred; $simplify-codebase only in "
+            "report-only mode."
+        ),
+        focus=(
+            "Find safe simplification opportunities: avoidable complexity, duplication, "
+            "unnecessary abstractions, missed existing utilities, and local inefficiencies."
+        ),
+        usage=(
+            "Use `$source-command-simplify-wip` when available so the pass stays report-only. "
+            "If falling back to `$simplify-codebase`, force report-only behavior: do not edit, "
+            "commit, stage, or format files."
+        ),
+    ),
+    ReviewerType(
+        slug="security",
+        persona="Security Reviewer",
+        agent_type="itw-security-reviewer",
+        description="security reviewer on WIP changes",
+        capability="$security-review-wip preferred for working-tree security review.",
+        focus=(
+            "Find security risks introduced by the WIP changes: unsafe input handling, "
+            "secret exposure, privilege boundaries, injection paths, and dependency risks."
+        ),
+        usage=(
+            "Use `$security-review-wip` when available for the working-tree security pass. "
+            "This reviewer prompt is the workflow owner's explicit authorization to invoke "
+            "that WIP review capability for this slice."
+        ),
+    ),
+    ReviewerType(
+        slug="contract",
+        persona="Contract Reviewer",
+        agent_type="itw-contract-reviewer",
+        description="contract reviewer against the PRD and current issue",
+        capability=(
+            "No external skill required; compare WIP against PRD, terminology, issue, "
+            "and validation."
+        ),
+        focus=(
+            "Find drift from the PRD, terminology, current issue scope, acceptance criteria, "
+            "and validation contract."
+        ),
+        usage=(
+            "No skill invocation is required. Read the artifacts and WIP context directly, then "
+            "judge whether the implementation still matches the approved contract."
+        ),
+    ),
+)
 
 
 class ItwError(Exception):
@@ -266,13 +350,6 @@ class Issue:
     @property
     def slug(self) -> str:
         return f"issue-{self.number:02d}"
-
-    @property
-    def needs_review(self) -> bool:
-        review_patterns = ("review gate", "review gates", "review:", "reviewer", "read-only review")
-        body = self.body.lower()
-        return any(pattern in body for pattern in review_patterns)
-
 
 def is_stage(value: object) -> TypeGuard[Stage]:
     return isinstance(value, str) and value in STAGES
@@ -970,6 +1047,273 @@ def read_package_text(group: str, name: str) -> str:
         raise ItwError(f"missing packaged resource: {group}/{name}") from error
 
 
+def read_package_resource(path_parts: Sequence[str]) -> str:
+    try:
+        return files(__package__).joinpath(*path_parts).read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise ItwError(f"missing packaged resource: {'/'.join(path_parts)}") from error
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+
+
+def codex_agents_dir() -> Path:
+    return codex_home() / "agents"
+
+
+def codex_config_path() -> Path:
+    return codex_home() / "config.toml"
+
+
+def codex_agent_resource_text(name: str) -> str:
+    return read_package_resource((*CODEX_AGENT_RESOURCE_DIR, name))
+
+
+def codex_agent_config_example() -> str:
+    return codex_agent_resource_text(CODEX_AGENT_CONFIG_EXAMPLE).strip()
+
+
+def setup_fingerprint() -> str:
+    digest = sha256()
+    digest.update(f"intent-to-workflow\0{__version__}\0".encode())
+    for name in (CODEX_AGENT_CONFIG_EXAMPLE, *CODEX_AGENT_RESOURCE_FILES):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(codex_agent_resource_text(name).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def setup_fingerprint_status() -> str:
+    return f"setup_fingerprint={setup_fingerprint()} version={__version__}\n"
+
+
+def parse_toml_config(label: str, text: str) -> dict[str, object]:
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ItwError(f"invalid TOML in {label}: {error}") from error
+    return cast(dict[str, object], raw)
+
+
+def expected_codex_agent_config() -> dict[str, dict[str, str]]:
+    raw = parse_toml_config(CODEX_AGENT_CONFIG_EXAMPLE, codex_agent_config_example())
+    agents = raw.get("agents")
+    if not isinstance(agents, dict):
+        raise ItwError(f"invalid {CODEX_AGENT_CONFIG_EXAMPLE}: missing agents table")
+
+    expected: dict[str, dict[str, str]] = {}
+    agent_items = cast(dict[str, object], agents)
+    for name, value in agent_items.items():
+        if not isinstance(value, dict):
+            raise ItwError(f"invalid {CODEX_AGENT_CONFIG_EXAMPLE}: agents table")
+        values = cast(dict[str, object], value)
+        description = values.get("description")
+        config_file = values.get("config_file")
+        if not isinstance(description, str) or not isinstance(config_file, str):
+            raise ItwError(f"invalid {CODEX_AGENT_CONFIG_EXAMPLE}: {name}")
+        expected[name] = {"description": description, "config_file": config_file}
+    return expected
+
+
+def expected_codex_agent_names() -> tuple[str, ...]:
+    return tuple(expected_codex_agent_config().keys())
+
+
+def codex_agent_config_block(names: Iterable[str] | None = None) -> str:
+    expected = expected_codex_agent_config()
+    selected = tuple(expected) if names is None else tuple(names)
+    lines = [CODEX_AGENT_CONFIG_BEGIN]
+    for name in selected:
+        values = expected[name]
+        lines.extend(
+            [
+                "",
+                f"[agents.{name}]",
+                f"description = {json.dumps(values['description'])}",
+                f"config_file = {json.dumps(values['config_file'])}",
+            ]
+        )
+    lines.append(CODEX_AGENT_CONFIG_END)
+    return "\n".join(lines) + "\n"
+
+
+def codex_config_text() -> str:
+    path = codex_config_path()
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def unique_backup_path(path: Path) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    candidate = path.with_name(f"{path.name}.itw-backup-{timestamp}")
+    if not candidate.exists():
+        return candidate
+    for index in range(1, 1000):
+        next_candidate = path.with_name(f"{path.name}.itw-backup-{timestamp}-{index}")
+        if not next_candidate.exists():
+            return next_candidate
+    raise ItwError(f"could not allocate backup path for {path}")
+
+
+def backup_existing_file(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    backup_path = unique_backup_path(path)
+    backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    return backup_path
+
+
+def codex_config_data() -> dict[str, object]:
+    text = codex_config_text()
+    if text.strip() == "":
+        return {}
+    return parse_toml_config(str(codex_config_path()), text)
+
+
+def codex_config_agent_table() -> dict[str, object]:
+    raw = codex_config_data().get("agents", {})
+    if raw == {}:
+        return {}
+    if not isinstance(raw, dict):
+        raise ItwError(f"invalid TOML in {codex_config_path()}: agents is not a table")
+    return cast(dict[str, object], raw)
+
+
+def codex_agent_role_errors() -> tuple[str, ...]:
+    expected = expected_codex_agent_config()
+    agents = codex_config_agent_table()
+    errors: list[str] = []
+    for name, values in expected.items():
+        existing = agents.get(name)
+        if not isinstance(existing, dict):
+            errors.append(f"missing config role [agents.{name}]")
+            continue
+        existing_values = cast(dict[str, object], existing)
+        description = existing_values.get("description")
+        config_file = existing_values.get("config_file")
+        if description != values["description"]:
+            errors.append(f"stale description for [agents.{name}]")
+        if config_file != values["config_file"]:
+            errors.append(f"stale config_file for [agents.{name}]")
+    return tuple(errors)
+
+
+def codex_agent_file_errors() -> tuple[str, ...]:
+    errors: list[str] = []
+    target_dir = codex_agents_dir()
+    for name in CODEX_AGENT_RESOURCE_FILES:
+        target = target_dir / name
+        expected = codex_agent_resource_text(name)
+        if not target.exists():
+            errors.append(f"missing {target}")
+        elif target.read_text(encoding="utf-8") != expected:
+            errors.append(f"stale {target}")
+    return tuple(errors)
+
+
+def status_codex_agents() -> str:
+    errors = [*codex_agent_file_errors(), *codex_agent_role_errors()]
+    if errors:
+        raise ItwError(
+            "codex agents not installed: "
+            + "; ".join(errors)
+            + "; run `itw setup install`"
+        )
+    names = ", ".join(expected_codex_agent_names())
+    return f"codex_agents=installed home={codex_home()} agents={names}\n"
+
+
+def setup_status() -> str:
+    errors: list[str] = []
+    itw_path = shutil.which(CLI_NAME)
+    if itw_path is None:
+        errors.append(f"missing global `{CLI_NAME}` command")
+    errors.extend(codex_agent_file_errors())
+    errors.extend(codex_agent_role_errors())
+    if errors:
+        raise ItwError(
+            "setup incomplete: "
+            + "; ".join(errors)
+            + "; run the installed skill setup script: `<skill-dir>/scripts/setup`"
+        )
+
+    names = ", ".join(expected_codex_agent_names())
+    return f"setup=ok command={itw_path} codex_home={codex_home()} agents={names}\n"
+
+
+def replace_marked_codex_agent_block(config_text: str, block: str) -> str | None:
+    pattern = re.compile(
+        rf"(?ms)^{re.escape(CODEX_AGENT_CONFIG_BEGIN)}$.*?"
+        rf"^{re.escape(CODEX_AGENT_CONFIG_END)}$\n?"
+    )
+    if pattern.search(config_text) is None:
+        return None
+    return pattern.sub(block, config_text)
+
+
+def missing_codex_agent_role_names() -> tuple[str, ...]:
+    expected = expected_codex_agent_config()
+    agents = codex_config_agent_table()
+    missing: list[str] = []
+    for name, values in expected.items():
+        existing = agents.get(name)
+        if existing is None:
+            missing.append(name)
+            continue
+        if not isinstance(existing, dict):
+            raise ItwError(f"invalid config role [agents.{name}]")
+        existing_values = cast(dict[str, object], existing)
+        if (
+            existing_values.get("description") != values["description"]
+            or existing_values.get("config_file") != values["config_file"]
+        ):
+            raise ItwError(
+                f"existing [agents.{name}] does not match intent-to-workflow; "
+                f"edit {codex_config_path()} or remove that role before reinstalling"
+            )
+    return tuple(missing)
+
+
+def install_codex_agents() -> str:
+    target_dir = codex_agents_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for name in CODEX_AGENT_RESOURCE_FILES:
+        source_text = codex_agent_resource_text(name)
+        target = target_dir / name
+        target.write_text(source_text, encoding="utf-8")
+
+    config_path = codex_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_text = codex_config_text()
+    full_block = codex_agent_config_block()
+    next_text = replace_marked_codex_agent_block(existing_text, full_block)
+    if next_text is None:
+        missing = missing_codex_agent_role_names()
+        if missing:
+            separator = "" if existing_text == "" or existing_text.endswith("\n") else "\n"
+            next_text = existing_text + separator
+            if existing_text.strip() != "":
+                next_text += "\n"
+            next_text += codex_agent_config_block(missing)
+        else:
+            next_text = existing_text
+
+    backup_path: Path | None = None
+    if next_text != existing_text:
+        backup_path = backup_existing_file(config_path)
+        config_path.write_text(next_text, encoding="utf-8")
+
+    # Fail closed if the write produced invalid or incomplete config.
+    status_codex_agents()
+    files = ", ".join(CODEX_AGENT_RESOURCE_FILES)
+    backup_text = f" backup={backup_path}" if backup_path is not None else ""
+    return (
+        f"codex_agents=installed home={codex_home()} files={files} "
+        f"config={config_path}{backup_text}\n"
+    )
+
+
 def render_template(template: str, values: Mapping[str, str]) -> str:
     malformed = [
         match.group(0)
@@ -1097,11 +1441,11 @@ def create_workflow_package(root: Path) -> None:
 
     for issue in issues:
         write_if_missing(root / "prompts" / f"{issue.slug}-worker.md", worker_prompt(issue, root))
-        if issue.needs_review:
-            (root / "reviews").mkdir(exist_ok=True)
+        (root / "reviews").mkdir(exist_ok=True)
+        for reviewer_type in REVIEWER_TYPES:
             write_if_missing(
-                root / "prompts" / f"{issue.slug}-reviewer.md",
-                reviewer_prompt(issue, root),
+                root / "prompts" / f"{issue.slug}-{reviewer_type.slug}-reviewer.md",
+                reviewer_prompt(issue, root, reviewer_type),
             )
 
     write_if_missing(root / "workflow.md", workflow_template(root, issues))
@@ -1110,6 +1454,15 @@ def create_workflow_package(root: Path) -> None:
 
 def issue_lines(issues: Iterable[Issue]) -> str:
     return "\n".join(f"- {issue.number}. {issue.title}" for issue in issues)
+
+
+def codex_agent_type_lines() -> str:
+    lines = [f"- Worker: `{CODEX_WORKER_AGENT_TYPE}`"]
+    lines.extend(
+        f"- {reviewer.persona}: `{reviewer.agent_type}`"
+        for reviewer in REVIEWER_TYPES
+    )
+    return "\n".join(lines)
 
 
 def workflow_template(root: Path, issues: Sequence[Issue]) -> str:
@@ -1123,6 +1476,32 @@ def workflow_template(root: Path, issues: Sequence[Issue]) -> str:
 - `issues.md`
 - `tracker.md`
 
+## Workflow Type Decision
+
+Selected type: PRD-to-slices reviewed execution
+
+Recommendation basis:
+
+- The planning process produced a PRD and independently grabbable vertical-slice issues.
+- The future execution should preserve a visible PRD/issue contract while
+  implementation proceeds slice by slice.
+- Each slice benefits from explicit validation plus clean post-implementation review before commit.
+
+Available workflow types:
+
+- PRD-to-slices reviewed execution: recommended default for fuzzy intentions
+  turned into agent implementation work.
+- Tuned workflow: start from a built-in workflow type and record the changes in this file.
+- Pair-designed custom workflow: define the workflow from scratch with the
+  human when no built-in type fits.
+
+Tuning notes:
+
+- Base workflow: PRD-to-slices reviewed execution.
+- Changes from base: none yet.
+- If this workflow is tuned or replaced, keep `issues.md` as the build scope,
+  `workflow.md` as the execution method, and `tracker.md` as execution authority.
+
 ## Execution Contract
 
 - Read this file, `tracker.md`, and `issues.md` before changing code.
@@ -1130,9 +1509,46 @@ def workflow_template(root: Path, issues: Sequence[Issue]) -> str:
 - Execute one issue at a time unless the workflow explicitly allows parallel work.
 - Worker prompts live under `prompts/`.
 - Workers follow the local TDD contract embedded in their prompts.
-- Workers commit local scoped slices after validation and accepted reviews.
+- Before spawning Codex subagents with `itw-*` `agent_type`s, verify
+  `itw setup status`.
+- After each worker implementation, run slice validation, ask the three clean
+  reviewers, accept/reject/defer each finding with rationale, apply accepted
+  fixes, revalidate, then commit the scoped slice locally.
 - Keep execution artifacts local unless the human explicitly asks otherwise.
 - Do not execute work outside this workflow root's scope.
+
+## Codex Agent Types and Capabilities
+
+Use Codex `agent_type` for persona/capability selection. Keep subagent
+`message` content limited to the assigned task, scope, context, and requested
+output.
+
+Codex agent types:
+
+{codex_agent_type_lines()}
+
+- Worker:
+  - Agent type: `{CODEX_WORKER_AGENT_TYPE}`.
+  - Capability: implement exactly one issue.
+  - Rules: edit only in issue scope; validate before review; do not commit until
+    accepted review fixes are revalidated.
+- Simplification Reviewer:
+  - Agent type: `itw-simplification-reviewer`.
+  - Capability: `$source-command-simplify-wip` preferred; `$simplify-codebase`
+    only in report-only mode.
+  - Rules: read-only; review WIP changes for safe simplification opportunities;
+    propose fixes without applying them.
+- Security Reviewer:
+  - Agent type: `itw-security-reviewer`.
+  - Capability: `$security-review-wip` preferred.
+  - Rules: read-only; review WIP changes for security risks; report only
+    findings that should block or change the slice.
+- Contract Reviewer:
+  - Agent type: `itw-contract-reviewer`.
+  - Capability: compare WIP against `prd.md`, `terminology.md`, `issues.md`,
+    and validation.
+  - Rules: read-only; flag scope creep, missed acceptance criteria, terminology
+    drift, and validation gaps.
 
 ## Issue Order
 
@@ -1141,8 +1557,11 @@ def workflow_template(root: Path, issues: Sequence[Issue]) -> str:
 ## Gates
 
 - [ ] Confirm branch policy before first implementation commit.
+- [ ] Confirm `itw setup status` passes before spawning Codex subagents.
 - [ ] Keep tracker current after each handoff.
-- [ ] Run each issue's validation before marking completed.
+- [ ] Run each issue's validation before review.
+- [ ] Record simplification, security, and contract review outcomes for each issue.
+- [ ] Revalidate after accepted review fixes before marking completed.
 - [ ] Record commit hashes in `tracker.md`.
 
 ## Final Report
@@ -1155,15 +1574,21 @@ Root: `{root}`
 
 def tracker_template(issues: Sequence[Issue]) -> str:
     rows = [
-        "| Seq | Issue | Status | Agent | Prompt | Review | Commit | Validation |",
+        (
+            "| Seq | Issue | Status | Worker Agent Type | Prompt | Review Agent Types | "
+            "Commit | Validation |"
+        ),
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for issue in issues:
-        review = f"prompts/{issue.slug}-reviewer.md" if issue.needs_review else "-"
+        reviews = "<br>".join(
+            f"{reviewer.agent_type} -> prompts/{issue.slug}-{reviewer.slug}-reviewer.md"
+            for reviewer in REVIEWER_TYPES
+        )
         rows.append(
             "| "
-            f"{issue.number} | {issue.title} | pending | worker | "
-            f"prompts/{issue.slug}-worker.md | {review} | - | - |"
+            f"{issue.number} | {issue.title} | pending | {CODEX_WORKER_AGENT_TYPE} | "
+            f"prompts/{issue.slug}-worker.md | {reviews} | - | - |"
         )
     return "\n".join(
         [
@@ -1171,7 +1596,7 @@ def tracker_template(issues: Sequence[Issue]) -> str:
             "",
             "Execution authority for this workflow.",
             "",
-            "Statuses: pending, in_progress, reviewing, completed, blocked.",
+            "Statuses: pending, in_progress, validating, reviewing, fixing, completed, blocked.",
             "",
             *rows,
             "",
@@ -1192,6 +1617,7 @@ Read first:
 - `{root / "tracker.md"}`
 - `{root / "intake"}`
 - `{root / "prd.md"}`
+- `{root / "terminology.md"}`
 - `{root / "issues.md"}`
 
 Issue:
@@ -1214,22 +1640,36 @@ Scope:
 """
 
 
-def reviewer_prompt(issue: Issue, root: Path) -> str:
-    return f"""Read-only review.
+def reviewer_prompt(
+    issue: Issue,
+    root: Path,
+    reviewer: ReviewerType,
+) -> str:
+    return f"""Read-only {reviewer.description}.
 
 Review issue {issue.number}: {issue.title}
+
+Persona:
+{reviewer.persona}
+
+Capability:
+{reviewer.capability}
 
 Read:
 - `{root / "workflow.md"}`
 - `{root / "tracker.md"}`
 - `{root / "intake"}`
 - `{root / "prd.md"}`
+- `{root / "terminology.md"}`
 - `{root / "issues.md"}`
 
 Rules:
 - Do not edit files.
-- Prioritize bugs, contract drift, missed validation, and scope creep.
+- {reviewer.usage}
+- Focus: {reviewer.focus}
+- Prioritize bugs, contract drift, missed validation, scope creep, and findings
+  that should block the slice commit.
 - Write findings with file/line references when possible.
-- Save the review to `{root / "reviews" / f"{issue.slug}-review.md"}` if possible.
+- Save the review to `{root / "reviews" / f"{issue.slug}-{reviewer.slug}-review.md"}` if possible.
 - Otherwise report it to the workflow owner.
 """

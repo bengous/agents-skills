@@ -19,6 +19,8 @@ Clarify scope, constraints, risks, and acceptance boundaries. Record each questi
 
 Keep the interview fluid and question-driven. Use `terminology.md` as the working language model: update it only when an answer changes your understanding of an actor, role, responsibility, decision power, constraint, canonical term, alias to avoid, relationship, or language ambiguity. Do not update it mechanically after every answer.
 
+Capture workflow-shape signals as they appear: task maturity, risk level, need for implementation, need for review gates, HITL points, validation burden, and whether a known workflow type is likely to fit. Do not choose the workflow type yet.
+
 If the raw `intake` depends on earlier conversation context, ask the human which prior context should be included. Record that context scope in `clarification.md`. Do not rewrite `intake`.
 
 ### Reference: {{REFERENCE_TITLE}}

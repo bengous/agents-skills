@@ -20,12 +20,20 @@ itw init <id>
 itw status <id>
 itw get <id>
 itw advance <id>
+itw setup status
 ```
 
-Use the gate for workflow state and phase boundaries. Use `itw`; if missing,
-use the installed skill path: `<skill-dir>/scripts/itw` on Unix or
-`& '<skill-dir>\scripts\itw.ps1'` on Windows. Never hand-roll workflow state.
-Stop on launcher failure.
+First run `itw setup status`; if `itw` is missing, use the installed skill path:
+`<skill-dir>/scripts/itw setup status` on Unix or
+`& '<skill-dir>\scripts\itw.ps1' setup status` on Windows. If the setup gate
+fails, stop and ask the human to run `<skill-dir>/scripts/setup` on Unix or
+`& '<skill-dir>\scripts\setup.ps1'` on Windows. The setup script installs the
+global `itw` command and the Codex `itw-*` agent types together. It writes live
+runtime config under `~/.codex/`; do not run it unless the human asks for that
+side effect.
+
+Use `itw` for workflow state and phase boundaries after setup passes. Never
+hand-roll workflow state. Stop on launcher failure.
 
 ## Operating Rules
 
@@ -99,7 +107,14 @@ Packaged references live under `src/intent_to_workflow/references/`:
 - `issues.md`
 - `issues_review.md`
 - `tdd.md`
-- `artifacts.md`
+- `workflow_types.md`
 
 For the optional Codex `UserPromptSubmit` hook and installation notes, read
 [references/hook.md](references/hook.md).
+
+Codex subagent config layers for the generated workflow live in
+`src/intent_to_workflow/agents/codex/itw-*.toml`. The role declarations are
+documented in `src/intent_to_workflow/agents/codex/config.example.toml`; they
+map `agent_type` names to those config layers with
+`agents.<name>.config_file`. Treat this directory as the public source of truth;
+any files under `~/.codex/agents/` are live install copies.

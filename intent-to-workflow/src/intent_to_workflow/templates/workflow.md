@@ -15,7 +15,7 @@ Language: {{LANGUAGE_INSTRUCTION}}
 {{BLOCKERS}}
 
 ### Current Work
-Finalize `workflow.md`, `tracker.md`, and `prompts/*.md`. Keep `tracker.md` as execution authority.
+Finalize the workflow type decision, then finalize `workflow.md`, `tracker.md`, and `prompts/*.md`. Recommend the best workflow type from the task signal, list the other available workflow types, and let the human choose the recommendation, choose another type, tune a type, or pair-design a workflow from scratch. Keep `tracker.md` as execution authority.
 
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}

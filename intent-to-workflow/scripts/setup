@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf '%s\n' 'error: uv is required: https://docs.astral.sh/uv/' >&2
+  exit 127
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+skill_dir="$(cd -- "${script_dir}/.." && pwd -P)"
+expected_fingerprint="$(uv run --project "$skill_dir" --locked itw setup fingerprint)"
+
+uv tool install "$skill_dir" --force --reinstall
+uv run --project "$skill_dir" --locked itw setup install
+
+if ! command -v itw >/dev/null 2>&1; then
+  printf '%s\n' 'error: itw was installed but is not on PATH; ensure the uv tool bin directory is on PATH, then rerun setup.' >&2
+  exit 1
+fi
+
+actual_fingerprint="$(itw setup fingerprint)"
+if [[ "$actual_fingerprint" != "$expected_fingerprint" ]]; then
+  printf 'error: installed itw fingerprint mismatch\nexpected: %s\nactual:   %s\n' \
+    "$expected_fingerprint" "$actual_fingerprint" >&2
+  exit 1
+fi
+
+itw setup status

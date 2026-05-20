@@ -15,7 +15,7 @@ Language: {{LANGUAGE_INSTRUCTION}}
 {{BLOCKERS}}
 
 ### Current Work
-Human validates the workflow package. Do not launch execution.
+Human validates the workflow type decision, tuning notes, tracker, and prompts. Do not launch execution.
 
 ### Reference: {{REFERENCE_TITLE}}
 {{REFERENCE_CONTENT}}

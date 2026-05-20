@@ -11,7 +11,10 @@ from intent_to_workflow.core import (
     advance_workflow,
     get_workflow,
     init_workflow,
+    install_codex_agents,
     set_language_workflow,
+    setup_fingerprint_status,
+    setup_status,
     status_workflow,
 )
 
@@ -24,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"itw {__version__}")
 
     subparsers = parser.add_subparsers(
-        dest="command", metavar="{init,status,get,advance,set-language}"
+        dest="command", metavar="{init,status,get,advance,set-language,setup}"
     )
 
     init_parser = subparsers.add_parser("init", help="initialize a workflow")
@@ -43,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
     language_parser.add_argument("id")
     language_parser.add_argument("language", choices=tuple(LANGUAGE_NAMES))
     language_parser.add_argument("--force", action="store_true")
+
+    setup_parser = subparsers.add_parser("setup", help="check or install runtime setup")
+    setup_subparsers = setup_parser.add_subparsers(
+        dest="setup_command", metavar="{status,install}"
+    )
+    setup_subparsers.add_parser("status", help="verify the CLI and Codex agent types")
+    setup_subparsers.add_parser("install", help="install Codex agent types into CODEX_HOME")
+    setup_subparsers.add_parser("fingerprint", help=argparse.SUPPRESS)
 
     return parser
 
@@ -73,6 +84,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=parsed.force,
                 )
             )
+        elif command == "setup":
+            if parsed.setup_command == "status":
+                sys.stdout.write(setup_status())
+            elif parsed.setup_command == "install":
+                sys.stdout.write(install_codex_agents())
+            elif parsed.setup_command == "fingerprint":
+                sys.stdout.write(setup_fingerprint_status())
+            else:
+                parser.error("setup requires a subcommand: status or install")
         else:
             parser.error(f"unknown command: {command}")
     except ItwError as error:

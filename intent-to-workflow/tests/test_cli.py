@@ -228,6 +228,138 @@ def test_help_lists_supported_commands() -> None:
     assert "status" in result.stdout
     assert "get" in result.stdout
     assert "advance" in result.stdout
+    assert "setup" in result.stdout
+    assert "codex-agents" not in result.stdout
+
+
+def test_setup_status_reports_single_setup_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+
+    result = run_cli(["setup", "status"])
+
+    assert result.exit_code == 1
+    assert "setup incomplete" in result.stderr
+    assert "missing global `itw` command" in result.stderr
+    assert "missing config role [agents.itw-worker]" in result.stderr
+    assert "<skill-dir>/scripts/setup" in result.stderr
+
+
+def test_setup_status_passes_after_cli_and_agents_are_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    itw_bin = bin_dir / "itw"
+    itw_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    itw_bin.chmod(0o755)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert run_cli(["setup", "install"]).exit_code == 0
+
+    result = run_cli(["setup", "status"])
+
+    assert result.exit_code == 0
+    assert "setup=ok" in result.stdout
+    assert f"command={itw_bin}" in result.stdout
+    assert "itw-security-reviewer" in result.stdout
+
+
+def test_setup_fingerprint_reports_packaged_resource_hash() -> None:
+    result = run_cli(["setup", "fingerprint"])
+
+    assert result.exit_code == 0
+    assert "version=0.1.0" in result.stdout
+    prefix = "setup_fingerprint="
+    fingerprint = result.stdout.split(prefix, maxsplit=1)[1].split(maxsplit=1)[0]
+    assert len(fingerprint) == 64
+    assert all(char in "0123456789abcdef" for char in fingerprint)
+
+
+def test_setup_install_writes_runtime_files_and_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    result = run_cli(["setup", "install"])
+    config = (codex_home / "config.toml").read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "codex_agents=installed" in result.stdout
+    assert (codex_home / "agents" / "itw-worker.toml").exists()
+    assert (codex_home / "agents" / "itw-simplification-reviewer.toml").exists()
+    assert (codex_home / "agents" / "itw-security-reviewer.toml").exists()
+    assert (codex_home / "agents" / "itw-contract-reviewer.toml").exists()
+    assert "[agents.itw-worker]" in config
+    assert 'config_file = "agents/itw-worker.toml"' in config
+
+
+def test_setup_install_backs_up_existing_config_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    config_path = codex_home / "config.toml"
+    original = "[projects.\"/tmp/demo\"]\ntrust_level = \"trusted\"\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    result = run_cli(["setup", "install"])
+    backups = sorted(codex_home.glob("config.toml.itw-backup-*"))
+
+    assert result.exit_code == 0
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+    assert f"backup={backups[0]}" in result.stdout
+    assert "[agents.itw-worker]" in config_path.read_text(encoding="utf-8")
+
+
+def test_setup_install_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert run_cli(["setup", "install"]).exit_code == 0
+    assert run_cli(["setup", "install"]).exit_code == 0
+    config = (codex_home / "config.toml").read_text(encoding="utf-8")
+
+    assert config.count("[agents.itw-worker]") == 1
+    assert config.count("[agents.itw-security-reviewer]") == 1
+    assert not list(codex_home.glob("config.toml.itw-backup-*"))
+
+
+def test_setup_install_refuses_mismatched_existing_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[agents.itw-worker]",
+                'description = "custom"',
+                'config_file = "agents/custom.toml"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["setup", "install"])
+
+    assert result.exit_code == 1
+    assert "existing [agents.itw-worker] does not match" in result.stderr
 
 
 def test_init_scaffolds_empty_intake_and_starts_at_clarification(tmp_path: Path) -> None:
@@ -727,10 +859,50 @@ def test_workflow_package_uses_self_contained_worker_prompts(tmp_path: Path) -> 
     result = run_cli(["advance", "demo"])
 
     worker_prompt = (root / "prompts" / "issue-01-worker.md").read_text(encoding="utf-8")
+    simplification_prompt = (root / "prompts" / "issue-01-simplification-reviewer.md").read_text(
+        encoding="utf-8"
+    )
+    security_prompt = (root / "prompts" / "issue-01-security-reviewer.md").read_text(
+        encoding="utf-8"
+    )
+    contract_prompt = (root / "prompts" / "issue-01-contract-reviewer.md").read_text(
+        encoding="utf-8"
+    )
+    workflow = (root / "workflow.md").read_text(encoding="utf-8")
+    tracker = (root / "tracker.md").read_text(encoding="utf-8")
     assert result.exit_code == 0
     assert "stage=workflow" in result.stdout
     assert (root / "workflow.md").exists()
     assert (root / "tracker.md").exists()
+    assert "Selected type: PRD-to-slices reviewed execution" in workflow
+    assert "Pair-designed custom workflow" in workflow
+    assert "prompts/issue-01-simplification-reviewer.md" in tracker
+    assert "prompts/issue-01-security-reviewer.md" in tracker
+    assert "prompts/issue-01-contract-reviewer.md" in tracker
+    assert (root / "prompts" / "issue-01-simplification-reviewer.md").exists()
+    assert (root / "prompts" / "issue-01-security-reviewer.md").exists()
+    assert (root / "prompts" / "issue-01-contract-reviewer.md").exists()
+    assert not (root / "agents").exists()
+    assert "agents/" not in workflow
+    assert "agents/" not in tracker
+    assert "Agent profile:" not in worker_prompt
+    assert "Agent profile:" not in simplification_prompt
+    assert "## Codex Agent Types and Capabilities" in workflow
+    assert "agent_type" in workflow
+    assert "itw-worker" in workflow
+    assert "itw-simplification-reviewer" in workflow
+    assert "itw-security-reviewer" in workflow
+    assert "itw-contract-reviewer" in workflow
+    assert "itw-worker" in tracker
+    assert "itw-simplification-reviewer -> prompts/issue-01-simplification-reviewer.md" in tracker
+    assert "itw-security-reviewer -> prompts/issue-01-security-reviewer.md" in tracker
+    assert "itw-contract-reviewer -> prompts/issue-01-contract-reviewer.md" in tracker
+    assert "$source-command-simplify-wip" in workflow
+    assert "$security-review-wip" in workflow
+    assert "$source-command-simplify-wip" in simplification_prompt
+    assert "$simplify-codebase" in simplification_prompt
+    assert "$security-review-wip" in security_prompt
+    assert "No skill invocation is required" in contract_prompt
     assert "## TDD Contract" in worker_prompt
     assert "$" + "tdd" not in worker_prompt
 
@@ -910,7 +1082,7 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert "prd_review.md" in rendered["prd_review"]
     assert "issues.md" in rendered["issues"]
     assert "issues_review.md" in rendered["issues_review"]
-    assert "artifacts.md" in rendered["workflow"]
+    assert "workflow_types.md" in rendered["workflow"]
     assert "grill.md" not in rendered["prd"]
     assert "Do not continue PRD generation" in rendered["prd_review"]
     assert "Write the PRD using the template" not in rendered["prd_review"]
@@ -919,9 +1091,16 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert "prior context should be included" in rendered["clarification"]
     assert "terminology.md" in rendered["clarification"]
     assert "actor, role" in rendered["clarification"]
+    assert "workflow-shape signals" in rendered["clarification"]
     assert "canonical actor and term names" in rendered["prd"]
     assert "against `terminology.md`" in rendered["prd_review"]
     assert "from `prd.md` and `terminology.md`" in rendered["issues"]
+    assert "Recommend the best workflow type" in rendered["workflow"]
+    assert "Workflow Type Bank" in rendered["workflow"]
+    assert "Reviewer Personas and Capabilities" in rendered["workflow"]
+    assert "$source-command-simplify-wip" in rendered["workflow"]
+    assert "agent_type" in rendered["workflow"]
+    assert "agents/" not in rendered["workflow"]
 
 
 def test_strict_template_renderer_fails_closed() -> None:
