@@ -1,0 +1,7 @@
+interface:
+  display_name: "Council"
+  short_description: "Get fresh agent perspectives on a problem"
+  default_prompt: "$council "
+
+policy:
+  allow_implicit_invocation: false

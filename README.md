@@ -85,6 +85,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 |-------|-------------|
 | [`batch-update`](batch-update/) | Update repo dependencies and tooling in researched, validated, committed batches |
 | [`content-architect`](content-architect/) | Design content architecture for digital products: screen inventory, user journeys, navigation |
+| [`council`](council/) | Get fresh Codex subagent perspectives on the current problem |
 | [`deepen-codebase-architecture`](deepen-codebase-architecture/) | Audit or design deeper codebase modules with evidence-backed architecture proposals |
 | [`design-system-creator`](design-system-creator/) | Create design systems based on physical/sensory anchoring |
 | [`goalify`](goalify/) | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file |
