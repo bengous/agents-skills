@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -230,18 +231,15 @@ REVIEWER_TYPES: tuple[ReviewerType, ...] = (
         persona="Simplification Reviewer",
         agent_type="itw-simplification-reviewer",
         description="simplification reviewer in report-only mode",
-        capability=(
-            "$source-command-simplify-wip preferred; $simplify-codebase only in "
-            "report-only mode."
-        ),
+        capability="Embedded report-only simplify-wip capability in the agent persona.",
         focus=(
-            "Find safe simplification opportunities: avoidable complexity, duplication, "
-            "unnecessary abstractions, missed existing utilities, and local inefficiencies."
+            "Check whether the WIP has safe simplification opportunities: avoidable "
+            "complexity, duplication, unnecessary abstractions, missed existing utilities, "
+            "or local inefficiencies."
         ),
         usage=(
-            "Use `$source-command-simplify-wip` when available so the pass stays report-only. "
-            "If falling back to `$simplify-codebase`, force report-only behavior: do not edit, "
-            "commit, stage, or format files."
+            "Use the embedded simplify-wip capability from your persona. Keep the review "
+            "report-only: do not edit, commit, stage, or format files."
         ),
     ),
     ReviewerType(
@@ -249,15 +247,14 @@ REVIEWER_TYPES: tuple[ReviewerType, ...] = (
         persona="Security Reviewer",
         agent_type="itw-security-reviewer",
         description="security reviewer on WIP changes",
-        capability="$security-review-wip preferred for working-tree security review.",
+        capability="Embedded WIP security-review capability in the agent persona.",
         focus=(
-            "Find security risks introduced by the WIP changes: unsafe input handling, "
-            "secret exposure, privilege boundaries, injection paths, and dependency risks."
+            "Check whether the WIP introduces security risks: unsafe input handling, "
+            "secret exposure, privilege boundaries, injection paths, or dependency risks."
         ),
         usage=(
-            "Use `$security-review-wip` when available for the working-tree security pass. "
-            "This reviewer prompt is the workflow owner's explicit authorization to invoke "
-            "that WIP review capability for this slice."
+            "Use the embedded security-review capability from your persona. Keep the review "
+            "read-only and work from the embedded procedure directly."
         ),
     ),
     ReviewerType(
@@ -265,17 +262,14 @@ REVIEWER_TYPES: tuple[ReviewerType, ...] = (
         persona="Contract Reviewer",
         agent_type="itw-contract-reviewer",
         description="contract reviewer against the PRD and current issue",
-        capability=(
-            "No external skill required; compare WIP against PRD, terminology, issue, "
-            "and validation."
-        ),
+        capability="Embedded contract-review capability in the agent persona.",
         focus=(
-            "Find drift from the PRD, terminology, current issue scope, acceptance criteria, "
-            "and validation contract."
+            "Check whether the WIP drifts from the PRD, terminology, current issue scope, "
+            "acceptance criteria, or validation contract."
         ),
         usage=(
-            "No skill invocation is required. Read the artifacts and WIP context directly, then "
-            "judge whether the implementation still matches the approved contract."
+            "Use the embedded contract-review capability from your persona. Keep the review "
+            "read-only and work from the embedded procedure directly."
         ),
     ),
 )
@@ -1224,11 +1218,37 @@ def status_codex_agents() -> str:
     return f"codex_agents=installed home={codex_home()} agents={names}\n"
 
 
+def global_itw_fingerprint_error(itw_path: str) -> str | None:
+    expected = setup_fingerprint_status().strip()
+    try:
+        completed = subprocess.run(
+            [itw_path, "setup", "fingerprint"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"could not verify `{CLI_NAME}` fingerprint at {itw_path}: {error}"
+
+    actual = completed.stdout.strip()
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or actual or f"exit {completed.returncode}"
+        return f"could not verify `{CLI_NAME}` fingerprint at {itw_path}: {detail}"
+    if actual != expected:
+        return f"stale or mismatched `{CLI_NAME}` command at {itw_path}"
+    return None
+
+
 def setup_status() -> str:
     errors: list[str] = []
     itw_path = shutil.which(CLI_NAME)
     if itw_path is None:
         errors.append(f"missing global `{CLI_NAME}` command")
+    else:
+        fingerprint_error = global_itw_fingerprint_error(itw_path)
+        if fingerprint_error is not None:
+            errors.append(fingerprint_error)
     errors.extend(codex_agent_file_errors())
     errors.extend(codex_agent_role_errors())
     if errors:
@@ -1534,19 +1554,17 @@ Codex agent types:
     accepted review fixes are revalidated.
 - Simplification Reviewer:
   - Agent type: `itw-simplification-reviewer`.
-  - Capability: `$source-command-simplify-wip` preferred; `$simplify-codebase`
-    only in report-only mode.
+  - Capability: embedded report-only simplify-wip capability in the persona.
   - Rules: read-only; review WIP changes for safe simplification opportunities;
     propose fixes without applying them.
 - Security Reviewer:
   - Agent type: `itw-security-reviewer`.
-  - Capability: `$security-review-wip` preferred.
+  - Capability: embedded WIP security-review capability in the persona.
   - Rules: read-only; review WIP changes for security risks; report only
     findings that should block or change the slice.
 - Contract Reviewer:
   - Agent type: `itw-contract-reviewer`.
-  - Capability: compare WIP against `prd.md`, `terminology.md`, `issues.md`,
-    and validation.
+  - Capability: embedded contract-review capability in the persona.
   - Rules: read-only; flag scope creep, missed acceptance criteria, terminology
     drift, and validation gaps.
 
@@ -1667,9 +1685,11 @@ Rules:
 - Do not edit files.
 - {reviewer.usage}
 - Focus: {reviewer.focus}
-- Prioritize bugs, contract drift, missed validation, scope creep, and findings
-  that should block the slice commit.
-- Write findings with file/line references when possible.
-- Save the review to `{root / "reviews" / f"{issue.slug}-{reviewer.slug}-review.md"}` if possible.
-- Otherwise report it to the workflow owner.
+- No findings is a valid outcome when the implementation satisfies this
+  reviewer role's contract.
+- If findings exist, prioritize bugs, contract drift, missed validation, scope
+  creep, and issues that should block the slice commit.
+- For each reported finding, include file/line references when possible.
+- Return the review to the workflow owner. The workflow owner records it under
+  `{root / "reviews" / f"{issue.slug}-{reviewer.slug}-review.md"}`.
 """

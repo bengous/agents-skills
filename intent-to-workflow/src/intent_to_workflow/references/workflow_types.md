@@ -24,11 +24,10 @@ Shape:
    - implement;
    - run slice validation;
    - ask three clean reviewers:
-     - simplification reviewer in report-only mode, preferably using
-       `$source-command-simplify-wip`;
-     - security reviewer on WIP changes, preferably using
-       `$security-review-wip`;
-     - contract reviewer against the PRD and current issue;
+     - simplification reviewer using its embedded report-only simplify-wip
+       capability;
+     - security reviewer using its embedded WIP security-review capability;
+     - contract reviewer using its embedded contract-review capability;
    - accept/reject/defer each finding with rationale;
    - apply accepted fixes;
    - revalidate;
@@ -53,13 +52,13 @@ message should contain only the task, scope, context, and requested output.
 Other agent runtimes can be ported later without changing the workflow type.
 
 - Worker: `itw-worker`; implements one issue and runs validation.
-- Simplification Reviewer: `itw-simplification-reviewer`; read-only report-only simplification pass. Prefer
-  `$source-command-simplify-wip`; use `$simplify-codebase` only if explicitly
-  constrained to report-only mode.
-- Security Reviewer: `itw-security-reviewer`; read-only WIP security pass. Prefer
-  `$security-review-wip`.
+- Simplification Reviewer: `itw-simplification-reviewer`; read-only report-only
+  simplification pass with an embedded report-only simplify-wip capability.
+- Security Reviewer: `itw-security-reviewer`; read-only WIP security pass with
+  an embedded security-review capability.
 - Contract Reviewer: `itw-contract-reviewer`; read-only contract pass against
-  `prd.md`, `terminology.md`, `issues.md`, acceptance criteria, and validation.
+  `prd.md`, `terminology.md`, `issues.md`, acceptance criteria, validation, and
+  tracker/workflow state, with an embedded contract-review capability.
 
 Reviewer capabilities are permissions and tools, not authority to edit. The
 workflow owner accepts, rejects, or defers findings before fixes are applied.

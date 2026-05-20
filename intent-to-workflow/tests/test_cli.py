@@ -256,7 +256,22 @@ def test_setup_status_passes_after_cli_and_agents_are_installed(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     itw_bin = bin_dir / "itw"
-    itw_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fingerprint = run_cli(["setup", "fingerprint"]).stdout
+    fingerprint_line = fingerprint.rstrip("\n")
+    itw_bin.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "setup" ] && [ "$2" = "fingerprint" ]; then',
+                f"printf '%s\\n' '{fingerprint_line}'",
+                "exit 0",
+                "fi",
+                "exit 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     itw_bin.chmod(0o755)
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("PATH", str(bin_dir))
@@ -270,11 +285,31 @@ def test_setup_status_passes_after_cli_and_agents_are_installed(
     assert "itw-security-reviewer" in result.stdout
 
 
+def test_setup_status_rejects_mismatched_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    itw_bin = bin_dir / "itw"
+    itw_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    itw_bin.chmod(0o755)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert run_cli(["setup", "install"]).exit_code == 0
+
+    result = run_cli(["setup", "status"])
+
+    assert result.exit_code == 1
+    assert "stale or mismatched `itw` command" in result.stderr
+
+
 def test_setup_fingerprint_reports_packaged_resource_hash() -> None:
     result = run_cli(["setup", "fingerprint"])
 
     assert result.exit_code == 0
-    assert "version=0.1.0" in result.stdout
+    assert "version=0.2.0" in result.stdout
     prefix = "setup_fingerprint="
     fingerprint = result.stdout.split(prefix, maxsplit=1)[1].split(maxsplit=1)[0]
     assert len(fingerprint) == 64
@@ -290,6 +325,15 @@ def test_setup_install_writes_runtime_files_and_config(
 
     result = run_cli(["setup", "install"])
     config = (codex_home / "config.toml").read_text(encoding="utf-8")
+    security_agent = (codex_home / "agents" / "itw-security-reviewer.toml").read_text(
+        encoding="utf-8"
+    )
+    simplification_agent = (
+        codex_home / "agents" / "itw-simplification-reviewer.toml"
+    ).read_text(encoding="utf-8")
+    contract_agent = (codex_home / "agents" / "itw-contract-reviewer.toml").read_text(
+        encoding="utf-8"
+    )
 
     assert result.exit_code == 0
     assert "codex_agents=installed" in result.stdout
@@ -299,6 +343,30 @@ def test_setup_install_writes_runtime_files_and_config(
     assert (codex_home / "agents" / "itw-contract-reviewer.toml").exists()
     assert "[agents.itw-worker]" in config
     assert 'config_file = "agents/itw-worker.toml"' in config
+    assert '<skill name="security-review-wip">' in security_agent
+    assert "<finding_gate>" in security_agent
+    assert "<output_contract>" in security_agent
+    assert "USER-INVOCABLE" not in security_agent
+    assert "$security-review-wip" not in security_agent
+    assert "git --no-optional-locks diff" in security_agent
+    assert "- proof: direct_code_path" in security_agent
+    assert "No findings is a valid outcome" in security_agent
+    assert "confidence" not in security_agent
+    assert '<skill name="source-command-simplify-wip">' in simplification_agent
+    assert "<finding_gate>" in simplification_agent
+    assert "<output_contract>" in simplification_agent
+    assert "$source-command-simplify-wip" not in simplification_agent
+    assert "$simplify-codebase" not in simplification_agent
+    assert "git --no-optional-locks ls-files --others" in simplification_agent
+    assert "- proof: duplicate_logic" in simplification_agent
+    assert "No findings is a valid outcome" in simplification_agent
+    assert "confidence" not in simplification_agent
+    assert '<skill name="contract-review-wip">' in contract_agent
+    assert "<finding_gate>" in contract_agent
+    assert "<output_contract>" in contract_agent
+    assert "- proof: acceptance_gap" in contract_agent
+    assert "No findings is a valid outcome" in contract_agent
+    assert "confidence" not in contract_agent
 
 
 def test_setup_install_backs_up_existing_config_before_mutation(
@@ -897,12 +965,29 @@ def test_workflow_package_uses_self_contained_worker_prompts(tmp_path: Path) -> 
     assert "itw-simplification-reviewer -> prompts/issue-01-simplification-reviewer.md" in tracker
     assert "itw-security-reviewer -> prompts/issue-01-security-reviewer.md" in tracker
     assert "itw-contract-reviewer -> prompts/issue-01-contract-reviewer.md" in tracker
-    assert "$source-command-simplify-wip" in workflow
-    assert "$security-review-wip" in workflow
-    assert "$source-command-simplify-wip" in simplification_prompt
-    assert "$simplify-codebase" in simplification_prompt
-    assert "$security-review-wip" in security_prompt
-    assert "No skill invocation is required" in contract_prompt
+    assert "embedded report-only simplify-wip capability" in workflow
+    assert "embedded WIP security-review capability" in workflow
+    assert "embedded contract-review capability" in workflow
+    assert "$source-command-simplify-wip" not in workflow
+    assert "$security-review-wip" not in workflow
+    assert "Embedded report-only simplify-wip capability" in simplification_prompt
+    assert "$source-command-simplify-wip" not in simplification_prompt
+    assert "$simplify-codebase" not in simplification_prompt
+    assert "Embedded WIP security-review capability" in security_prompt
+    assert "$security-review-wip" not in security_prompt
+    assert "Save the review" not in simplification_prompt
+    assert "No findings is a valid outcome" in simplification_prompt
+    assert "If findings exist" in simplification_prompt
+    assert "Return the review to the workflow owner" in simplification_prompt
+    assert "Save the review" not in security_prompt
+    assert "No findings is a valid outcome" in security_prompt
+    assert "If findings exist" in security_prompt
+    assert "Return the review to the workflow owner" in security_prompt
+    assert "Embedded contract-review capability" in contract_prompt
+    assert "No skill invocation is required" not in contract_prompt
+    assert "No findings is a valid outcome" in contract_prompt
+    assert "If findings exist" in contract_prompt
+    assert "Return the review to the workflow owner" in contract_prompt
     assert "## TDD Contract" in worker_prompt
     assert "$" + "tdd" not in worker_prompt
 
@@ -1098,7 +1183,10 @@ def test_all_packaged_phase_templates_render(tmp_path: Path) -> None:
     assert "Recommend the best workflow type" in rendered["workflow"]
     assert "Workflow Type Bank" in rendered["workflow"]
     assert "Reviewer Personas and Capabilities" in rendered["workflow"]
-    assert "$source-command-simplify-wip" in rendered["workflow"]
+    assert "embedded report-only simplify-wip capability" in rendered["workflow"]
+    assert "embedded contract-review capability" in rendered["workflow"]
+    assert "$source-command-simplify-wip" not in rendered["workflow"]
+    assert "$security-review-wip" not in rendered["workflow"]
     assert "agent_type" in rendered["workflow"]
     assert "agents/" not in rendered["workflow"]
 
