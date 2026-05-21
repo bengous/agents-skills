@@ -1,0 +1,7 @@
+interface:
+  display_name: "Swarm Research"
+  short_description: "Parallel read-only research with synthesis."
+  default_prompt: "$swarm-research "
+
+policy:
+  allow_implicit_invocation: true

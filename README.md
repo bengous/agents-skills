@@ -81,37 +81,38 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 
 ### General
 
-| Skill | Description |
-|-------|-------------|
-| [`batch-update`](batch-update/) | Update repo dependencies and tooling in researched, validated, committed batches |
-| [`content-architect`](content-architect/) | Design content architecture for digital products: screen inventory, user journeys, navigation |
-| [`council`](council/) | Get fresh Codex subagent perspectives on the current problem |
-| [`deepen-codebase-architecture`](deepen-codebase-architecture/) | Audit or design deeper codebase modules with evidence-backed architecture proposals |
-| [`design-system-creator`](design-system-creator/) | Create design systems based on physical/sensory anchoring |
-| [`goalify`](goalify/) | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file |
-| [`handoff-prompt`](handoff-prompt/) | Generate a copy-paste-ready handoff prompt for a fresh agent instance |
-| [`humanizer`](humanizer/) | Remove signs of AI-generated writing from text |
-| [`intent-to-workflow`](intent-to-workflow/) | Human-gated planner that turns explicit intent into local workflow artifacts |
-| [`promptify`](promptify/) | Transform rough dictated intent into a compact GPT-5.5-optimized prompt |
-| [`pr-review-html`](pr-review-html/) | Create annotated HTML artifacts for PR reviews and unfamiliar code paths |
-| [`shrinkify`](shrinkify/) | Interactively reduce skills while preserving behavior and output contracts |
-| [`skill-eval-methodology`](skill-eval-methodology/) | Operational discipline for running skill evaluations and benchmarks |
-| [`skills-maintenance`](skills-maintenance/) | Update installed global or project skills and persist related maintenance changes |
-| [`skill-sync`](skill-sync/) | Commit, push, and deploy skill changes while verifying source/live/dotfiles boundaries |
-| [`slop-detector`](slop-detector/) | Detect, score, and rewrite AI-generated or generic text |
-| [`state-machine`](state-machine/) | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |
+| Skill                                                           | Description                                                                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| [`batch-update`](batch-update/)                                 | Update repo dependencies and tooling in researched, validated, committed batches                                              |
+| [`content-architect`](content-architect/)                       | Design content architecture for digital products: screen inventory, user journeys, navigation                                 |
+| [`council`](council/)                                           | Get fresh Codex subagent perspectives on the current problem                                                                  |
+| [`deepen-codebase-architecture`](deepen-codebase-architecture/) | Audit or design deeper codebase modules with evidence-backed architecture proposals                                           |
+| [`design-system-creator`](design-system-creator/)               | Create design systems based on physical/sensory anchoring                                                                     |
+| [`goalify`](goalify/)                                           | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file                                   |
+| [`handoff-prompt`](handoff-prompt/)                             | Generate a copy-paste-ready handoff prompt for a fresh agent instance                                                         |
+| [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
+| [`intent-to-workflow`](intent-to-workflow/)                     | Human-gated planner that turns explicit intent into local workflow artifacts                                                  |
+| [`promptify`](promptify/)                                       | Transform rough dictated intent into a compact GPT-5.5-optimized prompt                                                       |
+| [`pr-review-html`](pr-review-html/)                             | Create annotated HTML artifacts for PR reviews and unfamiliar code paths                                                      |
+| [`shrinkify`](shrinkify/)                                       | Interactively reduce skills while preserving behavior and output contracts                                                    |
+| [`skill-eval-methodology`](skill-eval-methodology/)             | Operational discipline for running skill evaluations and benchmarks                                                           |
+| [`skills-maintenance`](skills-maintenance/)                     | Update installed global or project skills and persist related maintenance changes                                             |
+| [`skill-sync`](skill-sync/)                                     | Commit, push, and deploy skill changes while verifying source/live/dotfiles boundaries                                        |
+| [`slop-detector`](slop-detector/)                               | Detect, score, and rewrite AI-generated or generic text                                                                       |
+| [`state-machine`](state-machine/)                               | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |
+| [`swarm-research`](swarm-research/)                             | Fan out parallel Codex research subagents and synthesize the findings                                                         |
 
 ### Claude Code (`-cc`)
 
-| Skill | Description |
-|-------|-------------|
-| [`ascii-diagram-builder-cc`](ascii-diagram-builder-cc/) | Generate pixel-perfect ASCII box diagrams for architecture docs and READMEs |
-| [`bun-cc`](bun-cc/) | TypeScript CLI scripts and applications using the Bun runtime |
-| [`effect-language-service-cc`](effect-language-service-cc/) | Tooling automation for @effect/language-service: diagnostics, quickfixes, codegen |
-| [`effect-usage-cc`](effect-usage-cc/) | Decision support for Effect (effect-ts): when to use it, which patterns to prefer |
-| [`null-as-error-cc`](null-as-error-cc/) | Audit Effect codebases for silent error swallowing (`catchAll` to sentinel values) |
-| [`refactorlib-cc`](refactorlib-cc/) | Audit a codebase for handcrafted code replaceable by existing dependencies |
-| [`rekooh-cc`](rekooh-cc/) | Author, audit, register, and test Claude Code hooks against official docs |
+| Skill                                                       | Description                                                                        |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [`ascii-diagram-builder-cc`](ascii-diagram-builder-cc/)     | Generate pixel-perfect ASCII box diagrams for architecture docs and READMEs        |
+| [`bun-cc`](bun-cc/)                                         | TypeScript CLI scripts and applications using the Bun runtime                      |
+| [`effect-language-service-cc`](effect-language-service-cc/) | Tooling automation for @effect/language-service: diagnostics, quickfixes, codegen  |
+| [`effect-usage-cc`](effect-usage-cc/)                       | Decision support for Effect (effect-ts): when to use it, which patterns to prefer  |
+| [`null-as-error-cc`](null-as-error-cc/)                     | Audit Effect codebases for silent error swallowing (`catchAll` to sentinel values) |
+| [`refactorlib-cc`](refactorlib-cc/)                         | Audit a codebase for handcrafted code replaceable by existing dependencies         |
+| [`rekooh-cc`](rekooh-cc/)                                   | Author, audit, register, and test Claude Code hooks against official docs          |
 
 ## Maintenance
 
