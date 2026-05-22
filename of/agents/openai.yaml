@@ -1,0 +1,7 @@
+interface:
+  display_name: "Open File"
+  short_description: "Open a recently mentioned local file"
+  default_prompt: "$of "
+
+policy:
+  allow_implicit_invocation: true

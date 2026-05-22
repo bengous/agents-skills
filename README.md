@@ -92,6 +92,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`handoff-prompt`](handoff-prompt/)                             | Generate a copy-paste-ready handoff prompt for a fresh agent instance                                                         |
 | [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
 | [`intent-to-workflow`](intent-to-workflow/)                     | Human-gated planner that turns explicit intent into local workflow artifacts                                                  |
+| [`of`](of/)                                                     | Open an explicit or recently mentioned local file in the default viewer                                                       |
 | [`promptify`](promptify/)                                       | Transform rough dictated intent into a compact GPT-5.5-optimized prompt                                                       |
 | [`pr-review-html`](pr-review-html/)                             | Create annotated HTML artifacts for PR reviews and unfamiliar code paths                                                      |
 | [`shrinkify`](shrinkify/)                                       | Interactively reduce skills while preserving behavior and output contracts                                                    |
