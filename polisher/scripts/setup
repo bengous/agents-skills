@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: %s {status|install}\n' "$0" >&2
+}
+
+command="${1:-}"
+if [[ "$command" != "status" && "$command" != "install" ]]; then
+  usage
+  exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+skill_dir="$(cd -- "$script_dir/.." && pwd)"
+source_dir="$skill_dir/agents/codex"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+agents_dir="$codex_home/agents"
+config_path="$codex_home/config.toml"
+begin_marker="# BEGIN polisher codex agents"
+end_marker="# END polisher codex agents"
+
+agent_files=(
+  "polisher-simplification-reviewer.toml"
+  "polisher-expressiveness-reviewer.toml"
+  "polisher-architecture-reviewer.toml"
+)
+
+config_block() {
+  cat <<'EOF'
+# BEGIN polisher codex agents
+
+[agents.polisher-simplification-reviewer]
+description = "Read-only reviewer for post-feature polishing loops. Finds safe local simplification opportunities in the current change set."
+config_file = "agents/polisher-simplification-reviewer.toml"
+
+[agents.polisher-expressiveness-reviewer]
+description = "Read-only reviewer for post-feature polishing loops. Finds justified type-driven and naming-driven expressiveness improvements."
+config_file = "agents/polisher-expressiveness-reviewer.toml"
+
+[agents.polisher-architecture-reviewer]
+description = "Read-only reviewer for post-feature polishing loops. Flags architecture smells as deferred work unless they are also local simplifications."
+config_file = "agents/polisher-architecture-reviewer.toml"
+# END polisher codex agents
+EOF
+}
+
+status_errors=()
+for file in "${agent_files[@]}"; do
+  source_file="$source_dir/$file"
+  target_file="$agents_dir/$file"
+  if [[ ! -f "$target_file" ]]; then
+    status_errors+=("missing $target_file")
+  elif ! cmp -s "$source_file" "$target_file"; then
+    status_errors+=("stale $target_file")
+  fi
+done
+
+expected_block="$(config_block)"
+if [[ ! -f "$config_path" ]]; then
+  status_errors+=("missing $config_path")
+elif ! grep -Fqx "$begin_marker" "$config_path" || ! grep -Fqx "$end_marker" "$config_path"; then
+  status_errors+=("missing polisher config block in $config_path")
+elif ! python3 - "$config_path" "$begin_marker" "$end_marker" "$expected_block" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+begin = sys.argv[2]
+end = sys.argv[3]
+expected = sys.argv[4]
+text = path.read_text(encoding="utf-8")
+start = text.index(begin)
+finish = text.index(end, start) + len(end)
+actual = text[start:finish]
+raise SystemExit(0 if actual == expected else 1)
+PY
+then
+  status_errors+=("stale polisher config block in $config_path")
+fi
+
+if [[ "$command" == "status" ]]; then
+  if ((${#status_errors[@]})); then
+    printf 'polisher_agents=not_installed home=%s\n' "$codex_home" >&2
+    printf 'error=%s\n' "${status_errors[*]}" >&2
+    exit 1
+  fi
+  printf 'polisher_agents=installed home=%s agents=%s\n' "$codex_home" "${agent_files[*]}"
+  exit 0
+fi
+
+mkdir -p "$agents_dir"
+for file in "${agent_files[@]}"; do
+  cp "$source_dir/$file" "$agents_dir/$file"
+done
+
+mkdir -p "$(dirname -- "$config_path")"
+existing_text=""
+if [[ -f "$config_path" ]]; then
+  existing_text="$(cat "$config_path")"
+fi
+
+next_text="$(python3 - "$config_path" "$begin_marker" "$end_marker" "$(config_block)" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+begin = sys.argv[2]
+end = sys.argv[3]
+block = sys.argv[4]
+text = path.read_text(encoding="utf-8") if path.exists() else ""
+pattern = re.compile(rf"(?ms)^{re.escape(begin)}$.*?^{re.escape(end)}$\n?")
+if pattern.search(text):
+    sys.stdout.write(pattern.sub(block + "\n", text))
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text.strip():
+        text += "\n"
+    sys.stdout.write(text + block + "\n")
+PY
+)"
+
+backup_text=""
+if [[ "$next_text" != "$existing_text" ]]; then
+  if [[ -f "$config_path" ]]; then
+    backup_path="$config_path.polisher-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp "$config_path" "$backup_path"
+    backup_text=" backup=$backup_path"
+  fi
+  printf '%s' "$next_text" > "$config_path"
+fi
+
+"$0" status >/dev/null
+printf 'polisher_agents=installed home=%s files=%s config=%s%s\n' "$codex_home" "${agent_files[*]}" "$config_path" "$backup_text"

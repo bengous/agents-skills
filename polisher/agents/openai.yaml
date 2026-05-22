@@ -1,0 +1,7 @@
+interface:
+  display_name: "Polisher"
+  short_description: "Simplify WIP with clean-context reviewers."
+  default_prompt: "$polisher Run a post-feature polishing loop on the current change set."
+
+policy:
+  allow_implicit_invocation: false
