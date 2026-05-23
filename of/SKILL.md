@@ -1,11 +1,14 @@
 ---
 name: of
-description: "Open File. Use when the user asks to open/view a local file, especially via $of or $op, with either an explicit path or a recently mentioned file path. Opens visualizable files such as images, Mermaid, Markdown, HTML, PDF, and text using the system default app."
+description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $of or $op, or explicitly names this skill to open/view a local file. Never invoke implicitly. Opens visualizable files such as images, Mermaid, Markdown, HTML, PDF, and text using the system default app."
 ---
 
 # Open File
 
-Open one local file the user wants to view.
+Open one local file the user explicitly asks to view.
+
+Human-invoked only. Do not activate implicitly from a merely mentioned path or
+artifact.
 
 ## Input
 
