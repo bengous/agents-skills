@@ -73,11 +73,10 @@ After `$grill-me` resolves the blockers, resume and produce the final prompt.
 
 ## Output
 
-If clear:
+If clear, output only the final copy-pasteable prompt. Do not add labels, headers,
+introductions, explanations, fences, or trailing commentary.
 
 ```text
-Prompt final GPT-5.5:
-
 <copy-pasteable prompt>
 ```
 
