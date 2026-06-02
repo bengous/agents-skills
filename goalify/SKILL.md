@@ -53,10 +53,10 @@ Do not include generic role text such as "You are Codex CLI". Do not restate obv
 
 ## Prompt Shape
 
-Use compact GPT-5.5-oriented structure. Prefer these labels when they carry real information:
+Use compact GPT-5.5-oriented structure. Put the objective as the first line without an `Objective:` label, because Codex and Pi already wrap `/goal` output with their own objective label. Prefer these labels for later sections when they carry real information:
 
 ```text
-Objective:
+<objective sentence>
 Context:
 Constraints:
 Success means:
@@ -137,6 +137,7 @@ Before final output, verify:
 
 - the output is a goal payload, not a wrapper
 - short output does not start with `/goal`
+- short output does not start with `Objective:`
 - no separate session prompt exists
 - no generic Codex role preamble is included
 - success criteria are observable
