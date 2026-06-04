@@ -309,7 +309,7 @@ def test_setup_fingerprint_reports_packaged_resource_hash() -> None:
     result = run_cli(["setup", "fingerprint"])
 
     assert result.exit_code == 0
-    assert "version=0.2.0" in result.stdout
+    assert "version=0.2.1" in result.stdout
     prefix = "setup_fingerprint="
     fingerprint = result.stdout.split(prefix, maxsplit=1)[1].split(maxsplit=1)[0]
     assert len(fingerprint) == 64
@@ -670,6 +670,28 @@ def test_advance_blocks_on_untouched_clarification(tmp_path: Path) -> None:
     assert "stage=clarification" in run_cli(["status", "demo"]).stdout
 
 
+def test_advance_allows_intentional_todo_word_in_clarification(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    (root / "clarification.md").write_text(
+        "\n".join(
+            [
+                "# Clarification",
+                "",
+                "Q001 done.",
+                "",
+                "Decision: Keep TODO as an allowed literal when it is part of the policy text.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["advance", "demo"])
+
+    assert result.exit_code == 0
+    assert "stage=prd" in result.stdout
+
+
 def test_advance_does_not_require_companion_skills(tmp_path: Path) -> None:
     root = tmp_path / ".itw" / "demo"
     assert init_demo(root).exit_code == 0
@@ -890,6 +912,51 @@ def test_issue_validation_applies_to_each_issue(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "issues.md issue 1 Type:" in result.stderr
     assert "stage=issues" in run_cli(["status", "demo"]).stdout
+
+
+def test_issues_allow_intentional_todo_word_in_title_and_body(tmp_path: Path) -> None:
+    root = tmp_path / ".itw" / "demo"
+    assert init_demo(root).exit_code == 0
+    (root / "clarification.md").write_text("Q001 done", encoding="utf-8")
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    write_prd(root / "prd.md")
+    write_terminology(root / "terminology.md")
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    assert run_cli(["advance", "demo"]).exit_code == 0
+    (root / "issues.md").write_text(
+        "\n".join(
+            [
+                "# Issues",
+                "",
+                "### 1. Preserve TODO wording",
+                "",
+                "Type: AFK",
+                "",
+                "Depends on: none",
+                "",
+                "Goal:",
+                "Document why TODO can appear as a literal word.",
+                "",
+                "Acceptance:",
+                "- [ ] The literal TODO word is accepted in prose.",
+                "",
+                "TDD:",
+                "- First behavior test: TODO in prose is accepted.",
+                "",
+                "Validation:",
+                "- uv run pytest",
+                "",
+                "Agent:",
+                "- worker",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["advance", "demo"])
+
+    assert result.exit_code == 0
+    assert "stage=issues_review" in result.stdout
 
 
 def test_degraded_issues_review_blocks_workflow(tmp_path: Path) -> None:

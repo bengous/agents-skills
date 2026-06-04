@@ -763,7 +763,7 @@ def validate_issues(root: Path) -> tuple[str, ...]:
     if not issues:
         errors.append("issues.md issue heading")
     for issue in issues:
-        if "TODO" in issue.title:
+        if is_placeholder_text(issue.title):
             errors.append(f"issues.md issue {issue.number} title")
         errors.extend(
             f"issues.md issue {issue.number} {field}"
@@ -807,8 +807,33 @@ def file_errors(root: Path, relative: str, require_non_empty: bool = False) -> t
 
 
 def placeholder_errors(label: str, text: str) -> tuple[str, ...]:
-    placeholders = ("TODO", "[TODO", "Add your description here")
-    return tuple(f"{label} placeholder {value}" for value in placeholders if value in text)
+    if has_placeholder_text(text):
+        return (f"{label} placeholder TODO",)
+    if "Add your description here" in text:
+        return (f"{label} placeholder Add your description here",)
+    return ()
+
+
+def has_placeholder_text(text: str) -> bool:
+    return any(is_placeholder_text(line) for line in text.splitlines()) or bool(
+        re.search(r"\[TODO[^\]]*\]", text)
+    )
+
+
+def is_placeholder_text(text: str) -> bool:
+    stripped = text.strip()
+    if stripped == "TODO" or stripped.startswith("TODO:"):
+        return True
+    if re.fullmatch(r"[A-Za-z][A-Za-z ]+:\s*TODO", stripped):
+        return True
+    if re.fullmatch(r"- \[(?: |x|X)\] TODO", stripped):
+        return True
+    if stripped == "- TODO":
+        return True
+    if stripped.startswith("|") and stripped.endswith("|"):
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        return bool(cells) and all(cell == "TODO" for cell in cells)
+    return False
 
 
 def validate_prompt_references(root: Path) -> tuple[str, ...]:

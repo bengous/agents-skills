@@ -1,6 +1,6 @@
 [project]
 name = "intent-to-workflow"
-version = "0.2.0"
+version = "0.2.1"
 description = "Human-gated planner that turns an intention into staged workflow artifacts."
 authors = [
     { name = "Augustin BENGOLEA", email = "bengous@protonmail.com" }
