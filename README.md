@@ -102,6 +102,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`slop-detector`](slop-detector/)                               | Detect, score, and rewrite AI-generated or generic text                                                                       |
 | [`state-machine`](state-machine/)                               | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |
 | [`swarm-research`](swarm-research/)                             | Fan out parallel Codex research subagents and synthesize the findings                                                         |
+| [`teach-back`](teach-back/)                                     | Teach a session incrementally and verify the human's understanding before advancing                                           |
 
 ### Claude Code (`-cc`)
 

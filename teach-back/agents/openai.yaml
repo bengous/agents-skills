@@ -1,0 +1,7 @@
+interface:
+  display_name: "Teach Back"
+  short_description: "Verify understanding step by step"
+  default_prompt: "Use $teach-back to teach me this session and verify my understanding step by step."
+
+policy:
+  allow_implicit_invocation: true
