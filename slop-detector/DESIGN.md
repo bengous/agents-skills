@@ -126,7 +126,7 @@ After each use, ask: did the skill flag something that shouldn't have been flagg
 Added a multilingual research pass (EN/FR/ES). A swarm of agents mined the
 canonical and 2025-2026 AI-tic literature plus open-source deslop tools; the
 output was deduplicated and false-positive-triaged into a 156-tic registry
-(`scripts/patterns.py`, generated — not hand-edited) covering 21 categories.
+(`scripts/patterns.py`, generated, then selectively hand-tuned by the eval loop) covering 21 categories.
 
 Two design decisions drive it:
 
@@ -136,7 +136,9 @@ Two design decisions drive it:
   when clustered. This is why legitimate technical English using "robust",
   "optimized", "scalable" scores zero — the original per-instance summing would
   have over-flagged it. The negation→affirmation pivot is the top-priority
-  family: a single pivot scores at half weight, two or more escalate to full.
+  family: a strong canonical pivot (the explicit "it's not X, it's Y" /
+  "ce n'est pas X, c'est Y" cadence, sev>=8) scores at full weight even alone;
+  weaker reframes stay at half weight until two or more co-occur and escalate.
 - **Locale guards.** Correct French NBSP-before-punctuation and the Spanish RAE
   dialogue raya are explicitly NOT flagged. The English-only statistical
   analysers (contractions, vocab diversity, perplexity, flatness) are skipped
@@ -145,6 +147,12 @@ Two design decisions drive it:
 The em-dash is treated as a density signal only (never a binary tell), and the
 spaced/double-hyphen em-dash surrogates left by "humanizer" tools are caught so
 the detector can't be evaded by a global "—" replace.
+
+The binary `likely_ai` flag is the weighted score plus a few high-confidence
+shortcuts: a fixed opener cliché ("In an era of", "En un mundo donde") is trusted
+enough that one such opener alongside a second category at density flips the flag,
+and for FR/ES a lone opener of this kind suffices, since these buzzphrases never
+appear in clean corpus text.
 
 ## 6. Future Extensions (highest-value only)
 
