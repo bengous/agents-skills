@@ -63,16 +63,18 @@ slop-detector/
 ├── SKILL.md                          ← Hub. Workflow, output format, gotchas, file table.
 ├── voice-profile-template.md         ← Template for user voice profile (not active until populated)
 ├── references/
-│   ├── heuristics.md                 ← Core detection engine. 13 categories + meta-check.
+│   ├── heuristics.md                 ← Core engine: 13 categories (Part I) + newer tics, gating, multilingual (Part II) + meta-check.
+│   ├── heuristics-fr.md              ← French AI-writing tics (anglicisms, pivots, typography guard).
+│   ├── heuristics-es.md              ← Spanish AI-writing tics (calques, pivots, ¿¡ / raya guard).
 │   ├── genre-presets.md              ← Per-genre scoring adjustments (LinkedIn, cover letter, recruiter, general).
 │   ├── voice-strategy.md             ← How to preserve voice during rewrites. How to build a profile.
 │   └── strictness-modes.md           ← Brutal / firm / gentle / calibration-only.
 ├── examples/
 │   └── bad-to-good.md               ← 5 worked examples at different severity levels.
 ├── scripts/
-│   └── score.py                      ← Deterministic pre-screen. Regex + statistical analysis (6 analyzers).
-├── evals/
-│   └── evals.json                    ← 5 test prompts with expected outcomes.
+│   ├── score.py                      ← Deterministic pre-screen (EN/FR/ES). Tic registry + two-tier gating + statistical analysers (EN only).
+│   └── patterns.py                   ← Tic registry (~156 tics) consumed by score.py. Seeded from the v2 research pass; maintained directly.
+├── evals.json                        ← 9 test prompts (EN/FR/ES) with expected outcomes.
 └── DESIGN.md                         ← This file. Not read by the agent.
 ```
 
@@ -119,9 +121,34 @@ After each use, ask: did the skill flag something that shouldn't have been flagg
 
 ---
 
+## 5b. Multilingual upgrade (v2)
+
+Added a multilingual research pass (EN/FR/ES). A swarm of agents mined the
+canonical and 2025-2026 AI-tic literature plus open-source deslop tools; the
+output was deduplicated and false-positive-triaged into a 156-tic registry
+(`scripts/patterns.py`, generated — not hand-edited) covering 21 categories.
+
+Two design decisions drive it:
+
+- **Two-tier density gating.** HARD tells (assistant leakage, model artifacts,
+  high-specificity calques) score on a single match; SOFT tells (intensifiers,
+  connectors, em-dashes, entrenched anglicisms, the negation pivot) only score
+  when clustered. This is why legitimate technical English using "robust",
+  "optimized", "scalable" scores zero — the original per-instance summing would
+  have over-flagged it. The negation→affirmation pivot is the top-priority
+  family: a single pivot scores at half weight, two or more escalate to full.
+- **Locale guards.** Correct French NBSP-before-punctuation and the Spanish RAE
+  dialogue raya are explicitly NOT flagged. The English-only statistical
+  analysers (contractions, vocab diversity, perplexity, flatness) are skipped
+  for FR/ES, which assume English morphology.
+
+The em-dash is treated as a density signal only (never a binary tell), and the
+spaced/double-hyphen em-dash surrogates left by "humanizer" tools are caught so
+the detector can't be evaded by a global "—" replace.
+
 ## 6. Future Extensions (highest-value only)
 
-1. **French language support.** You write in French for mpzinc.fr and likely for LinkedIn in French. The heuristics are English-only right now. A `references/heuristics-fr.md` file with French-specific patterns (overuse of "en effet", "il convient de noter", "force est de constater", "dans le cadre de", em dashes in French AI output, "afin de" instead of "pour") would extend coverage. The contraction analysis would need adaptation too — French doesn't contract the same way.
+1. **DONE — French and Spanish support.** Shipped in v2: `references/heuristics-fr.md`, `references/heuristics-es.md`, language-keyed patterns, `--lang` flag, and auto-detection. Remaining: FR/ES statistical analysers (the contraction/voice-marker/perplexity analysers are still English-only) and Portuguese/German if needed.
 
 2. **Adversarial self-check.** After producing a rewrite, automatically re-run the audit on the rewrite itself. If the rewrite scores above 25, flag it and revise. This prevents mirror-slop without manual verification.
 

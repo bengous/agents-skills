@@ -2,6 +2,12 @@
 
 Each genre has different tolerances and red flags. Load the matching preset before scoring.
 
+Genre is **independent of language**. These presets are calibrated on English
+examples, but the tolerances apply to French and Spanish too — combine the genre
+preset with the matching `heuristics-fr.md` / `heuristics-es.md`. (The genre
+*bonus* phrases in `score.py`, e.g. "thrilled to announce", only fire for English;
+the qualitative genre judgment still applies in every language.)
+
 ---
 
 ## LinkedIn Posts

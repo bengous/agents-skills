@@ -7,6 +7,9 @@ description: >
   "this sounds generic", "clean up my writing", "audit this draft",
   "too much fluff", "sounds like ChatGPT", "deslop", "voice check",
   or any request to improve, critique, or humanize written text.
+  Works in English, French, and Spanish — also trigger on French/Spanish
+  cues like "ça fait IA", "détecte le slop", "rends ça plus humain",
+  "trop d'anglicismes", "suena a IA", "esto suena a ChatGPT".
   Also trigger when reviewing any text output from another agent or skill
   that will be published, sent, or shared externally.
 model: opus
@@ -41,13 +44,14 @@ Python 3 runtime: !`python3 --version`
 
 ## Core workflow
 
-1. **Read the input text.** Identify genre (LinkedIn, cover letter, recruiter message, general).
-2. **Load genre preset.** Read `references/genre-presets.md` for the matching genre.
-3. **Run the audit.** Apply heuristics from `references/heuristics.md`. Score each finding.
-4. **Produce the diagnosis.** Use the output format below.
-5. **Propose line edits.** Be specific: quote the exact phrase, explain the problem, offer a replacement.
-6. **Optionally rewrite.** If the user asks for a full rewrite, or if the text is >70% contaminated, produce one. Otherwise, line edits only.
-7. **Check voice config.** If `voice-profile.md` exists in this skill folder, compare rewrites against it. Read `references/voice-strategy.md` for how.
+1. **Read the input text.** Identify the **language** (English, French, Spanish) and the genre (LinkedIn, cover letter, recruiter message, general).
+2. **Run the pre-screen.** `python3 scripts/score.py --lang <en|fr|es|auto> --genre <genre> --file <path>` (or pipe via stdin). It returns a score, a `likely_ai` flag, and findings grouped by category. This is a baseline, not the verdict.
+3. **Load the right heuristics.** Always apply `references/heuristics.md` (Parts I + II). For **French** also read `references/heuristics-fr.md`; for **Spanish**, `references/heuristics-es.md`. Then load the genre preset from `references/genre-presets.md`.
+4. **Run the audit.** Apply the heuristics with the **two-tier gating** in mind: hard tells count alone, soft tells only in clusters. Don't flag isolated soft hits in otherwise strong writing.
+5. **Produce the diagnosis.** Use the output format below.
+6. **Propose line edits.** Be specific: quote the exact phrase, explain the problem, offer a replacement. For anglicisms, propose the correct native term.
+7. **Optionally rewrite.** If the user asks for a full rewrite, or if the text is >70% contaminated, produce one. Otherwise, line edits only.
+8. **Check voice config.** If `voice-profile.md` exists in this skill folder, compare rewrites against it. Read `references/voice-strategy.md` for how.
 
 ## Output format
 
@@ -98,6 +102,10 @@ These are real failure modes. Add to this list when you hit new ones.
 - **Vocabulary diversity in expert writing.** A domain expert using precise technical vocabulary (each term means something different) is not synonym cycling. Only flag when the variation serves no semantic purpose — when "important", "crucial", "vital", "essential" all mean exactly the same thing in context.
 - **Emotional flatness in reports.** A quarterly earnings summary or technical postmortem is supposed to be neutral. Flatness is only a finding when the genre demands personality (LinkedIn, cover letters, blog posts, personal emails).
 - **Penalizing real human flatness.** Some humans genuinely write in a flat, factual style. If the text has other human signals (contractions, specific details, uneven rhythm), don't double-penalize for low emotional markers.
+- **Em-dash is not a binary tell.** A single em-dash means nothing — the em-dash signal is purely about density, and the "ChatGPT hyphen" (spaced ASCII hyphen) or double hyphen are em-dash surrogates left by humanizer tools. Flag the pattern, never one dash.
+- **French typography is not slop.** A non-breaking space before `:` `;` `!` `?` and inside « » is *correct* French. Never flag it. The Spanish dialogue raya (—) is correct per the RAE. The pre-screen guards these; you must too.
+- **Anglicisms are gated for a reason.** One "digital" or "challenge" in French (or "aplicar"/"remover" in Latin-American Spanish) is normal human usage. The signal is the *accumulation* of calques plus other tics — never a single entrenched borrowing.
+- **The statistical analyzers (contractions, vocab diversity, perplexity, flatness) are English-only.** They assume English morphology, so `score.py` skips them for French/Spanish. Lean on the pattern findings and your own judgment there.
 
 ## Strictness
 
@@ -113,10 +121,13 @@ For alternative strictness modes, see `references/strictness-modes.md`.
 
 | File | Read when |
 |------|-----------|
-| `references/heuristics.md` | Every audit. The core detection engine. |
+| `references/heuristics.md` | Every audit. Core engine (Part I) + newer tics, gating, multilingual (Part II). |
+| `references/heuristics-fr.md` | The input text is in French. |
+| `references/heuristics-es.md` | The input text is in Spanish. |
 | `references/genre-presets.md` | After identifying the genre of the input text. |
 | `references/voice-strategy.md` | When a voice profile exists, or when rewriting. |
 | `references/strictness-modes.md` | When user requests a different strictness level. |
 | `examples/bad-to-good.md` | When you need calibration on what "good" looks like. |
-| `scripts/score.py` | Optional: deterministic pre-screen before full audit. |
+| `scripts/score.py` | Deterministic pre-screen (EN/FR/ES). Use `--lang` and `--genre`. |
+| `scripts/patterns.py` | Generated tic registry consumed by `score.py`. Not read directly. |
 | `voice-profile.md` | Only if the user has created one. Not shipped by default. |

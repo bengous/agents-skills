@@ -388,3 +388,94 @@ Score +10 for texts that fail this test. Note it in the diagnosis.
 - Contraction avoidance is only a signal in genres where contractions are normal. Academic papers, legal text, and formal reports legitimately avoid contractions.
 - High vocabulary diversity is only suspicious if it looks like synonym cycling. A writer who genuinely knows many words and uses them precisely is not the same as AI rotating through a thesaurus. Check whether the word choices add nuance or just avoid repetition.
 - Emotional flatness is only a finding when the genre demands personality. A quarterly earnings summary is supposed to be neutral. A LinkedIn post about a career change is not.
+
+---
+
+# Part II — Newer tics, density gating, and multilingual
+
+Categories 1–13 above are the original engine. The categories below were added
+from a multilingual research pass (EN/FR/ES) and reflect the tics that current
+models (2025–2026) produce most. `scripts/score.py` detects all of them; the
+category keys here match its output. **For French or Spanish text, read
+`references/heuristics-fr.md` or `references/heuristics-es.md` instead of the
+English signature phrases — the structure is the same, the markers differ, and
+anglicisms become a primary signal.**
+
+## The two-tier gating principle (important)
+
+Every serious deslop tool agrees: **a single hit is not a verdict.** A lone
+"robust" or one em-dash means nothing — clustering does. So score in two tiers:
+
+- **HARD tells** score on a single match. These are near-deterministic: assistant
+  leakage, model artifacts (invisible Unicode, citation tokens), and
+  high-specificity calques/phrases ("a testament to", "adresser le problème",
+  ", highlighting its importance", "In an era of").
+- **SOFT tells** (intensifiers, connectors, em-dashes, entrenched anglicisms,
+  copula avoidance, the negation pivot) only score when **clustered** — the same
+  tic recurs ≥2×, OR ≥3 distinct soft categories appear close together, OR the
+  tic shares a sentence with a hard tell or a pivot.
+
+This is why legitimate technical English ("we made the pool more robust and
+optimized the hot path") scores **zero** while marketing slop lights up. Do not
+flag isolated soft tells in otherwise strong writing.
+
+## Category 14: Negation→Affirmation Pivot (TOP PRIORITY)
+
+### Watch for
+- "It's not X, it's Y" / "not just X, but Y" / "not only X but also Y"
+- "less about X, more about Y" / "it's not that X, it's that Y"
+- "X isn't about Y, it's about Z" / "The point isn't X. The point is Y."
+- "no X, no Y, just Z" (cascading triple negation)
+- FR/ES equivalents — see the per-language files.
+
+### Why it's slop
+The contrastive/antithesis frame is the single most recognizable LLM cadence,
+overproduced by RLHF's taste for "balanced then decisive" phrasing. Humans use
+it occasionally; models reach for it reflexively.
+
+### Scoring
+A single pivot scores at half weight (it can be legitimate rhetoric); **two or
+more pivots anywhere in the text** escalate each to full severity. This is the
+highest-value family — gated softly, never suppressed.
+
+## Category 15: Assistant / Chat-UI Leakage (HARD)
+Conversational boilerplate that escaped into standalone text: "Great question!",
+"You're absolutely right!", "As an AI language model", "as of my last knowledge
+update", "I hope this helps! Let me know if…", "Would you like me to…". Near-
+deterministic — score on sight. (FR: "en tant que modèle de langage"; ES: "como
+modelo de lenguaje".)
+
+## Category 16: Model Artifacts (HARD)
+Invisible Unicode (zero-width chars, narrow NBSP between letters in non-French
+text) and leaked citation markup (`oaicite`, `contentReference`, `turn0search…`).
+These are verbatim model output — the strongest tells when present.
+
+## Category 17: Significance & Superficial-Analysis Inflation
+"a testament to", "underscores/highlights the importance of", "plays a pivotal
+role", "left an indelible mark", "paving the way for", and trailing "-ing"
+clauses that fake analysis (", highlighting its relevance", ", reflecting a
+broader trend"). The trailing-participle tail is a very strong, low-FP signature.
+
+## Category 18: Copula & Plain-Verb Avoidance (soft)
+"serves as / stands as / boasts / represents" instead of is/has; register
+inflation "utilize / facilitate / enhance". High FP in formal registers — gated.
+
+## Category 19: Opener & Scene-Setting Clichés
+"In an era of…", "In today's fast-paced world", "In this article we will
+explore", "Imagine a world where", "Let's dive in", "whether you're X or Y".
+Mostly hard, low-FP template tells.
+
+## Category 20: Typography & Formatting Bleed (soft, density-gated)
+- **Em-dash overuse** — density only, never a single dash. The spaced ASCII
+  hyphen ("word - word", the "ChatGPT hyphen") and the double hyphen ("word--word")
+  are em-dash surrogates produced by humanizer tools that strip "—"; catch them too.
+- Curly quotes / ellipsis character in plain-text contexts.
+- **Markdown bleed-through** (`**bold**`, `#` headings, backticks) and emoji used
+  as bullets/section headers in a context where Markdown does not render.
+- **French/Spanish typography guards apply** — correct NBSP-before-punctuation in
+  French and the RAE dialogue raya in Spanish must NOT be flagged. See the
+  per-language files.
+
+## Category 21: Fiction / Roleplay Purple Prose (HARD)
+"voice barely above a whisper", "shivers down their spine", stock fantasy names
+(Elara, Thorne, Kael…). Niche but near-deterministic in RP/fiction output.

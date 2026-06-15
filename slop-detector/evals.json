@@ -24,6 +24,26 @@
       "expected_output": "Score 20-35. Mostly clean. Minor flags: 'headcount optimization' is a euphemism, 'reflect the progress we've made' is slightly padded. But has real numbers, specific causes, forward-looking detail. Verdict: light edits, not a rewrite.",
       "id": 5,
       "prompt": "Audit this — is it slop or just clean professional writing?\n\nOur Q3 results reflect the progress we've made on operational efficiency. Revenue grew 12% year-over-year to $4.2M, while operating costs decreased 8% through headcount optimization and vendor renegotiation. We expect Q4 to benefit from the new enterprise pricing tier launching in November."
+    },
+    {
+      "expected_output": "French. Score 40+, likely_ai true. Should flag: opener 'Dans un monde en constante évolution', negation pivot 'ce n'est pas tant... que', anglicisms (digitale, délivrer de la valeur, adresser les défis), hedge 'il convient de noter', significance 'joue un rôle crucial', copula 'permet de'. Run score.py --lang fr.",
+      "id": 6,
+      "prompt": "Ce texte fait-il IA ? Audite-le (français) :\n\nDans un monde en constante évolution, il convient de noter que l'intelligence artificielle n'est pas une simple tendance, c'est une véritable révolution. Notre solution digitale permet de délivrer de la valeur et d'adresser les défis cruciaux de demain. Par ailleurs, elle joue un rôle crucial pour libérer le potentiel de chaque équipe. En définitive, ce n'est pas tant la technologie qui compte que la vision — une vision audacieuse, ambitieuse et résolument tournée vers le futur."
+    },
+    {
+      "expected_output": "French, clean human writing. Score under 10, likely_ai false. Has contractions of voice ('en fait', 'bref', 'promis'), specific detail (2 Mo, buffer), self-deprecation. Verdict: leave as is. No false anglicism or pivot flags. Run score.py --lang fr.",
+      "id": 7,
+      "prompt": "Est-ce que ça sonne IA ? (français)\n\nJ'ai passé le week-end à réécrire le parseur. L'ancien plantait dès qu'un fichier dépassait 2 Mo, et personne ne comprenait pourquoi. En fait, c'était une histoire de buffer mal dimensionné. Bref, ça marche maintenant, même si le code reste moche par endroits. Je nettoierai ça plus tard, promis."
+    },
+    {
+      "expected_output": "Spanish. Score 50+, likely_ai true. Should flag: opener 'En la era de', negation pivots ('no es solo... sino', 'no se trata de... se trata de'), significance ('desempeña un papel crucial', 'un testimonio de'), cliché 'en el panorama cambiante', anglicism 'soporta múltiples formatos', closer 'En conclusión'. Run score.py --lang es.",
+      "id": 8,
+      "prompt": "¿Esto suena a IA? Audítalo (español):\n\nEn la era de la transformación digital, es importante destacar que la innovación no es solo una opción, sino una necesidad fundamental. Nuestra plataforma robusta permite aprovechar las sinergias y desempeña un papel crucial en el panorama cambiante actual. Además, soporta múltiples formatos y, sin duda, es un testimonio de nuestro compromiso. En conclusión, no se trata de tecnología, se trata de personas."
+    },
+    {
+      "expected_output": "English. Score 40+, likely_ai true. Should flag the negation-affirmation pivot family ('this isn't just X, it's Y', 'it's not about X, it's about Y'), assistant leakage ('Great question', 'I hope this helps'), opener 'In an era of', significance 'serves as a testament to', and em-dash density. Demonstrates the pivot + leakage + typography categories.",
+      "id": 9,
+      "prompt": "Does this read as AI? Audit it:\n\nLet's be honest — this isn't just another framework, it's a paradigm shift. It's not about writing less code, it's about writing code that matters. In an era of constant change, our platform serves as a testament to what's possible, delivering robust, scalable, and seamless performance — every single time. Great question, by the way! I hope this helps clarify why it's a game-changer."
     }
   ],
   "skill_name": "slop-detector"
