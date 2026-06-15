@@ -447,10 +447,20 @@ def run(text, genre="general", strictness="brutal", lang="auto"):
     # this is the band where short overt EN/ES samples pack their slop into two
     # categories and otherwise just miss the 3-category density path.
     hard_opener = any(f["cat"] == "opener-cliche" and f.get("weight", 0) >= 6 for f in findings)
+    # The FR/ES opener-cliche tells are narrow, fixed buzzphrases ("Dans un monde
+    # en constante évolution", "en la era de", ...) that never fire on the clean
+    # corpus; per heuristics an opener buzzword in the first sentence contaminates
+    # reader trust outright (a high, low-FP tell). The largest FR/ES overt FN
+    # cluster is a short sample whose slop is exactly one such opener: it clears
+    # the density floor but stalls below the 2-/3-category gates. Let a lone
+    # high-confidence (weight>=7) FR/ES opener carry the verdict on its own.
+    lone_hard_opener = (lang in ("fr", "es")
+                        and any(f["cat"] == "opener-cliche" and f.get("weight", 0) >= 7 for f in findings))
     likely_ai = (any(f.get("weight", 0) >= 9 and f.get("sev", 0) >= 9 for f in findings)
                  or (weighted >= 18 and signal_sources >= 2)
                  or (normalized >= 6 and len(distinct_cats) >= 3)
-                 or (hard_opener and normalized >= 6 and len(distinct_cats) >= 2))
+                 or (hard_opener and normalized >= 6 and len(distinct_cats) >= 2)
+                 or (lone_hard_opener and normalized >= 6))
 
     grouped = defaultdict(list)
     for f in sorted(findings, key=lambda x: -x.get("weight", 0)):
