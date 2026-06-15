@@ -305,13 +305,23 @@ def gate(text, matches, lang):
     # --- Negation->affirmation pivot (top priority, softly gated) ---
     pivots = by_gkind.get("pivot", [])
     bare_sino = by_gkind.get("es_bare_sino", [])
-    pivot_full = len(pivots) >= 2
-    for m in pivots:
-        w = m["sev"] if pivot_full else round(m["sev"] * 0.5, 1)
+    # A bare "no X, sino Y" antithesis is a genuine pivot construction; once a
+    # real pivot is already present it counts toward the "two or more pivots"
+    # escalation rather than sitting in its own high-FP bucket.
+    sino_as_pivot = bare_sino if pivots else []
+    pivot_count = len(pivots) + len(sino_as_pivot)
+    pivot_full = pivot_count >= 2
+    # A strong pivot (sev>=8) is the canonical, low-FP antithesis cadence
+    # ("it's not X, it's Y" / "ce n'est pas X, c'est Y" / "no es X, es Y") that
+    # the heuristics flag as the #1 tell. It earns full weight even alone; the
+    # half-weight discount stays for the weaker (sev<=7), higher-FP reframes.
+    for m in pivots + sino_as_pivot:
+        full = pivot_full or m["sev"] >= 8
+        w = m["sev"] if full else round(m["sev"] * 0.5, 1)
         fired.append({**m, "weight": w})
         hard_sentences.add(sent_of(m["start"]))
-    for m in bare_sino:  # critic: only with a hard tell in-sentence OR >=2 other pivots
-        if sent_of(m["start"]) in hard_sentences or len(pivots) >= 2:
+    for m in bare_sino:  # leftover bare-sino (no real pivot): keep the strict guard
+        if m not in sino_as_pivot and sent_of(m["start"]) in hard_sentences:
             fired.append({**m, "weight": m["sev"]})
 
     # --- Em-dash family: density-gated, never a single dash ---
@@ -430,9 +440,17 @@ def run(text, genre="general", strictness="brutal", lang="auto"):
     normalized = round(weighted * 1000 / word_count, 1)
     distinct_cats = {f["cat"] for f in findings}
     signal_sources = len(distinct_cats) + (1 if genre_findings else 0) + (1 if statistical else 0)
+    # A hard, low-FP opener cliche ("In an era of", "En un mundo donde", ...) is a
+    # high-trust AI tell: per the heuristics, an opener buzzword contaminates the
+    # reader's trust immediately. When one fires alongside any second category at
+    # high density, treat the text as AI even with only two distinct categories —
+    # this is the band where short overt EN/ES samples pack their slop into two
+    # categories and otherwise just miss the 3-category density path.
+    hard_opener = any(f["cat"] == "opener-cliche" and f.get("weight", 0) >= 6 for f in findings)
     likely_ai = (any(f.get("weight", 0) >= 9 and f.get("sev", 0) >= 9 for f in findings)
                  or (weighted >= 18 and signal_sources >= 2)
-                 or (normalized >= 6 and len(distinct_cats) >= 3))
+                 or (normalized >= 6 and len(distinct_cats) >= 3)
+                 or (hard_opener and normalized >= 6 and len(distinct_cats) >= 2))
 
     grouped = defaultdict(list)
     for f in sorted(findings, key=lambda x: -x.get("weight", 0)):
