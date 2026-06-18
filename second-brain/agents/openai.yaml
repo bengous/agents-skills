@@ -1,0 +1,7 @@
+interface:
+  display_name: "Second Brain"
+  short_description: "Stand up and maintain a bounded, progressively-loaded markdown wiki."
+  default_prompt: "$second-brain "
+
+policy:
+  allow_implicit_invocation: false
