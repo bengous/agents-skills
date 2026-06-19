@@ -29,6 +29,8 @@ Useful entry points:
 
 - [`goalify`](goalify/) converts rough intent into a compact Codex `/goal`
   payload or protected `.agents/goals` file.
+- [`looper`](looper/) designs dynamic Codex loops, including PR feedback loops,
+  stacked PR loops, maintenance loops, and loop-to-`/goal` payloads.
 - [`skill-sync`](skill-sync/) commits, pushes, and deploys skill changes while
   checking source, live install, and dotfiles boundaries.
 - [`intent-to-workflow`](intent-to-workflow/) turns a broad intention into local
@@ -92,6 +94,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`handoff-prompt`](handoff-prompt/)                             | Generate a copy-paste-ready handoff prompt for a fresh agent instance                                                         |
 | [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
 | [`intent-to-workflow`](intent-to-workflow/)                     | Human-gated planner that turns explicit intent into local workflow artifacts                                                  |
+| [`looper`](looper/)                                             | Design, audit, and convert rough work into dynamic Codex loops with gates, validation, and stop/pause conditions              |
 | [`of`](of/)                                                     | Open an explicit or recently mentioned local file in the default viewer                                                       |
 | [`promptify`](promptify/)                                       | Transform rough dictated intent into a compact GPT-5.5-optimized prompt                                                       |
 | [`pr-review-html`](pr-review-html/)                             | Create annotated HTML artifacts for PR reviews and unfamiliar code paths                                                      |
