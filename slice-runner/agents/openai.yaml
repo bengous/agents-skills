@@ -1,0 +1,7 @@
+interface:
+  display_name: "Slice Runner"
+  short_description: "Run approved plans by Codex-native slices."
+  default_prompt: "$slice-runner "
+
+policy:
+  allow_implicit_invocation: false

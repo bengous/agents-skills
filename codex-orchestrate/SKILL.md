@@ -1,9 +1,11 @@
 ---
 name: codex-orchestrate
-description: Use when the user explicitly invokes /codex-orchestrate or asks to orchestrate a large multi-slice plan (refactor, migration, feature rollout) by delegating implementation to the Codex CLI (agents-bridge) instead of the native Workflow tool, to keep orchestrator token usage low. Requires an agreed plan and a repo with runnable quality gates.
+description: Claude Code only. Use when the user explicitly invokes /codex-orchestrate in Claude Code or asks Claude to orchestrate a large multi-slice plan by delegating implementation to the Codex CLI through agents-bridge. In native Codex, use $slice-runner instead.
 ---
 
 # Orchestration de plans par slices via Codex
+
+Claude Code only. Dans Codex natif, utiliser `$slice-runner`.
 
 ## Principe
 
