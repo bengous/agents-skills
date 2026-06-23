@@ -1,11 +1,11 @@
 ---
 name: council
-description: Convene a small council of fresh Codex subagents to challenge, research, and zoom out on the current problem. Use when the user invokes "$council", asks for a council of agents, wants multiple external viewpoints, wants the current topic challenged, or needs independent perspectives before deciding. If invoked with no extra prompt, infer the current subject from the active conversation and ask clean-context subagents to review it.
+description: Convene 3 fresh Codex subagents to give independent opinions on a question, idea, hypothesis, plan, or ambiguity. Use when the user invokes "$council", asks for "l'avis de 3 sous agents", wants multiple external viewpoints, says "je me demande si..." and appears to want validation, fact-checking, challenge, ambiguity-breaking, or a smarter decision review. If invoked with no extra prompt, infer the current subject from the active conversation and ask clean-context subagents to review it.
 ---
 
 # Council
 
-Get independent outside views on the current problem without dragging subagents through the whole conversation.
+Get 3 independent outside views on the current question without dragging subagents through the whole conversation.
 
 ## Contract
 
@@ -16,18 +16,19 @@ When the user invokes `$council` with no extra text:
 - Do not ask for clarification unless the current subject cannot be identified.
 - Spawn clean-context subagents with `fork_context: false`.
 - Brief each subagent with only the neutral problem statement and needed files, commands, URLs, or facts.
+- If the user named a model or reasoning level, carry it through. Otherwise use the host defaults.
 
-When the user adds a topic after `$council`, use that as the brief.
+When the user adds a topic after `$council`, or asks for 3 subagent opinions in prose, use that as the brief.
 
 ## Roles
 
-Default to 3 subagents unless the problem is tiny:
+Default to exactly 3 subagents:
 
 - **Skeptic**: find weak assumptions, risks, missing constraints, and likely failure modes.
 - **Researcher**: verify current or external facts, prioritizing official docs/sources.
 - **Practitioner**: assess practical execution, repo fit, implementation path, testing, and operational tradeoffs.
 
-For codebase questions, replace these with area-specific reviewers when that gives better coverage.
+For codebase, product, strategy, or writing questions, replace these with sharper lenses when that gives better coverage. Keep one lens adversarial, one evidence-focused, and one practical.
 
 ## Brief
 
