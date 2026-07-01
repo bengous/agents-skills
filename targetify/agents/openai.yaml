@@ -1,0 +1,7 @@
+interface:
+  display_name: "Targetify"
+  short_description: "Rank repo targets for premium model attention."
+  default_prompt: "$targetify Where should I spend premium model attention in this repo?"
+
+policy:
+  allow_implicit_invocation: false
