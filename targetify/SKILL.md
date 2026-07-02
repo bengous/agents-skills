@@ -1,7 +1,7 @@
 ---
 name: targetify
 disable-model-invocation: true
-description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $targetify or asks where to spend scarce/premium/frontier/super-model attention in a repo. Read-only targeting pass: turn rough intent into a scoring model and evidence-backed ranked targets, including when not to spend premium tokens yet. Do not use for implementation, full audits, premium handoffs, or launching premium model runs."
+description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $targetify or asks where to spend scarce/premium/frontier/super-model attention in a repo. Read-only. Do not use for implementation, full audits, premium handoffs, or launching premium model runs."
 ---
 
 # Targetify
@@ -39,7 +39,7 @@ In those cases, say what to do instead and stop.
 4. Gather local evidence with cheap commands first: `git log --stat`, `git blame` only when useful, `rg`, import/caller searches, test discovery, TODO/FIXME/HACK search, duplicate-pattern search, recent failure logs, docs/code comparisons.
 5. Score only targets backed by evidence. Prefer 3-7 ranked targets; fewer is fine.
 6. Name skipped areas and why they should not receive premium attention now.
-7. End by recommending a future `$premium-handoff` invocation for the selected target. Provide only minimal context for that next skill.
+7. End by recommending a future `$premium-handoff` invocation for the selected target, seeded with the Handoff Seed block from the Output section.
 
 Use `swarm-research` only when the evidence pass clearly splits into independent read-only questions. Own the final ranking yourself.
 
@@ -48,10 +48,10 @@ Use `swarm-research` only when the evidence pass clearly splits into independent
 Default score:
 
 ```text
-score = impact x opportunity x confidence
+score = impact (1-5) x opportunity (1-5), confidence reported as high|medium|low
 ```
 
-Use 1-5 for impact and opportunity. Use confidence as `high`, `medium`, or `low`; do not pretend precision. Adapt the factors to the task:
+Rank by score; when scores are close, higher confidence wins. For any low-confidence target, name the cheap check that would raise its confidence. Do not pretend precision. Adapt the factors to the task:
 
 - Security: exploitability, exposure, blast radius, evidence confidence.
 - Performance: user-visible latency/cost, hot-path likelihood, measurement quality.
@@ -67,6 +67,7 @@ If a factor is mostly inference, keep confidence low even when impact seems high
 Prefer evidence available locally:
 
 - churn: recent edits, repeated fixes, noisy ownership;
+- prior attempts: reverted commits, abandoned branches or migrations near the target;
 - centrality: imports, callers, public APIs, fan-in/fan-out;
 - complexity: large branches, many modes, duplicated choreography;
 - risk: auth, data loss, payments, migrations, concurrency, external I/O;
@@ -100,10 +101,13 @@ Default shape:
 
 ## Next Handoff
 Use `$premium-handoff` after selecting a target.
-Minimal context:
+Handoff Seed:
 - Target:
-- Objective:
-- Evidence to read:
+- Objective and done criteria:
+- Expected premium output: <diagnosis | options | plan | implementation | review>
+- Authority files: <path: why>
+- Verified evidence: <fact (source: file/command/commit)>
+- Known traps / ruled out: <approach: why>
 - Constraints:
 - Do not include:
 ```

@@ -1,6 +1,6 @@
 interface:
   display_name: "Premium Handoff"
-  short_description: "Brief selected targets for premium models."
+  short_description: "Brief selected targets or design problems for premium models."
   default_prompt: "$premium-handoff Prepare a compact premium-model handoff for this selected target."
 
 policy:
