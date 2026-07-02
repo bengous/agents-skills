@@ -5,3 +5,5 @@ plans/
 .DS_Store
 target/
 .codex
+
+slop-detector/evals-data/
