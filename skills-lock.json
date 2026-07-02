@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "excalidraw-diagram-generator": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/excalidraw-diagram-generator/SKILL.md",
+      "computedHash": "e24e3c4cab4b5a07bc1d1801db14868f3a1cd184f7f28f5dd2c4a2b234bf2f2d"
+    },
+    "mermaid-diagrams": {
+      "source": "softaworks/agent-toolkit",
+      "sourceType": "github",
+      "skillPath": "skills/mermaid-diagrams/SKILL.md",
+      "computedHash": "6d36e69adad781f106a2fb4b19ebc22bf0c211babdc0d1ae5822fa65abb48bd8"
+    },
+    "mermaid-to-image": {
+      "source": "zc277584121/marketing-skills",
+      "sourceType": "github",
+      "skillPath": "skills/mermaid-to-image/SKILL.md",
+      "computedHash": "aaa1574c01a4f84fb544a25b5e80f80d039a5e607903d20c2480b6ba4df90f1d"
+    }
+  }
+}
