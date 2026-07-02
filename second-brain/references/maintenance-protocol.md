@@ -25,12 +25,16 @@ coarse — add a more specific link.
 
 ## Lint
 
-Run `scripts/check-wiki.sh`. It enforces the one invariant that keeps the wiki
+Run `scripts/check-wiki.sh`. It enforces the invariants that keep the wiki
 usable:
 
 - Anti-orphan: every `pages/*.md` is linked from `index.md`, every `raw/*.md` is
   in `catalog.md`, every `log/*.md` is in `journal.md`. A file no index points at
   is invisible — a future agent will never load it, so it may as well not exist.
+- Frontmatter (opt-in per file): when a file carries an `updated:` field, a
+  malformed date is an error, and an `index.md` older than the newest page draws
+  a warning. Files without frontmatter — a whole pre-frontmatter wiki included —
+  skip these checks entirely.
 
 Run the check after any change that adds or moves a content file, and wire it
 into a hook (see `setup-guide.md`) so an orphan can never be committed.
@@ -53,3 +57,7 @@ a page's synthesis is contradicted by a newer entry, update the page and add a
 journal entry recording the change. Staleness lives in the maintained files
 (`index.md`, `pages/`), so that is where to look when something seems wrong —
 never in a sealed archive, which records what was true on its date.
+
+The frontmatter `updated:` field is what makes this drift visible: bump it on
+every substantive edit, and the lint's index-freshness warning catches a map
+that lags its pages.

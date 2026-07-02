@@ -11,9 +11,10 @@ scripts/init-wiki.sh <target-dir>
 ```
 
 It refuses a non-empty target unless you pass `--force`, so it never writes over
-existing content. It creates the structure, copies the templates, and installs
-the two maintenance scripts into `<target>/scripts/` so the wiki is
-self-contained and portable.
+existing content. It creates the structure, copies the templates (stamping
+today's date into each `updated:` frontmatter field, so the wiki is born passing
+its own check), and installs the two maintenance scripts into
+`<target>/scripts/` so the wiki is self-contained and portable.
 
 ## What each stub is for
 

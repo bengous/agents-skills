@@ -20,6 +20,13 @@ ceilings:
   a store, and retrieval noise; index-first beats them for curated bases at this
   size, which is why this skill stops at flat markdown.
 
+## Past the limits
+
+Hitting these ceilings does not abandon the pattern — it graduates it. See
+`scaling-up.md` for the architecture on the other side: the full typed page
+contract, a registry-driven lint CLI, federated wikis, and the three-tier
+memory model.
+
 ## When not to use this at all
 
 - A handful of notes (two or three files): the overhead of index + journal +

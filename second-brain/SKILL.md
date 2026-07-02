@@ -78,8 +78,10 @@ The scripts are deterministic and bundled so every invocation does not re-derive
 them. Execute them; read their output, not their source.
 
 - `init-wiki.sh <dir> [--force]` — scaffold from templates.
-- `check-wiki.sh` — anti-orphan + index-integrity lint. Run from the wiki root
-  (or via its hook). A non-zero exit means an orphan or a missing required file.
+- `check-wiki.sh` — anti-orphan + index-integrity lint, plus frontmatter checks
+  (`updated:` format as an error, index freshness as a warning) that no-op on
+  files without frontmatter. Run from the wiki root (or via its hook). A
+  non-zero exit means an orphan, a missing required file, or a malformed date.
 - `archive-journal.sh [threshold_bytes]` — seal old months out of the journal.
 
 ## Gates
@@ -105,3 +107,6 @@ them. Execute them; read their output, not their source.
 - `references/limits.md` — where the model stops scaling (when to shard the index,
   add a search CLI, or — only at very large scale — reach for RAG) and when not to
   use this pattern at all. Load when hitting scale limits.
+- `references/scaling-up.md` — the graduated architecture as a case study: full
+  typed page contract, registry-driven lint CLI, federated wikis, three-tier
+  memory, multi-agent projection. Load when a wiki outgrows the baseline.

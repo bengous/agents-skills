@@ -1,7 +1,9 @@
-# <Title>
+---
+type: capture # or: trace | decision | meeting-note
+updated: YYYY-MM-DD
+---
 
-Date: YYYY-MM-DD
-Type: <capture | trace | decision | meeting-note>
+# <Title>
 
 ## Context
 

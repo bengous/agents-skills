@@ -1,3 +1,8 @@
+---
+type: catalog
+updated: YYYY-MM-DD
+---
+
 # Source catalog
 
 Index of raw captures under `raw/`. Read on demand — this file is not part of the

@@ -12,6 +12,27 @@ reads this file to know how to maintain the wiki.
   inlines; a journal recent window on the order of a few hundred lines / ~25 KB
   before sealing.
 
+## Page frontmatter
+
+Maintained files (`index.md`, `journal.md`, `catalog.md`, `pages/*`, `raw/*`)
+start with a minimal YAML frontmatter block:
+
+```yaml
+---
+type: page           # this file's role (index, journal, catalog, capture, page...)
+updated: YYYY-MM-DD  # date of the last substantive edit — bump it when you edit
+---
+```
+
+- `updated:` drives the lint: a malformed date fails the check, and an
+  `index.md` older than the newest page draws a warning — a stale map misroutes
+  every future read.
+- Frontmatter is opt-in per file: a file without it is simply not checked, so a
+  wiki scaffolded before this contract keeps passing. New scaffolds carry it
+  from birth.
+- At larger scale the contract typically grows a `sources:` list naming the
+  canonical files a page synthesizes, so claims can be verified before acting.
+
 ## Operations: ingest / query / lint
 
 - Ingest: a new durable fact -> append a `journal.md` entry. A long capture or
@@ -20,7 +41,9 @@ reads this file to know how to maintain the wiki.
 - Query: start at `index.md`, follow one link to the relevant page or source.
   Two hops max. If you need three, the index or a page is too coarse.
 - Lint: run `scripts/check-wiki.sh`. It fails if any content file is unreachable
-  from its index, which is the one invariant that keeps the wiki navigable.
+  from its index — the invariant that keeps the wiki navigable — or if a
+  frontmatter `updated:` is malformed, and warns when `index.md` is older than
+  the newest page.
 
 ## Invariants
 

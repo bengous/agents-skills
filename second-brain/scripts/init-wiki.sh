@@ -52,6 +52,17 @@ cp -- "${script_dir}/check-wiki.sh" "${target}/scripts/check-wiki.sh"
 cp -- "${script_dir}/archive-journal.sh" "${target}/scripts/archive-journal.sh"
 chmod +x -- "${target}/scripts/check-wiki.sh" "${target}/scripts/archive-journal.sh"
 
+# Stamp today's date into the frontmatter of the maintained files so the wiki
+# is born passing its own check. templates/entry.md keeps the placeholder: it
+# is stamped when an entry is instantiated, and check-wiki.sh does not scan
+# templates/.
+today="$(date +%Y-%m-%d)"
+for stamped in index.md journal.md catalog.md; do
+  sed "s/^updated: YYYY-MM-DD\$/updated: ${today}/" "${target}/${stamped}" \
+    > "${target}/${stamped}.tmp"
+  mv -- "${target}/${stamped}.tmp" "${target}/${stamped}"
+done
+
 echo "Scaffolded progressive-loading wiki at ${target}"
 echo "Next:"
 echo "  1. Personalize ${target}/SCHEMA.md (add domain rules under the line)."

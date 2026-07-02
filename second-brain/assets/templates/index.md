@@ -1,3 +1,8 @@
+---
+type: index
+updated: YYYY-MM-DD
+---
+
 # Wiki index
 
 The always-loaded map. Keep it thin: link to pages, never paste long content or

@@ -1,3 +1,8 @@
+---
+type: journal
+updated: YYYY-MM-DD
+---
+
 # Journal
 
 Dated activity log, newest at the bottom (append-only). This file holds the
