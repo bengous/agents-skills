@@ -33,7 +33,7 @@ Claude est **architecte, QA et committeur** ; Codex (gpt-5.5, effort xhigh) est 
 ## Template de prompt Codex
 
 Toujours inclure, dans cet ordre :
-- **Contexte** : stack + « Lis CLAUDE.md d'abord » + fichiers exemplaires à imiter (« suis le style de X »).
+- **Contexte** : stack + fichiers exemplaires à imiter (« suis le style de X »). Ne pas demander de lire CLAUDE.md/AGENTS.md : Codex charge AGENTS.md nativement (et CLAUDE.md n'est souvent qu'un import `@AGENTS.md`).
 - **Objectif** : une phrase, avec « zéro changement de comportement » si refactor.
 - **Interface imposée** : signatures exactes (types, noms, valeurs initiales), pas une intention.
 - **Points délicats** : chaque subtilité sémantique nommée explicitement, avec le comportement attendu et l'implémentation suggérée.
