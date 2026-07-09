@@ -9,7 +9,21 @@ Claude Code only. Dans Codex natif, utiliser `$slice-runner`.
 
 ## Principe
 
-Claude est **architecte, QA et committeur** ; Codex (gpt-5.5, effort xhigh) est **l'exécutant**. Claude découpe le plan en slices séquentielles, impose les interfaces, lance un run Codex par slice, vérifie les gates lui-même, commite. Codex ne committe jamais et ne designe jamais : si Claude laisse Codex inventer une API, N slices produiront N styles.
+Claude est **architecte, QA et committeur** ; Codex (gpt-5.6) est **l'exécutant**. Claude découpe le plan en slices séquentielles, impose les interfaces, lance un run Codex par slice, vérifie les gates lui-même, commite. Codex ne committe jamais et ne designe jamais : si Claude laisse Codex inventer une API, N slices produiront N styles.
+
+## Routage modèle par slice
+
+Choisir le tier au moment de rédiger le prompt de la slice (table complète : skill `codex` d'agents-bridge) :
+
+| Slice | Modèle | Pourquoi |
+|---|---|---|
+| Code standard (features, câblage, refactor spécifié) | `gpt-5.6-terra` | Égale Sol sur Terminal-Bench à effort max, moitié prix. **Défaut.** |
+| Tests, fixes mécaniques pour passer un gate | `gpt-5.6-luna` | Rapide, 40 % du coût de Terra, suffisant sur travail borné |
+| Code demandant jugement/rigueur, points délicats denses | `gpt-5.6-sol` | Ceiling supérieur ; seul tier avec `max`/`ultra` |
+
+Effort par défaut : `xhigh`. Les décisions hard (archi, choix d'API) restent le travail de Claude — si une slice en contient une, c'est un défaut de découpage, pas une raison de monter de tier.
+
+Ces modèles délèguent eux-mêmes très bien : sur une slice lourde confiée à Sol, autoriser explicitement dans le prompt la délégation des sous-parties mécaniques à un modèle moins cher (et `ultra` décompose nativement en sous-agents internes) plutôt que sur-découper côté orchestrateur.
 
 **Règle de contexte (non négociable)** : ne jamais lire l'output complet d'un run Codex ni son diff complet. Lecture = résumé final (`tail` court) + `git diff --stat` + gates. Inspection ciblée (grep, Read partiel) uniquement si un gate échoue ou si la slice comporte un point à risque identifié d'avance dans le prompt.
 
@@ -44,15 +58,34 @@ Toujours inclure, dans cet ordre :
 
 ## Mécanique d'invocation
 
+Le prompt s'écrit dans un fichier avec l'outil Write (jamais inline dans le
+shell), puis se passe sur stdin via `-`. Modèle, effort et sandbox se passent
+en **flags natifs** — le wrapper est un pur pass-through, il ne lit aucune
+variable d'environnement (`CODEX_MODEL`/`CODEX_REASONING`/`CODEX_SANDBOX`
+seraient silencieusement ignorées et le run tournerait avec les défauts de
+`~/.codex/config.toml`).
+
 ```bash
-CODEX_MODEL=gpt-5.5 CODEX_REASONING=xhigh CODEX_SANDBOX=workspace-write \
-  "$HOME/projects/claude-plugins/agents-bridge/scripts/codex" exec "PROMPT" < /dev/null
+# 1. Write /tmp/slice-N-prompt.md  (outil Write — contenu = prompt de la slice)
+# 2. Run, en arrière-plan :
+"$HOME/projects/claude-plugins/agents-bridge/scripts/codex" exec \
+  -m gpt-5.6-terra \
+  -c model_reasoning_effort=xhigh \
+  -s workspace-write \
+  --json -o /tmp/slice-N.last \
+  - < /tmp/slice-N-prompt.md > /tmp/slice-N.jsonl
 ```
 
-- `< /dev/null` **obligatoire** : sans lui, `codex exec` peut rester bloqué sur « Reading additional input from stdin... » indéfiniment.
-- Dans le prompt entre guillemets doubles, **échapper tout `$`** (`\$state`, `\$bindable`…) : sinon le shell les avale silencieusement et Codex reçoit un prompt mutilé.
+- La forme `- < fichier` élimine tout échappement shell (`$`, backticks,
+  quotes passent intacts) et stdin se ferme à EOF tout seul.
 - `run_in_background: true`, timeout ≥ 900 s. Vérifier ~20 s après le lancement que l'output progresse (détecte les blocages immédiats).
-- Chaque run retourne un session ID : le capturer pour `exec resume <ID>` lors des corrections (moins cher qu'un contexte neuf).
+- `-o` reçoit le résumé final de Codex ; le thread id se lit dans le JSONL
+  (jamais `resume --last`, il race entre runs) :
+  ```bash
+  tid="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' /tmp/slice-N.jsonl | head -n1)"
+  ```
+  Corrections → `exec resume "$tid" - < /tmp/slice-N-fix.md` (moins cher qu'un
+  contexte neuf ; `resume` n'a pas de `-s`, il hérite du sandbox d'origine).
 
 ## Protocole d'échec
 
@@ -64,8 +97,9 @@ CODEX_MODEL=gpt-5.5 CODEX_REASONING=xhigh CODEX_SANDBOX=workspace-write \
 
 | Symptôme | Cause | Fix |
 |---|---|---|
-| Run figé, output = « Reading additional input from stdin... » | stdin pipe resté ouvert | `< /dev/null`, kill + relance |
-| Codex reçoit `()` au lieu de `($bindable)` | expansion shell des `$` | échapper `\$` |
+| Run figé, output = « Reading additional input from stdin... » | stdin pipe resté ouvert (prompt passé en argument) | forme `- < fichier` ; en dernier recours `< /dev/null`, kill + relance |
+| Codex reçoit `()` au lieu de `($bindable)` | expansion shell des `$` (prompt inline) | prompt via fichier + stdin, jamais inline |
+| Run tourne au mauvais modèle/effort/sandbox | env vars `CODEX_*` ignorées par le wrapper | flags natifs `-m` / `-c model_reasoning_effort=` / `-s` |
 | Gate rouge sur des fichiers jamais touchés | pollution externe (skills installés, artefacts) | fix d'hygiène soi-même (ignore files), pas par Codex |
 | Codex annonce vert, gate local rouge | environnements différents | toujours re-lancer les gates soi-même |
 | Slice N dépend d'un outillage absent | prérequis transversal découvert tard | slice insérée, jamais fusionnée |
