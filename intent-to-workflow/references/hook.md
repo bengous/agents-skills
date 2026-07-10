@@ -76,7 +76,7 @@ Global install is optional convenience, not required by the skill launcher.
 Do not install globally unless the human asks. A typical local install is:
 
 ```bash
-uv tool install /home/b3ngous/projects/agents-skills/intent-to-workflow --force
+uv tool install "$HOME/projects/agents-skills/intent-to-workflow" --force
 ```
 
 After install, verify:

@@ -129,7 +129,7 @@ pushed, and deployed live. Keep repo source, live installs, dotfiles-managed
 bootstrap files, and generated artifacts separate.
 
 The dotfiles-managed bootstrap for this machine lives at
-[`~/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh`](/home/b3ngous/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh).
+`~/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh`.
 
 ## License
 
