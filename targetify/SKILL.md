@@ -39,7 +39,7 @@ In those cases, say what to do instead and stop.
 4. Gather local evidence with cheap commands first: `git log --stat`, `git blame` only when useful, `rg`, import/caller searches, test discovery, TODO/FIXME/HACK search, duplicate-pattern search, recent failure logs, docs/code comparisons.
 5. Score only targets backed by evidence. Prefer 3-7 ranked targets; fewer is fine.
 6. Name skipped areas and why they should not receive premium attention now.
-7. End by recommending a future `$premium-handoff` invocation for the selected target, seeded with the Handoff Seed block from the Output section.
+7. If the recommendation is to spend premium tokens, end with the Handoff Seed block from the Output section for a future `$premium-handoff` invocation; otherwise name the evidence that would change the recommendation and stop.
 
 Use `swarm-research` only when the evidence pass clearly splits into independent read-only questions. Own the final ranking yourself.
 
@@ -51,14 +51,7 @@ Default score:
 score = impact (1-5) x opportunity (1-5), confidence reported as high|medium|low
 ```
 
-Rank by score; when scores are close, higher confidence wins. For any low-confidence target, name the cheap check that would raise its confidence. Do not pretend precision. Adapt the factors to the task:
-
-- Security: exploitability, exposure, blast radius, evidence confidence.
-- Performance: user-visible latency/cost, hot-path likelihood, measurement quality.
-- Test gaps: criticality, defect likelihood, ease of high-value coverage.
-- Docs drift: agent/user harm, drift evidence, repair leverage.
-- Product/demo value: user-visible value, narrative value, implementation opportunity.
-- Architecture/tech debt: change leverage, repeated friction, boundary clarity, migration risk.
+Rank by score; when scores are close, higher confidence wins. For any low-confidence target, name the cheap check that would raise its confidence. Do not pretend precision. Adapt what impact and opportunity mean to the target type (e.g. exploitability and blast radius for security, hot-path likelihood for performance) and state the factors you used.
 
 If a factor is mostly inference, keep confidence low even when impact seems high.
 
@@ -100,6 +93,7 @@ Default shape:
 - <area>: <why not premium-model-worthy now>
 
 ## Next Handoff
+<omit this whole section when recommending against premium spend>
 Use `$premium-handoff` after selecting a target.
 Handoff Seed:
 - Target:

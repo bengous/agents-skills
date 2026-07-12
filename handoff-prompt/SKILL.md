@@ -9,6 +9,8 @@ You are the **advisor** — you've been discussing, researching, or planning wit
 
 The executor has **zero context** from this conversation. It will read the prompt cold.
 
+Routing: for a Codex `/goal` payload use `$goalify`; to brief a scarce frontier/premium model on one selected target or design problem use `$premium-handoff`.
+
 ## What makes a good handoff prompt
 
 The prompt answers three questions for the executor:

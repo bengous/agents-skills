@@ -8,6 +8,8 @@ description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $prem
 
 Turn one selected target or design problem into a compact briefing for an expensive model.
 
+Routing: `$goalify` produces Codex `/goal` payloads; `$handoff-prompt` briefs an ordinary same-tier agent session; this skill briefs a scarce frontier model on one pre-selected target or design problem.
+
 ## Contract
 
 You are preparing the premium-model run, not running it.
@@ -76,15 +78,12 @@ Do not pad missing evidence with summaries. Prefer paths, commands, and raw arti
 
 A frontier model explores for two reasons: discovery (locating things, understanding state) and verification (confirming claims before acting). The handoff eliminates discovery and makes verification cheap; verification itself stays with the premium model.
 
-Give the model:
+The Prompt Shape carries the structure. Rules the template cannot carry:
 
-- the objective plus observable done criteria: the one thing it cannot derive;
-- pointers with provenance rather than prose summaries: a stale summary anchors the model wrong, a path plus a command ages well;
-- each unverified claim labeled as a hypothesis with a cheap check attached;
-- ruled-out approaches and failed prior attempts: these prevent the costliest re-exploration;
-- start-here files it may read beyond when the brief and the code disagree;
-- exact validation commands and expected results, so spot-checking replaces re-derivation;
-- side-effect boundaries and the conditions for pausing: missing evidence, high risk, scope expansion.
+- pointers with provenance beat prose summaries: a stale summary anchors the model wrong, a path plus a command ages well;
+- ruled-out approaches and failed prior attempts prevent the costliest re-exploration;
+- start-here files are entry points, not limits: the premium model may read beyond them, and the code wins when the brief and the code disagree;
+- validation commands come with expected results, so spot-checking replaces re-derivation.
 
 In design mode, decision criteria play the role of done criteria and rejected designs play the role of known traps; the rest of the list holds.
 
@@ -140,6 +139,9 @@ Allowed side effects:
 Forbidden side effects:
 - <branches, commits, pushes, installs, PRs, external systems unless approved>
 
+Pause and report when:
+- <missing evidence, high risk, or scope expansion>
+
 ## Deliverable
 <one or two sentences: what to hand back and how to prove it, e.g. "a diagnosis naming the root cause, with the commands you ran to confirm it">
 
@@ -185,6 +187,7 @@ In design mode use this shape instead:
 ## Side Effects
 - Allowed: <read-only by default; edits plus tests only if the deliverable includes an implementation slice>
 - Forbidden: <branches, commits, pushes, installs, PRs unless approved>
+- Pause when: <a hard constraint proves wrong, an irreversible decision is challenged, or scope expands>
 
 ## Deliverable
 <e.g. "2-3 competing architectures scored against the decision criteria, a recommendation, and the first implementation slice; pause before implementing">
@@ -205,7 +208,7 @@ Before final output, verify:
 - target mode: every fact carries a source, every assumption carries a cheap check, authority files and commands are concrete;
 - design mode: hard constraints are separated from preferences, decisions already made and rejected designs are present, decision criteria are ranked, assumptions about the existing system carry a check;
 - premium model scope is narrow;
-- side effects are explicit and match the desired output type;
+- side effects and pausing conditions are explicit and match the desired output type;
 - every analysis instruction changes default behavior for this target; none restates root-cause analysis, option tradeoffs, or verification in generic form;
 - every candidate, library, or technique named in the handoff was named by the user or appears in a cited artifact; the preparer added none;
 - no generic AI preamble or chain-of-thought request exists;
