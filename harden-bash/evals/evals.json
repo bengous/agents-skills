@@ -39,7 +39,7 @@
     },
     {
       "id": 2,
-      "prompt": "Rewrite this as real POSIX sh for Debian dash and BusyBox ash. Preserve the intended output. Return 0 when grep finds a match, 1 when it finds none, and grep's error status when it fails:\n\n#!/bin/sh\nset -Eeuo pipefail\nfiles=(\"$@\")\nmapfile -t matches < <(grep -H 'ERROR' \"${files[@]}\")\n[[ ${#matches[@]} -gt 0 ]] && printf '%s\\n' \"${matches[@]}\"\n\nDo not change the shebang to Bash.",
+      "prompt": "Rewrite this as real POSIX sh for Debian dash and BusyBox ash. Preserve the intended output. File operands may contain spaces or begin with -. Return 0 when grep finds a match, 1 when it finds none, and grep's error status when it fails:\n\n#!/bin/sh\nset -Eeuo pipefail\nfiles=(\"$@\")\nmapfile -t matches < <(grep -H 'ERROR' \"${files[@]}\")\n[[ ${#matches[@]} -gt 0 ]] && printf '%s\\n' \"${matches[@]}\"\n\nDo not change the shebang to Bash.",
       "files": [],
       "assertions": [
         {
@@ -88,7 +88,7 @@
         },
         {
           "id": "reads-audit-references",
-          "text": "Reads error-semantics.md and filesystem-safety.md, plus process-lifecycle.md if discussing producer processes"
+          "text": "Reads error-semantics.md and filesystem-safety.md"
         },
         {
           "id": "detects-hidden-producer-failure",
@@ -96,7 +96,7 @@
         },
         {
           "id": "explains-errexit-contexts",
-          "text": "Explains relevant set -e ignored contexts rather than treating strict mode as universal error handling"
+          "text": "Explains that publish runs in an if test where set -e is ignored and that a false condition with no else does not propagate publish's failure"
         },
         {
           "id": "detects-unsafe-cleanup",

@@ -2,7 +2,7 @@
 
 ## Required Rules
 
-- Install signal handlers before starting children. Record each direct child PID immediately after launch.
+- Install signal handlers before starting children. Record each direct child PID immediately after launch, then re-check shutdown state and signal that child if shutdown began across the spawn boundary.
 - Keep signal handlers small: record the first signal, forward it to every tracked child, and let the main path reap them.
 - Wait for every child separately and retain each status. Retry a Bash `wait` interrupted by a trapped signal while that child still exists.
 - Define the aggregate result: first failure, fail-fast cancellation, all results, or signal status. Do not let loop order or the last `wait` decide accidentally.

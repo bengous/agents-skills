@@ -7,7 +7,7 @@
 - Avoid option injection with supported option terminators or normalized paths.
 - Create private temporary files with a restrictive `umask`. Declare `mktemp` as an external dependency; it is not a POSIX shell utility.
 - Place a replacement temporary file in the target directory when atomic rename is required. Rename atomicity applies within one filesystem; crash durability and metadata preservation are separate contracts.
-- Initialize cleanup variables, install traps for the required exits and signals, remove only paths created by the script, and preserve the incoming status.
+- Initialize cleanup variables, install traps for the required exits and signals, and remove only paths created by the script. Capture the incoming status when cleanup logic needs it or explicitly exits; the final cleanup command alone does not replace the pending status.
 - Decide how symlinks, existing directories, ownership, mode, and concurrent writers are handled. Check-then-use validation alone does not remove races.
 - Keep destructive operations non-interactive in automation. Refuse unsafe scope rather than relying on `rm -i` or `mv -i` prompts.
 

@@ -8,7 +8,7 @@
 - Treat `set -e` as control flow with documented exceptions, not exception handling. Audit commands in `if`, `while`, `until`, `&&`, `||`, `!`, pipelines, functions called from tested contexts, subshells, and command substitutions.
 - Do not use process substitution when the producer status must decide success unless its PID is captured and waited for. A successful consumer does not prove `< <(producer)` succeeded.
 - Wait for each relevant child and record its status. `wait` without operands can return success while hiding individual failures.
-- Make cleanup preserve the status that caused exit. Error reporting and cleanup must not accidentally turn failure into success.
+- Preserve the status that caused exit when cleanup explicitly controls termination. In Bash, an `EXIT` trap's final command does not by itself replace the pending status; do not report a missing save-and-exit sequence as a bug unless the handler can explicitly change that status.
 
 ## Contextual Decisions
 
