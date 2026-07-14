@@ -126,11 +126,15 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 ## Maintenance
 
 Use [`skill-sync`](skill-sync/) when changing a skill that must be committed,
-pushed, and deployed live. Keep repo source, live installs, dotfiles-managed
-bootstrap files, and generated artifacts separate.
+pushed, and deployed live. After the commit reaches `origin/master`, publish
+only the changed managed skills by exact name:
 
-The dotfiles-managed bootstrap for this machine lives at
-`~/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh`.
+```bash
+scripts/publish-live <skill-name>...
+```
+
+The shared publisher refuses dirty, detached, non-default, divergent, or
+unpushed source and verifies the installed content before succeeding.
 
 ## License
 

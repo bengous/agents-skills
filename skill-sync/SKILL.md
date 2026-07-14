@@ -1,14 +1,14 @@
 ---
 name: skill-sync
-description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $skill-sync or explicitly asks to commit, push, and deploy an agent skill change live through the agents-skills repo plus dotfiles-managed skills.sh/bootstrap path. Ensures source, git, live install, and relevant dotfiles state are verified without committing unrelated artifacts."
+description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $skill-sync or asks to commit, push, and deploy agent skill changes live from agents-skills. Commits scoped source, pushes the default branch, publishes exact managed skill names through the shared post-push gate, and verifies live parity without touching project-pinned copies."
 ---
 
 # Skill Sync
 
 Ship a changed skill from source to live install.
 
-This skill creates side effects: validation, commits, pushes, live install, and
-possibly scoped dotfiles commits. Keep repo source, live install, and dotfiles
+This skill creates side effects: validation, commits, pushes, and named live
+installs. Keep source, global live state, project-pinned copies, and dotfiles
 ownership separate.
 
 ## Contract
@@ -18,8 +18,8 @@ ownership separate.
 - Do not commit generated caches, local workflow roots, build output, or unrelated
   dirty files.
 - Push only after `git log --oneline` and a rebase pull.
-- Deploy live through the managed path, not by hand-editing `~/.agents/skills`.
-- If dotfiles changes are required, stage only the relevant dotfiles files.
+- Deploy live only after push through `scripts/publish-live <exact-name>...`.
+- Never hand-edit `~/.agents/skills` or update project-local copies implicitly.
 - Never hide unrelated dotfiles drift by staging it.
 
 ## Workflow
@@ -41,40 +41,32 @@ ownership separate.
    git log --oneline -5
    git push
    ```
-6. Inspect dotfiles skill management before deploying:
+6. Confirm the source is clean, on the pushed remote default branch:
    ```bash
-   rg -n "skills|agents-skills|intent-to-workflow|skills-lock" ~/dotfiles
-   git -C ~/dotfiles status --short --untracked-files=all
+   git status --short
+   git branch --show-current
+   git rev-list --left-right --count HEAD...@{u}
    ```
-7. Deploy using the managed path. Prefer the dotfiles bootstrap when it is known
-   to be current:
+7. Publish only the changed managed skills by exact name:
    ```bash
-   B3NGOUS_AGENTS_SKILLS_SOURCE=local \
-   B3NGOUS_AGENTS_SKILLS_LOCAL_REPO=~/projects/agents-skills \
-   ~/dotfiles/.chezmoiscripts/run_after_install-global-skills.sh
+   scripts/publish-live <skill>...
    ```
-   If the full bootstrap hangs or is too broad, use the same underlying surfaces
-   narrowly:
-   ```bash
-   bunx skills add ~/projects/agents-skills --skill <skill> -g -a codex -y
-   ```
+   The publisher rejects dirty, detached, divergent, unpushed, non-default-branch,
+   unmanaged, or colliding inputs. It refreshes the shared store, verifies
+   source/live parity, and reports divergent project-local copies without changing
+   them.
    For packaged CLIs, also reinstall the CLI from source, for example:
    ```bash
    uv tool install ~/projects/agents-skills/intent-to-workflow --force --reinstall
    ```
-8. Verify live equals source:
+8. Inspect dotfiles status without resolving unrelated drift:
    ```bash
-   diff -qr ~/projects/agents-skills/<skill> ~/.agents/skills/<skill>
+   dots status --json
    ```
-   Ignore only expected caches/build output such as `__pycache__`, `.venv`,
-   `.pytest_cache`, `.ruff_cache`, or `dist`.
-9. If dotfiles-managed files or locks changed, inspect, validate, commit, and
-   push only those relevant dotfiles files. If no relevant dotfiles change exists,
-   say so explicitly.
-10. Final answer must report:
+9. Final answer must report:
     - source commit hash and push status;
     - validation commands;
-    - live deploy commands;
+    - exact names passed to the live publisher;
     - parity proof;
     - dotfiles status and whether any dotfiles commit was needed;
     - any unrelated dirty files deliberately left untouched.
@@ -83,7 +75,7 @@ ownership separate.
 
 Stop and ask before:
 
-- editing dotfiles when the source-of-truth path is unclear;
+- changing the desired manifest or publisher policy in dotfiles;
 - committing unrelated dirty files;
 - resolving conflicts in files the user appears to be editing;
 - publishing packages, tags, or releases.
