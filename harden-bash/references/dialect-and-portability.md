@@ -6,6 +6,7 @@
 - Use `#!/bin/sh` only for POSIX shell language. Exclude arrays, `[[ ... ]]`, process substitution, `pipefail`, `local`, `function`, here-strings, `${BASH_SOURCE[...]}`, and `&>`.
 - Use a Bash shebang when Bash features materially simplify a Bash-only contract. Declare and test the minimum Bash version needed.
 - Treat shell syntax and external utilities as separate portability surfaces. `mktemp`, `realpath`, `flock`, GNU option extensions, and utility-specific `--` support are not guaranteed by POSIX shell conformance.
+- When a POSIX rewrite relies on non-POSIX utility behavior, state each dependency or extension in the delivered answer. Passing dash and ash tests does not make flags such as `grep -H` or utility-specific `--` portable.
 - Keep sourced files from changing the caller's options, traps, working directory, `umask`, or positional parameters unless that mutation is the documented API.
 - Run ShellCheck and shfmt with the selected dialect rather than whichever shell happens to be installed locally.
 

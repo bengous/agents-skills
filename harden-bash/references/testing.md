@@ -7,6 +7,7 @@
 - Run shfmt with the same dialect and verify a clean formatting diff.
 - Execute behavior under every promised interpreter and utility environment. Bash parsing is not a POSIX portability test.
 - Cover missing values, empty values where meaningful, whitespace, option-like data, producer failure, cleanup, signals, child statuses, and partial-output prevention according to the script's risk surface.
+- For an option-like path check, pass an operand whose argument itself begins with `-` from the test working directory; `/tmp/case/-name` does not exercise option parsing.
 - Test destructive examples only inside a fresh temporary directory. Require no root, host mutation, application network, or writable host mount.
 - Test sourced and executed modes separately when both are supported.
 - Assert exit status and side effects, not only stdout.
