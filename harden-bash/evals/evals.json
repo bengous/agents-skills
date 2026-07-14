@@ -12,7 +12,7 @@
         },
         {
           "id": "uses-structured-argv",
-          "text": "Keeps the Bash contract explicit and constructs variable argv with arrays rather than strings or eval"
+          "text": "Keeps the Bash contract explicit; when constructing a variable command, uses an array; otherwise uses direct, quoted argv and never eval or an unquoted command string"
         },
         {
           "id": "validates-option-values",
@@ -39,7 +39,7 @@
     },
     {
       "id": 2,
-      "prompt": "Rewrite this as real POSIX sh for Debian dash and BusyBox ash, preserving behavior and failure status:\n\n#!/bin/sh\nset -Eeuo pipefail\nfiles=(\"$@\")\nmapfile -t matches < <(grep -H 'ERROR' \"${files[@]}\")\n[[ ${#matches[@]} -gt 0 ]] && printf '%s\\n' \"${matches[@]}\"\n\nDo not change the shebang to Bash.",
+      "prompt": "Rewrite this as real POSIX sh for Debian dash and BusyBox ash. Preserve the intended output. Return 0 when grep finds a match, 1 when it finds none, and grep's error status when it fails:\n\n#!/bin/sh\nset -Eeuo pipefail\nfiles=(\"$@\")\nmapfile -t matches < <(grep -H 'ERROR' \"${files[@]}\")\n[[ ${#matches[@]} -gt 0 ]] && printf '%s\\n' \"${matches[@]}\"\n\nDo not change the shebang to Bash.",
       "files": [],
       "assertions": [
         {
@@ -100,14 +100,14 @@
         },
         {
           "id": "detects-unsafe-cleanup",
-          "text": "Identifies inherited TMPDIR recursive deletion and cleanup status clobbering as root-cause risks"
+          "text": "Identifies inherited TMPDIR recursive deletion as an actionable unsafe-cleanup risk; does not claim this EXIT trap clobbers the pre-existing status"
         },
         {
           "id": "avoids-generic-controls",
           "text": "Does not prescribe generic logging, dry-run, retry, idempotence, or a framework"
         }
       ],
-      "expected_output": "A severity-ranked read-only audit identifying hidden process-substitution pipeline failures, context-sensitive set -e behavior, unsafe inherited TMPDIR deletion, and status-clobbering EXIT cleanup, with minimal root-cause fixes."
+      "expected_output": "A severity-ranked read-only audit identifying hidden process-substitution pipeline failures, context-sensitive set -e behavior, and unsafe inherited TMPDIR deletion, with minimal root-cause fixes."
     },
     {
       "id": 4,
