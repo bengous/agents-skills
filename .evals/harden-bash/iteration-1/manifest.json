@@ -1,0 +1,9 @@
+{
+  "skill_name": "harden-bash",
+  "skill_commit": "78c95fcf8c97dfa9203096c2d09d607b1a756828",
+  "configuration": "with_skill",
+  "baseline": false,
+  "executor_model": "gpt-5.6-terra",
+  "grader_model": "gpt-5.6-sol",
+  "created_at": "2026-07-14T13:06:02Z"
+}

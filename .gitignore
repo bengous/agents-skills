@@ -7,3 +7,13 @@ target/
 .codex
 
 slop-detector/evals-data/
+
+# Publish eval definitions, provenance, review notes, and aggregate results only.
+.evals/**
+!.evals/**/
+!.evals/**/evals.json
+!.evals/**/manifest.json
+!.evals/**/feedback.json
+!.evals/**/benchmark.json
+!.evals/**/benchmark.md
+!.evals/**/incident.md

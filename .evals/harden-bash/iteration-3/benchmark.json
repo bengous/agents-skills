@@ -1,0 +1,271 @@
+{
+  "metadata": {
+    "skill_name": "harden-bash",
+    "skill_commit": "5e21244227cbc2a6b566bc56b97716b112d5fd74",
+    "executor_model": "gpt-5.6-terra",
+    "grader_model": "gpt-5.6-sol",
+    "timestamp": "2026-07-14T14:12:59Z",
+    "evals_run": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "runs_per_configuration": 1,
+    "baseline_run": false
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "eval_name": "bash-untrusted-paths",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 181.549,
+        "tokens": null
+      },
+      "expectations": [
+        {
+          "text": "Reads dialect-and-portability.md, input-and-command-construction.md, error-semantics.md, and filesystem-safety.md",
+          "passed": true,
+          "evidence": "transcript.jsonl line 2 records all four named references in the read resource list."
+        },
+        {
+          "text": "Keeps the Bash contract explicit; when constructing a variable command, uses an array; otherwise uses direct, quoted argv and never eval or an unquoted command string",
+          "passed": true,
+          "evidence": "collect-reports.sh lines 18-28 parse the explicit --output PATH -- INPUT... contract; lines 53-64 invoke mktemp, cat, and mv directly with quoted path expansions and -- where arguments are accepted. No eval or variable command string appears."
+        },
+        {
+          "text": "Validates missing option values and handles option-like paths without losing argument boundaries",
+          "passed": true,
+          "evidence": "collect-reports.sh lines 18-24 reject incomplete or malformed --output PATH -- input, including an empty output value, then preserve inputs with shift and \"$@\". test-collect-reports.sh lines 23-28 pass a leading-dash input as one argument and verify exact concatenation."
+        },
+        {
+          "text": "Writes a same-directory temporary file and replaces the output only after every producer succeeds",
+          "passed": true,
+          "evidence": "collect-reports.sh lines 30-35 derive the output directory, line 53 creates the temporary file there, lines 55-62 require every cat to succeed, and line 64 performs the final mv only afterward."
+        },
+        {
+          "text": "Preserves the failing producer status and cleans only its own validated temporary path",
+          "passed": true,
+          "evidence": "collect-reports.sh lines 40-47 initialize and trap cleanup for only the mktemp-returned path; lines 59-60 capture and propagate cat's status. test-collect-reports.sh lines 37-51 verify status 75, preserved output, and removal of the temporary file."
+        },
+        {
+          "text": "Adds a focused runnable check for spaces, leading dashes, producer failure, and partial-output prevention",
+          "passed": true,
+          "evidence": "test-collect-reports.sh lines 23-28 cover a path containing a space, newline, and glob characters plus a leading-dash path; lines 30-35 and 37-51 cover input/producer failure and preservation of existing output. The focused command `bash test-collect-reports.sh` exited 0 and printed ok."
+        },
+        {
+          "text": "Does not add logging, dry-run, retry, locking, idempotence, or abstraction without a stated contract",
+          "passed": true,
+          "evidence": "The delivered scripts contain only argument validation, direct concatenation, same-directory staging, cleanup, atomic replacement, and focused checks; none of the prohibited controls or speculative abstractions is present."
+        }
+      ]
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "posix-bashism-rewrite",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 150.658,
+        "tokens": null
+      },
+      "expectations": [
+        {
+          "text": "Reads dialect-and-portability.md, input-and-command-construction.md, and error-semantics.md",
+          "passed": true,
+          "evidence": "with_skill/transcript.jsonl event skill_resources_read lists all three named references."
+        },
+        {
+          "text": "Removes arrays, mapfile, process substitution, double brackets, pipefail, and Bash-only strict-mode flags",
+          "passed": true,
+          "evidence": "outputs/rewrite.sh contains only a POSIX shebang and exec grep invocation; none of the listed Bash constructs remains."
+        },
+        {
+          "text": "Uses only POSIX shell language and separately acknowledges any external utility assumptions",
+          "passed": true,
+          "evidence": "outputs/rewrite.sh uses POSIX exec, quoting, and parameter expansion; shfmt -ln=posix and shellcheck -s sh pass. outputs/response.md separately states the required grep -H and -- assumptions for GNU grep and BusyBox grep."
+        },
+        {
+          "text": "Preserves grep's no-match versus error statuses instead of relying on set -e",
+          "passed": true,
+          "evidence": "outputs/rewrite.sh uses exec grep, so grep's status is the script status. outputs/check.sh verifies 0 for a match, 1 for no match, and equality with grep's status greater than 1 for a missing operand."
+        },
+        {
+          "text": "Handles whitespace and option-like filenames without parsing ls or using eval",
+          "passed": true,
+          "evidence": "outputs/rewrite.sh passes quoted \"$@\" after -- and contains neither ls nor eval. The behavior check passes for 'with space' and '-leading'."
+        },
+        {
+          "text": "Includes a small dash and ash behavior check",
+          "passed": true,
+          "evidence": "outputs/check.sh is a parameterized behavior check. Independent network-disabled runs passed under debian:bookworm-slim dash ('ok: dash') and busybox:1.37 ash ('ok: busybox')."
+        },
+        {
+          "text": "Does not emulate Bash arrays or pipefail with fragile text serialization",
+          "passed": true,
+          "evidence": "outputs/rewrite.sh directly execs grep with the original positional parameters; it contains no array, pipeline, command substitution, or serialization layer."
+        }
+      ]
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "errexit-trap-audit",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 86.073,
+        "tokens": null
+      },
+      "expectations": [
+        {
+          "text": "Remains read-only and ranks findings by severity",
+          "passed": true,
+          "evidence": "outputs/response.md is a static audit with findings explicitly ranked Critical, High, and High; transcript.jsonl states the target snippet was not executed and no source files were modified."
+        },
+        {
+          "text": "Gives a location, root cause, and minimum correction for every finding",
+          "passed": true,
+          "evidence": "Each response bullet names its location (EXIT trap, mapfile process substitution, publish conditional), explains the failure mechanism, and gives a direct correction."
+        },
+        {
+          "text": "Reads error-semantics.md and filesystem-safety.md",
+          "passed": true,
+          "evidence": "transcript.jsonl lists harden-bash/references/error-semantics.md and harden-bash/references/filesystem-safety.md under skill_resources_read."
+        },
+        {
+          "text": "Explains that process substitution and mapfile can hide generate_rows or jq failure from the consumer status",
+          "passed": true,
+          "evidence": "The High mapfile finding says mapfile observes its own read status rather than generate_rows', can succeed after generate_rows exits 42, and prescribes checking the generate_rows | jq pipeline under pipefail before mapfile consumes its output."
+        },
+        {
+          "text": "Explains that publish runs in an if test where set -e is ignored and that a false condition with no else does not propagate publish's failure",
+          "passed": true,
+          "evidence": "The publish finding explicitly calls it an 'errexit-ignored conditional' and states that the no-else if returns success, then gives direct execution or status propagation as the correction."
+        },
+        {
+          "text": "Identifies inherited TMPDIR recursive deletion as an actionable unsafe-cleanup risk; does not claim this EXIT trap clobbers the pre-existing status",
+          "passed": true,
+          "evidence": "The Critical EXIT-trap finding identifies recursive deletion of an inherited, unvalidated TMPDIR and limits cleanup to a script-owned mktemp directory; it makes no claim that the trap overwrites the prior status."
+        },
+        {
+          "text": "Does not prescribe generic logging, dry-run, retry, idempotence, or a framework",
+          "passed": true,
+          "evidence": "outputs/response.md prescribes only targeted Bash corrections for cleanup ownership, producer-status propagation, and publish failure propagation."
+        }
+      ]
+    },
+    {
+      "eval_id": 4,
+      "eval_name": "process-supervision",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 375.819,
+        "tokens": null
+      },
+      "expectations": [
+        {
+          "text": "Reads process-lifecycle.md and error-semantics.md",
+          "passed": true,
+          "evidence": "with_skill/transcript.jsonl lists both references/process-lifecycle.md and references/error-semantics.md in skill_resources_read."
+        },
+        {
+          "text": "Installs traps before spawning and records each PID immediately",
+          "passed": true,
+          "evidence": "outputs/supervise-jobs.sh:63-65 installs all traps before the loop; lines 69-71 launch, assign $!, and append it with no intervening operation."
+        },
+        {
+          "text": "Stops spawning after shutdown begins and signals any child created during that boundary",
+          "passed": true,
+          "evidence": "outputs/supervise-jobs.sh:68 stops later iterations when shutdown_status is set; lines 69-76 record then signal an in-flight child if shutdown began across the spawn/record boundary."
+        },
+        {
+          "text": "Forwards HUP, INT, and TERM without using an unproven kill-0 precheck or kill 0 process-group blast",
+          "passed": true,
+          "evidence": "outputs/supervise-jobs.sh:58-65 sends the recorded signal directly to each recorded PID and installs HUP/INT/TERM traps. The only kill -0 is at line 90 after wait, solely to detect an interrupted wait; forwarding has no kill -0 precheck and never targets process group 0."
+        },
+        {
+          "text": "Waits each child explicitly, handles wait interruption, and records deterministic statuses",
+          "passed": true,
+          "evidence": "outputs/supervise-jobs.sh:81-99 iterates recorded PIDs in launch order, waits each PID, retries a signal-interrupted wait while that PID remains, and records the first nonzero status deterministically."
+        },
+        {
+          "text": "Returns 129, 130, or 143 for the first shutdown signal and otherwise the first failure in launch order",
+          "passed": true,
+          "evidence": "outputs/supervise-jobs.sh:53-56 preserves only the first shutdown status; lines 63-65 map HUP/INT/TERM to 129/130/143; lines 81-107 select first failure by launch-order PID iteration unless shutdown overrides it."
+        },
+        {
+          "text": "Includes a runnable SIGTERM and child-failure check without unrelated logging, retries, locks, or dry-run support",
+          "passed": true,
+          "evidence": "outputs/test-supervise-jobs.sh:41-54 checks launch-order child failures and JOB_INDEX; lines 90-116 run bounded HUP/INT/TERM checks including SIGTERM and verify no direct child remains. The supervisor contains none of the unrelated features. The focused test ran under Bash 5.3.15 and printed ok."
+        }
+      ]
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 1,
+        "stddev": 0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 198.52474999999998,
+        "stddev": 108.00237150723822,
+        "min": 86.073,
+        "max": 375.819
+      },
+      "tokens": {
+        "mean": null,
+        "stddev": null,
+        "min": null,
+        "max": null,
+        "note": "not exposed by Codex agents API"
+      },
+      "assertions": {
+        "passed": 28,
+        "failed": 0,
+        "total": 28
+      }
+    }
+  },
+  "delta": null,
+  "iteration_comparison": {
+    "previous_iteration": 2,
+    "previous_skill_commit": "2df563b6e4a95decc55a8f49861c0d0af3814704",
+    "prompts_and_assertions_unchanged": true,
+    "previous_passed": 26,
+    "current_passed": 28,
+    "total": 28,
+    "pass_rate_delta": 0.0714285714285714
+  },
+  "notes": [
+    "No without-skill baseline was run, so discrimination and skill lift are not measured.",
+    "Iteration 3 passed all 28 assertions; iteration 2 passed 26 of 28 with identical prompts and assertions.",
+    "The controlled iteration comparison isolates the two added reference rules, but each eval has only one stochastic run.",
+    "Durations are root wall-clock measurements, not model-reported task timings; tokens are unavailable.",
+    "Eval 1 used a true leading-dash operand from its temporary working directory.",
+    "Eval 2 explicitly disclosed grep -H and utility-specific -- as external portability assumptions.",
+    "Eval 3 and eval 4 retained full scores."
+  ],
+  "incidents": []
+}

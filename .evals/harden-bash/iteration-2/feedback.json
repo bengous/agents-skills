@@ -1,0 +1,7 @@
+{
+  "status": "reviewed",
+  "comments": [
+    "Require a true leading-dash argument in option-like path tests.",
+    "Require explicit disclosure of non-POSIX utility extensions in delivered POSIX rewrites."
+  ]
+}

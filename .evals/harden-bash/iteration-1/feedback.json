@@ -1,0 +1,9 @@
+{
+  "status": "reviewed",
+  "comments": [
+    "Clarify the signal/spawn boundary in process-lifecycle.md.",
+    "Clarify that an EXIT trap's final command does not alone replace the pending status.",
+    "Make leading-dash operands explicit in eval 2 and remove eval 3's misrouted process-lifecycle requirement.",
+    "Replace eval 3's vague set -e assertion with the concrete publish-in-if failure path."
+  ]
+}
