@@ -92,6 +92,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`design-system-creator`](design-system-creator/)               | Create design systems based on physical/sensory anchoring                                                                     |
 | [`goalify`](goalify/)                                           | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file                                   |
 | [`handoff-prompt`](handoff-prompt/)                             | Generate a copy-paste-ready handoff prompt for a fresh agent instance                                                         |
+| [`harden-bash`](harden-bash/)                                   | Write and harden production shell scripts                                                                                     |
 | [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
 | [`intent-to-workflow`](intent-to-workflow/)                     | Human-gated planner that turns explicit intent into local workflow artifacts                                                  |
 | [`looper`](looper/)                                             | Design, audit, and convert rough work into dynamic Codex loops with gates, validation, and stop/pause conditions              |

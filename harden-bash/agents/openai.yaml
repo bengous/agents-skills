@@ -1,0 +1,7 @@
+interface:
+  display_name: "Harden Bash"
+  short_description: "Write and harden production shell scripts"
+  default_prompt: "Use $harden-bash to write or audit this production shell script."
+
+policy:
+  allow_implicit_invocation: true

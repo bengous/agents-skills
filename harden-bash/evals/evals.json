@@ -1,0 +1,149 @@
+{
+  "skill_name": "harden-bash",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Write a Bash 5.3 CLI named collect-reports.sh. It accepts --output PATH followed by -- and one or more untrusted input paths. Paths may contain spaces, newlines, glob characters, or begin with -. Concatenate all readable regular inputs into the output, but never leave a partial output when an input or producer fails. Keep the CLI small and suitable for unattended deployment.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "reads-risk-references",
+          "text": "Reads dialect-and-portability.md, input-and-command-construction.md, error-semantics.md, and filesystem-safety.md"
+        },
+        {
+          "id": "uses-structured-argv",
+          "text": "Keeps the Bash contract explicit and constructs variable argv with arrays rather than strings or eval"
+        },
+        {
+          "id": "validates-option-values",
+          "text": "Validates missing option values and handles option-like paths without losing argument boundaries"
+        },
+        {
+          "id": "replaces-atomically",
+          "text": "Writes a same-directory temporary file and replaces the output only after every producer succeeds"
+        },
+        {
+          "id": "preserves-producer-status",
+          "text": "Preserves the failing producer status and cleans only its own validated temporary path"
+        },
+        {
+          "id": "tests-hostile-paths",
+          "text": "Adds a focused runnable check for spaces, leading dashes, producer failure, and partial-output prevention"
+        },
+        {
+          "id": "avoids-cargo-cult-controls",
+          "text": "Does not add logging, dry-run, retry, locking, idempotence, or abstraction without a stated contract"
+        }
+      ],
+      "expected_output": "A minimal Bash 5.3 implementation and focused validation that preserve argv boundaries, reject missing values, use a private same-directory temporary file, propagate producer failures, and never publish partial output. No cargo-cult production controls."
+    },
+    {
+      "id": 2,
+      "prompt": "Rewrite this as real POSIX sh for Debian dash and BusyBox ash, preserving behavior and failure status:\n\n#!/bin/sh\nset -Eeuo pipefail\nfiles=(\"$@\")\nmapfile -t matches < <(grep -H 'ERROR' \"${files[@]}\")\n[[ ${#matches[@]} -gt 0 ]] && printf '%s\\n' \"${matches[@]}\"\n\nDo not change the shebang to Bash.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "reads-posix-references",
+          "text": "Reads dialect-and-portability.md, input-and-command-construction.md, and error-semantics.md"
+        },
+        {
+          "id": "removes-bashisms",
+          "text": "Removes arrays, mapfile, process substitution, double brackets, pipefail, and Bash-only strict-mode flags"
+        },
+        {
+          "id": "uses-posix-language",
+          "text": "Uses only POSIX shell language and separately acknowledges any external utility assumptions"
+        },
+        {
+          "id": "preserves-grep-statuses",
+          "text": "Preserves grep's no-match versus error statuses instead of relying on set -e"
+        },
+        {
+          "id": "handles-hostile-paths",
+          "text": "Handles whitespace and option-like filenames without parsing ls or using eval"
+        },
+        {
+          "id": "tests-dash-and-ash",
+          "text": "Includes a small dash and ash behavior check"
+        },
+        {
+          "id": "avoids-fragile-emulation",
+          "text": "Does not emulate Bash arrays or pipefail with fragile text serialization"
+        }
+      ],
+      "expected_output": "A genuinely POSIX sh rewrite with explicit grep status handling, safe operand transport, and checks under dash and ash. No hidden Bashisms or pseudo-pipefail."
+    },
+    {
+      "id": 3,
+      "prompt": "Audit this Bash script. Read-only: do not edit files.\n\n#!/usr/bin/env bash\nset -Eeuo pipefail\ntrap 'echo done; rm -rf \"$TMPDIR\"' EXIT\nrows=()\nmapfile -t rows < <(generate_rows | jq -r '.name')\nif publish \"${rows[@]}\"; then echo ok; fi\n\ngenerate_rows sometimes exits 42 after writing one row. TMPDIR may be inherited from the environment. Report only actionable findings.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "stays-read-only",
+          "text": "Remains read-only and ranks findings by severity"
+        },
+        {
+          "id": "reports-root-causes",
+          "text": "Gives a location, root cause, and minimum correction for every finding"
+        },
+        {
+          "id": "reads-audit-references",
+          "text": "Reads error-semantics.md and filesystem-safety.md, plus process-lifecycle.md if discussing producer processes"
+        },
+        {
+          "id": "detects-hidden-producer-failure",
+          "text": "Explains that process substitution and mapfile can hide generate_rows or jq failure from the consumer status"
+        },
+        {
+          "id": "explains-errexit-contexts",
+          "text": "Explains relevant set -e ignored contexts rather than treating strict mode as universal error handling"
+        },
+        {
+          "id": "detects-unsafe-cleanup",
+          "text": "Identifies inherited TMPDIR recursive deletion and cleanup status clobbering as root-cause risks"
+        },
+        {
+          "id": "avoids-generic-controls",
+          "text": "Does not prescribe generic logging, dry-run, retry, idempotence, or a framework"
+        }
+      ],
+      "expected_output": "A severity-ranked read-only audit identifying hidden process-substitution pipeline failures, context-sensitive set -e behavior, unsafe inherited TMPDIR deletion, and status-clobbering EXIT cleanup, with minimal root-cause fixes."
+    },
+    {
+      "id": 4,
+      "prompt": "Write a Bash 5.3 supervisor that starts N instances of one worker command, exposes a stable JOB_INDEX to each worker, forwards HUP/INT/TERM, waits for every direct child, returns a signal-derived status on shutdown, otherwise returns the first child failure in launch order, and never leaves a direct child running. Keep direct-child supervision as the documented boundary.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "reads-lifecycle-references",
+          "text": "Reads process-lifecycle.md and error-semantics.md"
+        },
+        {
+          "id": "traps-before-spawn",
+          "text": "Installs traps before spawning and records each PID immediately"
+        },
+        {
+          "id": "stops-spawning-on-signal",
+          "text": "Stops spawning after shutdown begins and signals any child created during that boundary"
+        },
+        {
+          "id": "forwards-three-signals",
+          "text": "Forwards HUP, INT, and TERM without using an unproven kill-0 precheck or kill 0 process-group blast"
+        },
+        {
+          "id": "waits-each-child",
+          "text": "Waits each child explicitly, handles wait interruption, and records deterministic statuses"
+        },
+        {
+          "id": "returns-deterministic-status",
+          "text": "Returns 129, 130, or 143 for the first shutdown signal and otherwise the first failure in launch order"
+        },
+        {
+          "id": "tests-signals-and-failures",
+          "text": "Includes a runnable SIGTERM and child-failure check without unrelated logging, retries, locks, or dry-run support"
+        }
+      ],
+      "expected_output": "A compact Bash 5.3 direct-child supervisor with preinstalled traps, PID tracking, signal forwarding, complete reaping, deterministic status aggregation, and focused failure/signal checks."
+    }
+  ]
+}
