@@ -1,0 +1,32 @@
+{
+  "keyboards": [
+    {
+      "address": "0x55785c997b70",
+      "name": "power-button",
+      "rules": "",
+      "model": "",
+      "layout": "us",
+      "variant": "",
+      "options": "compose:caps",
+      "active_layout_index": 0,
+      "active_keymap": "English (US)",
+      "capsLock": false,
+      "numLock": false,
+      "main": false
+    },
+    {
+      "address": "0x55785cfe6d30",
+      "name": "hl-virtual-keyboard",
+      "rules": "",
+      "model": "",
+      "layout": "us",
+      "variant": "",
+      "options": "compose:caps",
+      "active_layout_index": 0,
+      "active_keymap": "English (US)",
+      "capsLock": false,
+      "numLock": false,
+      "main": true
+    }
+  ]
+}

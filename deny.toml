@@ -1,7 +1,12 @@
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# quick-xml DoS advisories (quadratic attribute scan, unbounded namespace
+# allocation on untrusted XML). Reached only through wayland-scanner, which
+# runs at build time on the protocol XML vendored inside the wayland crates —
+# never on untrusted input. wayland-scanner pins quick-xml ^0.39, so the
+# fixed 0.41 line is unreachable until upstream bumps it.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [licenses]
 version = 2

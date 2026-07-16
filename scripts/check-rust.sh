@@ -33,4 +33,4 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-targets --all-features --locked
 "$cargo_deny" check
-"$cargo_machete" --with-metadata crates/skills-tools goalify/script/codex-goal
+"$cargo_machete" --with-metadata crates/hyprpilot crates/skills-tools goalify/script/codex-goal
