@@ -1,8 +1,0 @@
-{
-  "suite_id": "rust-craft-capability",
-  "iteration": 1,
-  "human_review": "not_requested",
-  "skill_change": "none",
-  "reason": "The pilot found no differential result. Saturated or uniformly failing tasks should not drive a rust-craft rewrite.",
-  "recommended_eval_change": "Move the current tasks to regression coverage and design a new frozen capability iteration with less prompt leakage and harder project-discovery decisions."
-}

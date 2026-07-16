@@ -1,7 +1,0 @@
-interface:
-  display_name: "Rust Craft"
-  short_description: "Design and build deliberate Rust systems"
-  default_prompt: "Use $rust-craft to design, implement, or review this Rust change with Rust-native engineering judgment."
-
-policy:
-  allow_implicit_invocation: true
