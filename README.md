@@ -90,6 +90,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`council`](council/)                                           | Get fresh Codex subagent perspectives on the current problem                                                                  |
 | [`deepen-codebase-architecture`](deepen-codebase-architecture/) | Audit or design deeper codebase modules with evidence-backed architecture proposals                                           |
 | [`design-system-creator`](design-system-creator/)               | Create design systems based on physical/sensory anchoring                                                                     |
+| [`deterministic-driver`](deterministic-driver/)                 | Build and operate deterministic Workflow() drivers for large multi-phase autonomous tasks                                     |
 | [`goalify`](goalify/)                                           | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file                                   |
 | [`handoff-prompt`](handoff-prompt/)                             | Generate a copy-paste-ready handoff prompt for a fresh agent instance                                                         |
 | [`harden-bash`](harden-bash/)                                   | Write and harden production shell scripts                                                                                     |
