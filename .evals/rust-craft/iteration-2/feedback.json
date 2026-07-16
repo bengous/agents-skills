@@ -1,0 +1,8 @@
+{
+  "suite_id": "rust-craft-capability-v2",
+  "iteration": 2,
+  "human_review": "not_requested",
+  "skill_change": "none",
+  "reason": "One discriminating trial is insufficient to attribute the FFI error-precedence choice to rust-craft, while the other tasks remained saturated.",
+  "recommended_eval_change": "Make callback-panic versus simultaneous foreign-status precedence explicit in the foreign contract and deterministic test, correct the reference solution, then rerun that task with repeated fresh trials. Move release-contract-discovery and cancel-safe-flush to regression coverage."
+}

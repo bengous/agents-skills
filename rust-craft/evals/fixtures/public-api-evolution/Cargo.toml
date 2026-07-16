@@ -1,0 +1,3 @@
+[workspace]
+members = ["store-api", "downstream"]
+resolver = "2"

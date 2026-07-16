@@ -1,0 +1,122 @@
+{
+  "suite_id": "rust-craft-capability-v2",
+  "iteration": 2,
+  "completed_at": "2026-07-15T22:43:57Z",
+  "verdict": {
+    "claim_supported": false,
+    "observed_lift": false,
+    "summary": "No skill and Apollo each passed 3 of 3 tasks. rust-craft passed 2 of 3 and failed one critical FFI assertion."
+  },
+  "execution": {
+    "scheduled_trials": 9,
+    "completed_trials": 9,
+    "infrastructure_failures": 0,
+    "runs_per_task_and_configuration": 1,
+    "independent_native_checks_passing": 9
+  },
+  "results": [
+    {
+      "configuration": "without_skill",
+      "tasks_passed": 3,
+      "tasks_total": 3,
+      "critical_assertions_passed": 17,
+      "critical_assertions_total": 17,
+      "task_results": {
+        "release-contract-discovery": true,
+        "cancel-safe-flush": true,
+        "ffi-callback-lifetime": true
+      }
+    },
+    {
+      "configuration": "apollo",
+      "tasks_passed": 3,
+      "tasks_total": 3,
+      "critical_assertions_passed": 17,
+      "critical_assertions_total": 17,
+      "task_results": {
+        "release-contract-discovery": true,
+        "cancel-safe-flush": true,
+        "ffi-callback-lifetime": true
+      }
+    },
+    {
+      "configuration": "rust_craft",
+      "tasks_passed": 2,
+      "tasks_total": 3,
+      "critical_assertions_passed": 16,
+      "critical_assertions_total": 17,
+      "task_results": {
+        "release-contract-discovery": true,
+        "cancel-safe-flush": true,
+        "ffi-callback-lifetime": false
+      }
+    }
+  ],
+  "task_findings": [
+    {
+      "task": "release-contract-discovery",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": true,
+      "finding": "All configurations restored the MSRV API, feature edge, downstream trait compatibility, and package contents."
+    },
+    {
+      "task": "cancel-safe-flush",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": true,
+      "finding": "All configurations removed the in-flight record before await and requeued it only on an observed sink error."
+    },
+    {
+      "task": "ffi-callback-lifetime",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": false,
+      "finding": "rust-craft contained the panic but prioritized a simultaneous foreign status, returning ForeignStatus(7) instead of the required CallbackPanicked. No skill and Apollo prioritized CallbackPanicked."
+    }
+  ],
+  "blind_candidate_map": {
+    "release-contract-discovery": {
+      "candidate-a": "apollo",
+      "candidate-b": "rust_craft",
+      "candidate-c": "without_skill"
+    },
+    "cancel-safe-flush": {
+      "candidate-a": "rust_craft",
+      "candidate-b": "without_skill",
+      "candidate-c": "apollo"
+    },
+    "ffi-callback-lifetime": {
+      "candidate-a": "without_skill",
+      "candidate-b": "apollo",
+      "candidate-c": "rust_craft"
+    }
+  },
+  "validity": {
+    "strengths": [
+      "Iteration 1 remained unchanged.",
+      "Exact skill, task, and fixture snapshots were frozen and verified before execution.",
+      "Each executor was fresh, isolated, and received only its assigned repository plus the selected skill snapshot.",
+      "All final native gates were independently rerun before grading.",
+      "Graders were blind to configuration and recorded evidence per predeclared assertion.",
+      "The FFI grader used independent panic-plus-status and Send/Sync probes."
+    ],
+    "limitations": [
+      "One run per task and configuration is not a reliability estimate.",
+      "The harness exposes global skills, so without_skill relies on an explicit prohibition rather than physical removal.",
+      "Effective executor and grader model identities, traces, and token counts were unavailable.",
+      "The isolated default toolchain was Rust 1.96; the async fixture's declared Rust 1.85 MSRV was not executed.",
+      "The preflight reference solution passed native checks but would fail the grader's combined callback-panic plus foreign-status probe; candidates A and B nevertheless provide verified passing paths.",
+      "Release and async remained saturated across all three configurations."
+    ]
+  },
+  "disposition": {
+    "capability_claim": "not demonstrated",
+    "skill_effect": "No positive effect observed; rust-craft underperformed both controls on one task in this single pilot.",
+    "skill_change": "Do not change rust-craft from one trial alone. First decide and encode the intended precedence between callback panic and simultaneous foreign failure, then repeat the discriminating task.",
+    "regression_candidates": [
+      "release-contract-discovery",
+      "cancel-safe-flush"
+    ]
+  }
+}

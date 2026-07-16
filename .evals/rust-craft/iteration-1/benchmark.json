@@ -1,0 +1,131 @@
+{
+  "suite_id": "rust-craft-capability",
+  "iteration": 1,
+  "completed_at": "2026-07-15T22:00:23Z",
+  "verdict": {
+    "claim_supported": false,
+    "observed_lift": false,
+    "summary": "rust-craft, Apollo, and no skill each passed the same 3 of 4 tasks. This pilot does not demonstrate added capability from rust-craft."
+  },
+  "execution": {
+    "scheduled_trials": 12,
+    "completed_trials": 12,
+    "infrastructure_failures": 0,
+    "runs_per_task_and_configuration": 1,
+    "deterministic_checks_passing_before_blind_grading": 12
+  },
+  "results": [
+    {
+      "configuration": "without_skill",
+      "tasks_passed": 3,
+      "tasks_total": 4,
+      "critical_assertions_passed": 19,
+      "critical_assertions_total": 20,
+      "task_results": {
+        "msrv-feature-release": true,
+        "async-managed-shutdown": true,
+        "public-api-evolution": false,
+        "safe-ffi-wrapper": true
+      }
+    },
+    {
+      "configuration": "apollo",
+      "tasks_passed": 3,
+      "tasks_total": 4,
+      "critical_assertions_passed": 19,
+      "critical_assertions_total": 20,
+      "task_results": {
+        "msrv-feature-release": true,
+        "async-managed-shutdown": true,
+        "public-api-evolution": false,
+        "safe-ffi-wrapper": true
+      }
+    },
+    {
+      "configuration": "rust_craft",
+      "tasks_passed": 3,
+      "tasks_total": 4,
+      "critical_assertions_passed": 19,
+      "critical_assertions_total": 20,
+      "task_results": {
+        "msrv-feature-release": true,
+        "async-managed-shutdown": true,
+        "public-api-evolution": false,
+        "safe-ffi-wrapper": true
+      }
+    }
+  ],
+  "task_findings": [
+    {
+      "task": "msrv-feature-release",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": true,
+      "finding": "All final code states were identical after excluding EVAL_REPORT.md."
+    },
+    {
+      "task": "async-managed-shutdown",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": true,
+      "finding": "All configurations produced valid owned, joinable task lifecycles."
+    },
+    {
+      "task": "public-api-evolution",
+      "without_skill": false,
+      "apollo": false,
+      "rust_craft": false,
+      "finding": "Every solution used a non-Send boxed future without documenting that executor limitation in the public API. All other critical assertions passed."
+    },
+    {
+      "task": "safe-ffi-wrapper",
+      "without_skill": true,
+      "apollo": true,
+      "rust_craft": true,
+      "finding": "All wrappers passed the boundary tests and independent Send/Sync trait probes."
+    }
+  ],
+  "blind_candidate_map": {
+    "msrv-feature-release": {
+      "candidate-a": "rust_craft",
+      "candidate-b": "without_skill",
+      "candidate-c": "apollo"
+    },
+    "async-managed-shutdown": {
+      "candidate-a": "apollo",
+      "candidate-b": "rust_craft",
+      "candidate-c": "without_skill"
+    },
+    "public-api-evolution": {
+      "candidate-a": "without_skill",
+      "candidate-b": "apollo",
+      "candidate-c": "rust_craft"
+    },
+    "safe-ffi-wrapper": {
+      "candidate-a": "apollo",
+      "candidate-b": "without_skill",
+      "candidate-c": "rust_craft"
+    }
+  },
+  "validity": {
+    "strengths": [
+      "Matched task fixtures and prompts across configurations.",
+      "Fresh executor per trial and isolated final states.",
+      "Frozen skill, fixture, and eval snapshots recorded by hash.",
+      "Configuration-blind grading with evidence per assertion.",
+      "Independent deterministic reruns after execution."
+    ],
+    "limitations": [
+      "One run per task and configuration is not a reliability estimate.",
+      "The harness exposes global skills, so without_skill relies on an explicit prohibition rather than physical removal.",
+      "Executor traces, token counts, and effective runtime model identity are unavailable from the collaboration harness.",
+      "TASK.md centralizes many decisive constraints, reducing the need for rust-craft's project-contract discovery workflow.",
+      "Three tasks were saturated; the fourth failed identically across configurations."
+    ]
+  },
+  "disposition": {
+    "capability_claim": "not demonstrated",
+    "current_tasks": "Retain as regression candidates, not evidence of differential capability.",
+    "next_iteration": "Design harder tasks whose necessary Rust constraints are discoverable in project files but not restated in the prompt; freeze them before execution and keep the same three-way blind comparison."
+  }
+}

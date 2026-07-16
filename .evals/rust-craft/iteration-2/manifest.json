@@ -1,0 +1,76 @@
+{
+  "suite_id": "rust-craft-capability-v2",
+  "iteration": 2,
+  "status": "complete",
+  "created_at": "2026-07-15T22:15:14Z",
+  "started_at": "2026-07-15T22:27:22Z",
+  "completed_at": "2026-07-15T22:43:57Z",
+  "definition": {
+    "source": "rust-craft/evals/capability-v2.json",
+    "sha256": "0e69d33baf79301268b8b58162dcc077b990c1c4020c31b483773eecdd8ae02d"
+  },
+  "snapshots": {
+    "rust_craft": {
+      "source": "rust-craft/SKILL.md and rust-craft/references",
+      "hash_command": "cd rust-craft && find SKILL.md references -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum",
+      "sha256": "faed9ce8c83eaa2211227bdbffd2649954c51412a1cc23f76e0d61e67bbc5d59"
+    },
+    "apollo": {
+      "source": "/home/b3ngous/.agents/skills/rust-best-practices/SKILL.md and references",
+      "sha256": "e171bbd9491134ef40873e338f0eea987b48fc3c676d9ff0759a5ec874295557"
+    },
+    "fixtures": {
+      "source": "rust-craft/evals/fixtures-v2",
+      "hash_command": "cd rust-craft/evals/fixtures-v2 && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum",
+      "sha256": "c25566484023e1f59e5af863b67483f2cc03d617311fef91f88fb224527168a5"
+    }
+  },
+  "configurations": [
+    "without_skill",
+    "apollo",
+    "rust_craft"
+  ],
+  "environment": {
+    "os": "Linux 7.1.3-arch1-2 x86_64",
+    "repository_root_rustc": "1.94.1 (e408947bf 2026-03-25)",
+    "repository_root_cargo": "1.94.1 (29ea6fb6a 2026-03-24)",
+    "isolated_trial_default_rustc": "1.96.0 (ac68faa20 2026-05-25)",
+    "isolated_trial_default_cargo": "1.96.0 (30a34c682 2026-05-25)",
+    "required_additional_toolchain": "1.88-x86_64-unknown-linux-gnu",
+    "network_required_by_fixtures": false
+  },
+  "preflight": {
+    "starter_states": "All three native gates fail for their intended task defect.",
+    "reference_solutions": "Preserved under the ignored iteration-2/reference-solutions directory.",
+    "release-contract": "release-check.sh passed on the reference solution.",
+    "cancel-safe-flush": "check.sh passed two behavioral tests on the reference solution.",
+    "ffi-callback": "check.sh passed the callback lifecycle test and compile-fail doctest on the reference solution."
+  },
+  "run_policy": {
+    "fresh_agent_per_trial": true,
+    "blind_grading": true,
+    "runs_per_task_and_configuration": 1,
+    "retry_rule": "Retry infrastructure failures only; never retry a completed task failure.",
+    "scheduled_executor_trials": 9,
+    "executor": {
+      "harness": "Codex collaboration agent",
+      "requested_model": "gpt-5.6-terra",
+      "requested_reasoning_effort": "high"
+    },
+    "grader": {
+      "harness": "Codex collaboration agent",
+      "requested_model": "gpt-5.6-sol",
+      "requested_reasoning_effort": "high"
+    },
+    "effective_model_identity": "Unavailable from the collaboration harness; requested settings only."
+  },
+  "observed": {
+    "completed_executor_trials": 9,
+    "infrastructure_failures": 0,
+    "independent_native_gate_passes": 9,
+    "blind_grading_tasks": 3,
+    "raw_final_states": "Preserved in ignored per-task/configuration directories.",
+    "traces": "Unavailable from the collaboration harness.",
+    "tokens": "Unavailable from the collaboration harness."
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "skill_name": "rust-craft",
+  "suite_id": "rust-craft-capability",
+  "purpose": "capability",
+  "claim": "Under matched agent conditions, rust-craft improves task-level success on Rust engineering problems whose decisive constraints are distributed across project files and Rust-specific contracts.",
+  "configurations": [
+    "without_skill",
+    "apollo",
+    "rust_craft"
+  ],
+  "trial_policy": {
+    "runs_per_task_and_configuration": 1,
+    "retry_rule": "Retry infrastructure failures only; never retry a completed task failure.",
+    "interpretation": "Pilot evidence for these trials, not a reliability estimate."
+  },
+  "task_result_policy": "Pass only when every critical assertion passes.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "msrv-feature-release",
+      "prompt": "Work in the supplied repository. Read TASK.md, complete the task end-to-end, run ./check.sh, and record the changes and checks in EVAL_REPORT.md.",
+      "files": [
+        "fixtures/msrv-features"
+      ],
+      "assertions": [
+        {
+          "id": "deterministic-gate",
+          "text": "The supplied check.sh passes under every advertised toolchain and feature configuration.",
+          "critical": true
+        },
+        {
+          "id": "preserves-msrv",
+          "text": "The declared Rust 1.88 support remains unchanged and the implementation uses APIs available on that toolchain.",
+          "critical": true
+        },
+        {
+          "id": "wires-optional-feature",
+          "text": "Enabling json activates its optional local dependency without enabling it by default.",
+          "critical": true
+        },
+        {
+          "id": "preserves-peek-contract",
+          "text": "peek_label still observes initialization without causing it, while label initializes and returns the label.",
+          "critical": true
+        },
+        {
+          "id": "minimal-compatibility-fix",
+          "text": "The change does not add dependencies, alter the lockfile policy, or broaden the public behavior beyond the task.",
+          "critical": false
+        }
+      ],
+      "expected_output": "A minimal compatibility repair that passes the 1.88/current and default/json matrix while preserving the peek contract."
+    },
+    {
+      "id": 2,
+      "name": "async-managed-shutdown",
+      "prompt": "Work in the supplied repository. Read TASK.md, complete the task end-to-end, run ./check.sh, and record the changes and checks in EVAL_REPORT.md.",
+      "files": [
+        "fixtures/async-lifecycle"
+      ],
+      "assertions": [
+        {
+          "id": "deterministic-gate",
+          "text": "The supplied check.sh compiles and passes the lifecycle test.",
+          "critical": true
+        },
+        {
+          "id": "spawn-contract",
+          "text": "The spawned future genuinely satisfies Send and static ownership requirements without weakening Runtime::spawn or using unsafe.",
+          "critical": true
+        },
+        {
+          "id": "managed-task",
+          "text": "The operation has an explicit Task owner and join path rather than being detached or leaked.",
+          "critical": true
+        },
+        {
+          "id": "coherent-suspension",
+          "text": "Shared state and synchronization remain coherent across suspension; no unsuitable lock guard is held across await.",
+          "critical": true
+        },
+        {
+          "id": "shutdown-contract",
+          "text": "After stop and join, phase is Stopped and exactly one operation is completed.",
+          "critical": true
+        }
+      ],
+      "expected_output": "A dependency-free managed task design whose future is spawnable and whose stop/join lifecycle leaves coherent observable state."
+    },
+    {
+      "id": 3,
+      "name": "public-api-evolution",
+      "prompt": "Work in the supplied repository. Read TASK.md, complete the task end-to-end, run ./check.sh, and record the changes and checks in EVAL_REPORT.md.",
+      "files": [
+        "fixtures/public-api-evolution"
+      ],
+      "assertions": [
+        {
+          "id": "deterministic-gate",
+          "text": "The supplied workspace tests and all-target checks pass.",
+          "critical": true
+        },
+        {
+          "id": "preserves-downstream",
+          "text": "The existing downstream Store implementation and Box<dyn Store> consumer remain source-compatible without new required methods.",
+          "critical": true
+        },
+        {
+          "id": "adds-capabilities",
+          "text": "The public API provides meaningful flush, metrics, and asynchronous write capabilities through a coherent opt-in or compatible surface.",
+          "critical": true
+        },
+        {
+          "id": "dyn-and-async-contract",
+          "text": "The async API states and satisfies its dyn compatibility, allocation, Send, lifetime, and MSRV choices instead of relying on an unavailable macro or opaque incompatible method.",
+          "critical": true
+        },
+        {
+          "id": "minor-release-scope",
+          "text": "The solution remains dependency-free and suitable for a minor release, with the compatibility tradeoff documented.",
+          "critical": true
+        }
+      ],
+      "expected_output": "A minor-release-compatible API extension that preserves existing implementors and trait objects while exposing usable flush, metrics, and async write behavior."
+    },
+    {
+      "id": 4,
+      "name": "safe-ffi-wrapper",
+      "prompt": "Work in the supplied repository. Read TASK.md, complete the task end-to-end, run ./check.sh, and record the changes and checks in EVAL_REPORT.md.",
+      "files": [
+        "fixtures/unsafe-ffi"
+      ],
+      "assertions": [
+        {
+          "id": "deterministic-gate",
+          "text": "All supplied parser boundary tests pass.",
+          "critical": true
+        },
+        {
+          "id": "safe-boundary",
+          "text": "Raw pointer operations stay private behind a safe Parser API with explicit local safety justification.",
+          "critical": true
+        },
+        {
+          "id": "buffer-validity",
+          "text": "Safe callers receive only initialized bytes after successful status and valid written length; partial errors and oversized reported lengths expose no output.",
+          "critical": true
+        },
+        {
+          "id": "typed-errors",
+          "text": "Null construction, foreign status, and invalid written length remain distinguishable typed errors.",
+          "critical": true
+        },
+        {
+          "id": "exactly-once-free",
+          "text": "Every successfully constructed handle is freed exactly once across normal and error paths.",
+          "critical": true
+        },
+        {
+          "id": "thread-contract",
+          "text": "Parser is not made Send or Sync without a foreign thread-safety guarantee.",
+          "critical": true
+        }
+      ],
+      "expected_output": "A small safe wrapper with typed failures, initialized-output validation, exactly-once ownership, and conservative thread traits."
+    }
+  ]
+}
