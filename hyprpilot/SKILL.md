@@ -48,6 +48,7 @@ hyprpilot shot                          # prints the PNG path — READ the PNG t
 hyprpilot click 120 260                 # window-relative; cursor + focus restored
 hyprpilot wait --changed-from <last.png>
 hyprpilot shot after-click
+hyprpilot scroll 800 250 --dy 5         # wheel detents at that point; positive = down/right
 hyprpilot teardown                      # ALWAYS, at the end of every session
 ```
 
@@ -78,9 +79,12 @@ Caveats:
 
 ## Caveats
 
-- A click must move the real cursor for a moment: position and focus are
-  restored immediately after, but a brief flash on the user's screen is
-  possible. Prefer keyboard navigation when both work.
+- A click or a scroll must move the real cursor for a moment: position and
+  focus are restored immediately after, but a brief flash on the user's
+  screen is possible. Prefer keyboard navigation when both work.
+- `click --double` sends two press/release pairs ~80 ms apart (one warp, one
+  restore). `scroll X Y --dy N [--dx N]` counts wheel detents, positive =
+  down/right; `--dy`/`--dx` both zero is an error.
 - Captures are pixels, not semantics: there is no element tree. Derive click
   coordinates from a fresh `shot` plus the window geometry in `status`.
 - One session at a time. If `session start` reports an existing session, run

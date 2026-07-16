@@ -24,7 +24,8 @@ install -m755 target/release/hyprpilot ~/.local/bin/
 | `session start --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window |
 | `key <CHORDS…>` | send key chords (`Down`, `Ctrl+c`) without focus |
 | `type "text"` | type character by character (US shift pairs, common French accents) |
-| `click X Y [--button b] [--absolute]` | virtual-pointer click; cursor + focus restored |
+| `click X Y [--button b] [--double] [--absolute]` | virtual-pointer click (`--double`: two clicks 80 ms apart); cursor + focus restored |
+| `scroll X Y --dy N [--dx N] [--absolute]` | wheel detents at that point (positive = down/right); cursor + focus restored |
 | `shot [NAME] [--full] [--out DIR]` | window-framed PNG (prints the absolute path) |
 | `wait [--stable\|--changed-from PNG] [--timeout 5s]` | poll captures until stable / changed |
 | `status` | session JSON: window, output, user focus |

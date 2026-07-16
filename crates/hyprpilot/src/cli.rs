@@ -43,11 +43,35 @@ enum Command {
     /// Click in the session window (cursor and focus are restored)
     Click {
         /// X, relative to the window unless --absolute
+        #[arg(allow_negative_numbers = true)]
         x: i32,
         /// Y, relative to the window unless --absolute
+        #[arg(allow_negative_numbers = true)]
         y: i32,
         #[arg(long, value_enum, default_value_t = ButtonArg::Left)]
         button: ButtonArg,
+        /// Double-click: two press/release pairs ~80 ms apart
+        #[arg(long)]
+        double: bool,
+        /// Treat X Y as global layout coordinates
+        #[arg(long)]
+        absolute: bool,
+    },
+    /// Scroll wheel detents at a point in the session window (cursor and
+    /// focus are restored)
+    Scroll {
+        /// X, relative to the window unless --absolute
+        #[arg(allow_negative_numbers = true)]
+        x: i32,
+        /// Y, relative to the window unless --absolute
+        #[arg(allow_negative_numbers = true)]
+        y: i32,
+        /// Vertical detents; positive = down (e.g. `--dy 5`, `--dy -3`)
+        #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+        dy: i32,
+        /// Horizontal detents; positive = right
+        #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+        dx: i32,
         /// Treat X Y as global layout coordinates
         #[arg(long)]
         absolute: bool,
@@ -146,8 +170,16 @@ pub fn run() -> Result<String, Error> {
             x,
             y,
             button,
+            double,
             absolute,
-        } => pointer::click(x, y, button.into(), absolute),
+        } => pointer::click(x, y, button.into(), double, absolute),
+        Command::Scroll {
+            x,
+            y,
+            dy,
+            dx,
+            absolute,
+        } => pointer::scroll(x, y, dx, dy, absolute),
         Command::Shot { name, full, out } => capture::shot(name.as_deref(), full, out.as_deref()),
         Command::Wait {
             changed_from,
