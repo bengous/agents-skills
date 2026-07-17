@@ -1,7 +1,7 @@
 interface:
   display_name: "Council"
   short_description: "Ask 3 fresh agents for independent opinions"
-  default_prompt: "$council Je me demande si..."
+  default_prompt: "$council "
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

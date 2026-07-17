@@ -1,6 +1,7 @@
 ---
 name: council
-description: Convene 3 fresh Codex subagents to give independent opinions on a question, idea, hypothesis, plan, or ambiguity. Use when the user invokes "$council", asks for "l'avis de 3 sous agents", wants multiple external viewpoints, says "je me demande si..." and appears to want validation, fact-checking, challenge, ambiguity-breaking, or a smarter decision review. If invoked with no extra prompt, infer the current subject from the active conversation and ask clean-context subagents to review it.
+disable-model-invocation: true
+description: USER-INVOKED ONLY. Do NOT auto-trigger. Convene 3 fresh Codex subagents to give independent opinions on a question, idea, hypothesis, plan, or ambiguity. Use only when the user explicitly invokes this skill ("$council", "/council") or explicitly names it ("run council", "use the council skill", "convoque le council"). Never trigger on musings, opinions, or phrases like "je me demande si" — thinking out loud is not an invocation. If invoked with no extra prompt, infer the current subject from the active conversation and ask clean-context subagents to review it.
 ---
 
 # Council
