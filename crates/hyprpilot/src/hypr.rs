@@ -234,6 +234,14 @@ pub fn keyword_monitor(name: &str, width: u32, height: u32) -> Result<(), Error>
     ])
 }
 
+pub fn keyword_workspace(workspace: &str, monitor: &str) -> Result<(), Error> {
+    expect_ok(&[
+        "keyword",
+        "workspace",
+        &format!("{workspace}, monitor:{monitor}"),
+    ])
+}
+
 pub fn version() -> Result<String, Error> {
     run(&["version"])
 }

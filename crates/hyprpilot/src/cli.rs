@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::error::Error;
@@ -21,11 +21,44 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("selector")
+        .required(true)
+        .multiple(true)
+        .args(["address", "match_title", "match_class", "pid", "untracked"])
+))]
+struct TargetArgs {
+    /// Exact Hyprland window address
+    #[arg(long, value_name = "A")]
+    address: Option<String>,
+    /// Exact window title
+    #[arg(long, value_name = "T")]
+    match_title: Option<String>,
+    /// Exact window class
+    #[arg(long, value_name = "C")]
+    match_class: Option<String>,
+    /// Exact window process ID
+    #[arg(long, value_name = "P")]
+    pid: Option<i32>,
+    /// Only consider windows not already tracked by the session
+    #[arg(long)]
+    untracked: bool,
+    /// Poll for zero matches until this timeout, e.g. `10s`
+    #[arg(long, value_name = "DURATION")]
+    wait: Option<String>,
+    /// What to do with a newly adopted window during teardown
+    #[arg(long, value_enum, value_name = "restore|close")]
+    on_teardown: Option<DispositionArg>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Manage the driving session (one at a time)
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Adopt or switch to exactly one matching session window
+    Target(TargetArgs),
     /// Send key chords to the session window (no focus needed)
     Key {
         /// Chords like `a`, `Down`, `Ctrl+c`, `Ctrl+Shift+Escape`
@@ -145,6 +178,21 @@ enum ButtonArg {
     Middle,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum DispositionArg {
+    Restore,
+    Close,
+}
+
+impl From<DispositionArg> for session::Disposition {
+    fn from(disposition: DispositionArg) -> Self {
+        match disposition {
+            DispositionArg::Restore => Self::Restore,
+            DispositionArg::Close => Self::Close,
+        }
+    }
+}
+
 impl From<ButtonArg> for pointer::MouseButton {
     fn from(button: ButtonArg) -> Self {
         match button {
@@ -168,6 +216,26 @@ pub fn run() -> Result<String, Error> {
             match_class.as_deref(),
             &size,
         ),
+        Command::Target(TargetArgs {
+            address,
+            match_title,
+            match_class,
+            pid,
+            untracked,
+            wait,
+            on_teardown,
+        }) => {
+            let wait = wait.as_deref().map(capture::parse_timeout).transpose()?;
+            session::target(
+                address.as_deref(),
+                match_title.as_deref(),
+                match_class.as_deref(),
+                pid,
+                untracked,
+                wait,
+                on_teardown.map(Into::into),
+            )
+        }
         Command::Key { keys, delay_ms } => crate::keys::send_keys(&keys, delay_ms),
         Command::Type { text, delay_ms } => keys::type_text(&text, delay_ms),
         Command::Click {
@@ -458,7 +526,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, WindowSession, serialize_windows};
+    use super::{Cli, Command, WindowSession, serialize_windows};
     use crate::hypr::Client;
     use crate::session::{Disposition, Session, TrackedWindow};
 
@@ -499,6 +567,43 @@ mod tests {
     #[test]
     fn teardown_kill_and_close_conflict() {
         assert!(Cli::try_parse_from(["hyprpilot", "teardown", "--kill", "--close"]).is_err());
+    }
+
+    #[test]
+    fn target_requires_at_least_one_selector() {
+        assert!(Cli::try_parse_from(["hyprpilot", "target"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["hyprpilot", "target", "--untracked"]),
+            Ok(Cli {
+                command: Command::Target(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn target_accepts_combined_selectors_wait_and_disposition() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "hyprpilot",
+                "target",
+                "--address",
+                "0xabc",
+                "--match-title",
+                "App",
+                "--match-class",
+                "app",
+                "--pid",
+                "42",
+                "--untracked",
+                "--wait",
+                "5s",
+                "--on-teardown",
+                "close",
+            ]),
+            Ok(Cli {
+                command: Command::Target(_)
+            })
+        ));
     }
 
     #[test]

@@ -195,6 +195,85 @@ read_client_state() {
 	printf -v "${monitor_destination}" '%s' "${BASH_REMATCH[7]}"
 }
 
+read_stable_client_state() {
+	local address=$1
+	local x_destination=$2
+	local y_destination=$3
+	local width_destination=$4
+	local height_destination=$5
+	local workspace_destination=$6
+	local floating_destination=$7
+	local monitor_destination=$8
+	local label=$9
+	local observed_x observed_y observed_width observed_height observed_workspace
+	local observed_floating observed_monitor current previous="" attempt
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		read_client_state "${address}" observed_x observed_y observed_width observed_height \
+			observed_workspace observed_floating observed_monitor "${label}" || return 1
+		current=${observed_x},${observed_y},${observed_width},${observed_height},${observed_workspace},${observed_floating},${observed_monitor}
+		if [[ ${current} == "${previous}" ]]; then
+			printf -v "${x_destination}" '%s' "${observed_x}"
+			printf -v "${y_destination}" '%s' "${observed_y}"
+			printf -v "${width_destination}" '%s' "${observed_width}"
+			printf -v "${height_destination}" '%s' "${observed_height}"
+			printf -v "${workspace_destination}" '%s' "${observed_workspace}"
+			printf -v "${floating_destination}" '%s' "${observed_floating}"
+			printf -v "${monitor_destination}" '%s' "${observed_monitor}"
+			return 0
+		fi
+		previous=${current}
+		sleep 0.1
+	done
+	fail "${label}: état observe=${current}; attendu=deux lectures identiques en 3s"
+	return 1
+}
+
+wait_client_state_equals() {
+	local address=$1
+	local expected_x=$2
+	local expected_y=$3
+	local expected_width=$4
+	local expected_height=$5
+	local expected_workspace=$6
+	local expected_floating=$7
+	local expected_monitor=$8
+	local label=$9
+	local actual_x actual_y actual_width actual_height actual_workspace
+	local actual_floating actual_monitor attempt
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		read_client_state "${address}" actual_x actual_y actual_width actual_height \
+			actual_workspace actual_floating actual_monitor "${label}" || return 1
+		if ((actual_x == expected_x && actual_y == expected_y &&
+			actual_width == expected_width && actual_height == expected_height)) &&
+			[[ ${actual_workspace} == "${expected_workspace}" &&
+				${actual_floating} == "${expected_floating}" &&
+				${actual_monitor} == "${expected_monitor}" ]]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	fail "${label}: état observe=(${actual_x}, ${actual_y}) ${actual_width}x${actual_height}, workspace=${actual_workspace}, floating=${actual_floating}, monitor=${actual_monitor}; attendu=(${expected_x}, ${expected_y}) ${expected_width}x${expected_height}, workspace=${expected_workspace}, floating=${expected_floating}, monitor=${expected_monitor}"
+	return 1
+}
+
+assert_parking_not_toggled() {
+	local label=$1
+	local monitors
+
+	if ! monitors=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observes=erreur hyprctl (${monitors}); attendu=parking non affiché"
+		return 1
+	fi
+	if ! jq -e --arg parking "special:hyprpilot-parked" \
+		'all(.[]; (.specialWorkspace.name // "") != $parking)' \
+		<<<"${monitors}" >/dev/null; then
+		fail "${label}: special observe=hyprpilot-parked affiché; attendu=aucun toggle"
+		return 1
+	fi
+}
+
 read_monitor_origin() {
 	local monitor_id=$1
 	local x_destination=$2
@@ -638,6 +717,300 @@ scenario_windows_ambiguous() (
 	wait "${zenity_two_pid}" 2>/dev/null || true
 	zenity_one_pid=""
 	zenity_two_pid=""
+)
+
+scenario_target_lifecycle() (
+	local cleanup_failed=0
+	local scenario_tmp="" session_file="" cleanup_output="" command_output="" shot_output=""
+	local a_pid="" b_pid="" a_address="" b_address="" addresses_json=""
+	local a_title="hyprpilot-e2e-target-a-$$"
+	local b_title="hyprpilot-e2e-target-b-$$"
+	local a_x a_y a_width a_height a_workspace a_floating a_monitor
+	local b_x b_y b_width b_height b_workspace b_floating b_monitor
+	local state_x state_y state_width state_height state_workspace state_floating state_monitor
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_target_lifecycle() {
+		local scenario_status=$?
+		local pid
+		trap - EXIT INT TERM
+
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+				fail "nettoyage target_lifecycle: teardown observe=echec (${cleanup_output}); attendu=succes"
+				cleanup_failed=1
+			fi
+		fi
+		for pid in "${a_pid}" "${b_pid}"; do
+			if [[ -n ${pid} ]] && kill -0 "${pid}" 2>/dev/null; then
+				kill "${pid}" 2>/dev/null || cleanup_failed=1
+				wait "${pid}" 2>/dev/null || true
+			fi
+		done
+		if ! assert_output_absent "nettoyage target_lifecycle"; then
+			cleanup_failed=1
+		fi
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-target-lifecycle.* ]]; then
+				fail "nettoyage target_lifecycle: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_target_lifecycle EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "target_lifecycle: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	if [[ -e ${session_file} ]]; then
+		fail "precondition target_lifecycle: session observe=presente; attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-target-lifecycle.XXXXXX"); then
+		fail "target_lifecycle: repertoire temporaire observe=creation impossible; attendu=mktemp reussi"
+		return 1
+	fi
+
+	zenity --entry --title="${a_title}" >/dev/null 2>&1 &
+	a_pid=$!
+	wait_client_addresses_by_title addresses_json "${a_title}" 1 \
+		"settle spawn A target_lifecycle" || return 1
+	a_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_stable_client_state "${a_address}" a_x a_y a_width a_height a_workspace \
+		a_floating a_monitor "origine A target_lifecycle" || return 1
+	if [[ ${a_floating} != true ]]; then
+		if ! command_output=$(
+			hyprctl dispatch togglefloating "address:${a_address}" 2>&1
+		) || [[ ${command_output} != ok ]]; then
+			fail "setup A target_lifecycle: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+		read_stable_client_state "${a_address}" a_x a_y a_width a_height a_workspace \
+			a_floating a_monitor "origine flottante A target_lifecycle" || return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${a_title}" 2>&1
+	); then
+		fail "session start target_lifecycle observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+
+	zenity --entry --title="${b_title}" >/dev/null 2>&1 &
+	b_pid=$!
+	wait_client_addresses_by_title addresses_json "${b_title}" 1 \
+		"settle spawn B target_lifecycle" || return 1
+	b_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_stable_client_state "${b_address}" b_x b_y b_width b_height b_workspace \
+		b_floating b_monitor "origine B target_lifecycle" || return 1
+	if [[ ${b_floating} != true ]]; then
+		if ! command_output=$(
+			hyprctl dispatch togglefloating "address:${b_address}" 2>&1
+		) || [[ ${command_output} != ok ]]; then
+			fail "setup B target_lifecycle: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+		read_stable_client_state "${b_address}" b_x b_y b_width b_height b_workspace \
+			b_floating b_monitor "origine flottante B target_lifecycle" || return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" target --untracked --match-title "${b_title}" --wait 5s 2>&1
+	); then
+		fail "target B target_lifecycle observe=echec (${command_output}); attendu=adoption"
+		return 1
+	fi
+	read_client_state "${b_address}" state_x state_y state_width state_height state_workspace \
+		state_floating state_monitor "target B actif target_lifecycle" || return 1
+	if [[ ${state_workspace} != hyprpilot ]]; then
+		fail "target B target_lifecycle: workspace B observe=${state_workspace}; attendu=hyprpilot"
+		return 1
+	fi
+	read_client_state "${a_address}" state_x state_y state_width state_height state_workspace \
+		state_floating state_monitor "target A parque target_lifecycle" || return 1
+	if [[ ${state_workspace} != special:hyprpilot-parked ]]; then
+		fail "target B target_lifecycle: workspace A observe=${state_workspace}; attendu=special:hyprpilot-parked"
+		return 1
+	fi
+	assert_parking_not_toggled "target B target_lifecycle" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" shot target-b --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/target-b.png ]]; then
+		fail "shot B target_lifecycle observe=${shot_output}; attendu=PNG immédiat non vide"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" target --match-title "${a_title}" 2>&1
+	); then
+		fail "target A target_lifecycle observe=echec (${command_output}); attendu=switch"
+		return 1
+	fi
+	read_client_state "${a_address}" state_x state_y state_width state_height state_workspace \
+		state_floating state_monitor "target A actif target_lifecycle" || return 1
+	if [[ ${state_workspace} != hyprpilot ]]; then
+		fail "target A target_lifecycle: workspace A observe=${state_workspace}; attendu=hyprpilot"
+		return 1
+	fi
+	read_client_state "${b_address}" state_x state_y state_width state_height state_workspace \
+		state_floating state_monitor "target B parque target_lifecycle" || return 1
+	if [[ ${state_workspace} != special:hyprpilot-parked ]]; then
+		fail "target A target_lifecycle: workspace B observe=${state_workspace}; attendu=special:hyprpilot-parked"
+		return 1
+	fi
+	assert_parking_not_toggled "target A target_lifecycle" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" shot target-a --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/target-a.png ]]; then
+		fail "shot A target_lifecycle observe=${shot_output}; attendu=PNG immédiat non vide"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown target_lifecycle observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_client_state_equals "${a_address}" "${a_x}" "${a_y}" "${a_width}" "${a_height}" \
+		"${a_workspace}" "${a_floating}" "${a_monitor}" "restore A target_lifecycle" || return 1
+	wait_client_state_equals "${b_address}" "${b_x}" "${b_y}" "${b_width}" "${b_height}" \
+		"${b_workspace}" "${b_floating}" "${b_monitor}" "restore B target_lifecycle" || return 1
+	assert_output_absent "teardown target_lifecycle" || return 1
+
+	kill "${a_pid}" "${b_pid}" 2>/dev/null || true
+	wait "${a_pid}" 2>/dev/null || true
+	wait "${b_pid}" 2>/dev/null || true
+	a_pid=""
+	b_pid=""
+)
+
+scenario_target_close() (
+	local cleanup_failed=0
+	local session_file="" cleanup_output="" command_output=""
+	local a_pid="" b_pid="" a_address="" b_address="" addresses_json=""
+	local a_title="hyprpilot-e2e-target-close-a-$$"
+	local b_title="hyprpilot-e2e-target-close-b-$$"
+	local a_x a_y a_width a_height a_workspace a_floating a_monitor
+	local b_x b_y b_width b_height b_workspace b_floating b_monitor
+	local attempt process_gone=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_target_close() {
+		local scenario_status=$?
+		local pid
+		trap - EXIT INT TERM
+
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+				fail "nettoyage target_close: teardown observe=echec (${cleanup_output}); attendu=succes"
+				cleanup_failed=1
+			fi
+		fi
+		for pid in "${a_pid}" "${b_pid}"; do
+			if [[ -n ${pid} ]] && kill -0 "${pid}" 2>/dev/null; then
+				kill "${pid}" 2>/dev/null || cleanup_failed=1
+				wait "${pid}" 2>/dev/null || true
+			fi
+		done
+		if ! assert_output_absent "nettoyage target_close"; then
+			cleanup_failed=1
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_target_close EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "target_close: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	if [[ -e ${session_file} ]]; then
+		fail "precondition target_close: session observe=presente; attendu=absente"
+		return 1
+	fi
+
+	zenity --entry --title="${a_title}" >/dev/null 2>&1 &
+	a_pid=$!
+	wait_client_addresses_by_title addresses_json "${a_title}" 1 \
+		"settle spawn A target_close" || return 1
+	a_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_stable_client_state "${a_address}" a_x a_y a_width a_height a_workspace \
+		a_floating a_monitor "origine A target_close" || return 1
+	if [[ ${a_floating} != true ]]; then
+		if ! command_output=$(
+			hyprctl dispatch togglefloating "address:${a_address}" 2>&1
+		) || [[ ${command_output} != ok ]]; then
+			fail "setup A target_close: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+		read_stable_client_state "${a_address}" a_x a_y a_width a_height a_workspace \
+			a_floating a_monitor "origine flottante A target_close" || return 1
+	fi
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${a_title}" 2>&1
+	); then
+		fail "session start target_close observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+
+	zenity --entry --title="${b_title}" >/dev/null 2>&1 &
+	b_pid=$!
+	wait_client_addresses_by_title addresses_json "${b_title}" 1 \
+		"settle spawn B target_close" || return 1
+	b_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_stable_client_state "${b_address}" b_x b_y b_width b_height b_workspace \
+		b_floating b_monitor "origine B target_close" || return 1
+	if ! command_output=$(
+		"${HYPRPILOT}" target --untracked --match-title "${b_title}" \
+			--on-teardown close 2>&1
+	); then
+		fail "target B target_close observe=echec (${command_output}); attendu=adoption close"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown target_close observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_client_gone "${b_address}" "teardown target_close fenêtre B" || return 1
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if ! kill -0 "${b_pid}" 2>/dev/null; then
+			process_gone=1
+			break
+		fi
+		sleep 0.1
+	done
+	if ((process_gone == 0)); then
+		fail "teardown target_close process B observe=${b_pid} vivant; attendu=disparu"
+		return 1
+	fi
+	wait "${b_pid}" 2>/dev/null || true
+	b_pid=""
+	wait_client_state_equals "${a_address}" "${a_x}" "${a_y}" "${a_width}" "${a_height}" \
+		"${a_workspace}" "${a_floating}" "${a_monitor}" "restore A target_close" || return 1
+	assert_output_absent "teardown target_close" || return 1
+
+	kill "${a_pid}" 2>/dev/null || true
+	wait "${a_pid}" 2>/dev/null || true
+	a_pid=""
 )
 
 scenario_guard_click() (

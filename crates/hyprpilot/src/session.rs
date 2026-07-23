@@ -81,6 +81,7 @@ pub enum Placement {
 
 #[derive(Debug, Default)]
 pub struct Criteria<'a> {
+    pub address: Option<&'a str>,
     pub title: Option<&'a str>,
     pub class: Option<&'a str>,
     pub pid: Option<i32>,
@@ -93,21 +94,45 @@ pub enum Resolution<'a> {
     Ambiguous(Vec<&'a hypr::Client>),
 }
 
-pub fn resolve<'a>(clients: &'a [hypr::Client], criteria: &Criteria<'_>) -> Resolution<'a> {
-    let matches = clients
-        .iter()
-        .filter(|client| {
-            criteria.title.is_none_or(|title| client.title == title)
-                && criteria.class.is_none_or(|class| client.class == class)
-                && criteria.pid.is_none_or(|pid| client.pid == pid)
-        })
-        .collect::<Vec<_>>();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetMode {
+    Switch,
+    Adopt,
+}
 
+#[derive(Debug)]
+enum TargetLookup<'a> {
+    Ready {
+        client: &'a hypr::Client,
+        mode: TargetMode,
+    },
+    Retry,
+}
+
+fn matches_criteria(client: &hypr::Client, criteria: &Criteria<'_>) -> bool {
+    criteria
+        .address
+        .is_none_or(|address| client.address == address)
+        && criteria.title.is_none_or(|title| client.title == title)
+        && criteria.class.is_none_or(|class| client.class == class)
+        && criteria.pid.is_none_or(|pid| client.pid == pid)
+}
+
+fn resolution(matches: Vec<&hypr::Client>) -> Resolution<'_> {
     match matches.len() {
         0 => Resolution::None,
         1 => Resolution::Unique(matches[0]),
         _ => Resolution::Ambiguous(matches),
     }
+}
+
+pub fn resolve<'a>(clients: &'a [hypr::Client], criteria: &Criteria<'_>) -> Resolution<'a> {
+    resolution(
+        clients
+            .iter()
+            .filter(|client| matches_criteria(client, criteria))
+            .collect(),
+    )
 }
 
 pub fn place(window: Rect, output: Rect) -> Placement {
@@ -281,7 +306,6 @@ fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
     })
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "required session mutation API"))]
 pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
     let raw = serialize(session)?;
     let file_name = path.file_name().ok_or_else(|| Error::Invalid {
@@ -374,6 +398,9 @@ pub fn workspace_selector(workspace: &hypr::WorkspaceRef) -> String {
 
 fn criteria_label(criteria: &Criteria<'_>) -> String {
     let mut parts = Vec::new();
+    if let Some(address) = criteria.address {
+        parts.push(format!("address `{address}`"));
+    }
     if let Some(title) = criteria.title {
         parts.push(format!("title `{title}`"));
     }
@@ -386,7 +413,16 @@ fn criteria_label(criteria: &Criteria<'_>) -> String {
     parts.join(" and ")
 }
 
-fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> Error {
+fn target_criteria_label(criteria: &Criteria<'_>, untracked: bool) -> String {
+    let criteria = criteria_label(criteria);
+    match (criteria.is_empty(), untracked) {
+        (true, true) => "untracked windows".to_owned(),
+        (false, true) => format!("{criteria} among untracked windows"),
+        _ => criteria,
+    }
+}
+
+fn ambiguous_error_with_label(criteria: String, candidates: Vec<&hypr::Client>) -> Error {
     let candidates = candidates
         .into_iter()
         .map(|client| {
@@ -406,9 +442,86 @@ fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> E
         })
         .collect();
     Error::WindowAmbiguous {
-        criteria: criteria_label(criteria),
+        criteria,
         candidates: serde_json::Value::Array(candidates),
     }
+}
+
+fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> Error {
+    ambiguous_error_with_label(criteria_label(criteria), candidates)
+}
+
+fn resolve_target<'a>(
+    clients: &'a [hypr::Client],
+    session: &Session,
+    criteria: &Criteria<'_>,
+    untracked: bool,
+) -> Resolution<'a> {
+    resolution(
+        clients
+            .iter()
+            .filter(|client| {
+                matches_criteria(client, criteria)
+                    && (!untracked
+                        || !session
+                            .windows
+                            .iter()
+                            .any(|window| window.address == client.address))
+            })
+            .collect(),
+    )
+}
+
+fn target_lookup<'a>(
+    clients: &'a [hypr::Client],
+    session: &Session,
+    criteria: &Criteria<'_>,
+    untracked: bool,
+    wait: bool,
+) -> Result<TargetLookup<'a>, Error> {
+    match resolve_target(clients, session, criteria, untracked) {
+        Resolution::Unique(client) => Ok(TargetLookup::Ready {
+            client,
+            mode: if session
+                .windows
+                .iter()
+                .any(|window| window.address == client.address)
+            {
+                TargetMode::Switch
+            } else {
+                TargetMode::Adopt
+            },
+        }),
+        Resolution::None if wait => Ok(TargetLookup::Retry),
+        Resolution::None => Err(Error::WindowNotFound(target_criteria_label(
+            criteria, untracked,
+        ))),
+        Resolution::Ambiguous(candidates) => Err(ambiguous_error_with_label(
+            target_criteria_label(criteria, untracked),
+            candidates,
+        )),
+    }
+}
+
+fn target_disposition(
+    address: &str,
+    mode: TargetMode,
+    requested: Option<Disposition>,
+) -> Result<Disposition, Error> {
+    if mode == TargetMode::Switch
+        && let Some(disposition) = requested
+    {
+        let value = match disposition {
+            Disposition::Restore => "restore",
+            Disposition::Close => "close",
+        };
+        return Err(Error::Invalid {
+            what: "target option",
+            value: format!("--on-teardown {value}"),
+            hint: format!("window {address} is already tracked; omit --on-teardown when switching"),
+        });
+    }
+    Ok(requested.unwrap_or(Disposition::Restore))
 }
 
 fn find_window(criteria: &Criteria<'_>) -> Result<Option<hypr::Client>, Error> {
@@ -656,6 +769,14 @@ fn park_window(
         "movetoworkspacesilent",
         &format!("name:{workspace_name},address:{address}"),
     ])?;
+    place_session_window(address, output_name, workspace_name)
+}
+
+fn place_session_window(
+    address: &str,
+    output_name: &str,
+    workspace_name: &str,
+) -> Result<Option<Placement>, Error> {
     hypr::dispatch(&[
         "moveworkspacetomonitor",
         &format!("name:{workspace_name}"),
@@ -678,6 +799,220 @@ fn park_window(
     }
     wait_for_verified_placement(address, output_name, workspace_name, placement)?;
     Ok(window.floating.then_some(placement))
+}
+
+fn target_layout_is_verified(
+    session: &Session,
+    clients: &[hypr::Client],
+    monitors: &[hypr::Monitor],
+) -> Result<bool, Error> {
+    let output = monitors
+        .iter()
+        .find(|monitor| monitor.name == session.output)
+        .ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("session output {} is missing", session.output),
+        })?;
+    if output.active_workspace.name != session.active_workspace
+        || !output.special_workspace.is_empty()
+        || monitors
+            .iter()
+            .any(|monitor| monitor.special_workspace == session.parking_workspace)
+    {
+        return Ok(false);
+    }
+
+    let active = clients
+        .iter()
+        .find(|client| client.address == session.active_address)
+        .ok_or_else(|| Error::WindowGone(session.active_address.clone()))?;
+    if active.workspace.name != session.active_workspace || active.monitor != output.id {
+        return Ok(false);
+    }
+
+    for tracked in &session.windows {
+        if tracked.address == session.active_address {
+            continue;
+        }
+        if let Some(client) = clients
+            .iter()
+            .find(|client| client.address == tracked.address)
+            && client.workspace.name != session.parking_workspace
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn wait_for_target_layout(session: &Session) -> Result<(), Error> {
+    let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
+    loop {
+        let clients = hypr::clients()?;
+        let monitors = hypr::monitors()?;
+        if target_layout_is_verified(session, &clients, &monitors)? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout {
+                what: format!(
+                    "one active tracked window {} on output {} and every other tracked window on {}",
+                    session.active_address, session.output, session.parking_workspace
+                ),
+                after_ms: WINDOW_PLACE_TIMEOUT.as_millis(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn activate_persisted_target(session: &Session) -> Result<(), Error> {
+    hypr::keyword_workspace(&session.parking_workspace, &session.output)?;
+
+    let clients = hypr::clients()?;
+    for tracked in &session.windows {
+        if tracked.address == session.active_address {
+            continue;
+        }
+        if let Some(client) = clients
+            .iter()
+            .find(|client| client.address == tracked.address)
+            && client.workspace.name != session.parking_workspace
+        {
+            hypr::dispatch(&[
+                "movetoworkspacesilent",
+                &format!("{},address:{}", session.parking_workspace, tracked.address),
+            ])?;
+        }
+    }
+
+    let target = hypr::clients()?
+        .into_iter()
+        .find(|client| client.address == session.active_address)
+        .ok_or_else(|| Error::WindowGone(session.active_address.clone()))?;
+    if target.workspace.name != session.active_workspace {
+        hypr::dispatch(&[
+            "movetoworkspacesilent",
+            &format!(
+                "name:{},address:{}",
+                session.active_workspace, session.active_address
+            ),
+        ])?;
+    }
+
+    if matches!(
+        place_session_window(
+            &session.active_address,
+            &session.output,
+            &session.active_workspace,
+        )?,
+        Some(Placement::Oversized(_, _))
+    ) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "hyprpilot: warning: window {} is larger than output {}; \
+             use `hyprpilot session resize` when available",
+            session.active_address,
+            session.output
+        );
+    }
+    wait_for_target_layout(session)
+}
+
+fn persist_target_before_activation(
+    path: &Path,
+    session: &mut Session,
+    client: &hypr::Client,
+    mode: TargetMode,
+    disposition: Disposition,
+) -> Result<(), Error> {
+    if mode == TargetMode::Adopt {
+        session.windows.push(TrackedWindow {
+            address: client.address.clone(),
+            title_at_adoption: client.title.clone(),
+            origin_workspace: client.workspace.name.clone(),
+            origin_at: client.at,
+            origin_size: client.size,
+            origin_floating: client.floating,
+            teardown: disposition,
+        });
+        save_over(path, session)?;
+    }
+
+    session.active_address.clone_from(&client.address);
+    save_over(path, session)
+}
+
+pub fn target(
+    address: Option<&str>,
+    match_title: Option<&str>,
+    match_class: Option<&str>,
+    pid: Option<i32>,
+    untracked: bool,
+    wait: Option<Duration>,
+    on_teardown: Option<Disposition>,
+) -> Result<String, Error> {
+    if address.is_none()
+        && match_title.is_none()
+        && match_class.is_none()
+        && pid.is_none()
+        && !untracked
+    {
+        return Err(Error::Invalid {
+            what: "target selector",
+            value: "(none)".to_owned(),
+            hint: "pass --address, --match-title, --match-class, --pid and/or --untracked"
+                .to_owned(),
+        });
+    }
+
+    let path = session_path()?;
+    let mut session = load_from(&path)?;
+    let criteria = Criteria {
+        address,
+        title: match_title,
+        class: match_class,
+        pid,
+    };
+    let started = Instant::now();
+    let (client, mode) = loop {
+        let clients = hypr::clients()?;
+        match target_lookup(&clients, &session, &criteria, untracked, wait.is_some())? {
+            TargetLookup::Ready { client, mode } => break (client.clone(), mode),
+            TargetLookup::Retry => {
+                let timeout = wait.ok_or_else(|| {
+                    Error::WindowNotFound(target_criteria_label(&criteria, untracked))
+                })?;
+                let elapsed = started.elapsed();
+                if elapsed >= timeout {
+                    return Err(Error::Timeout {
+                        what: format!(
+                            "a window matching {}",
+                            target_criteria_label(&criteria, untracked)
+                        ),
+                        after_ms: timeout.as_millis(),
+                    });
+                }
+                thread::sleep(POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
+            }
+        }
+    };
+    let disposition = target_disposition(&client.address, mode, on_teardown)?;
+
+    // Adoption (when needed) and the active address are persisted before the
+    // first compositor command. Activation only accepts that resulting state.
+    persist_target_before_activation(&path, &mut session, &client, mode, disposition)?;
+    activate_persisted_target(&session)?;
+
+    Ok(format!(
+        "target active — {} window {} (`{}`)",
+        match mode {
+            TargetMode::Switch => "switched to",
+            TargetMode::Adopt => "adopted",
+        },
+        client.address,
+        client.title
+    ))
 }
 
 pub fn start(
@@ -706,6 +1041,7 @@ pub fn start(
     let initial_user_focus = hypr::active_window()?.map(|w| w.address);
 
     let criteria = Criteria {
+        address: None,
         title: match_title,
         class: match_class,
         pid: None,
@@ -1092,10 +1428,12 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Criteria, Disposition, Placement, Rect, Resolution, Session, TeardownSession,
-        TrackedWindow, WindowAction, ambiguous_error, ensure_output_empty_for_sweep,
-        load_for_teardown_from, load_from, parse_size, place, resolve, save_new_to, save_over,
-        teardown_plan, workspace_selector,
+        Criteria, Disposition, Placement, Rect, Resolution, Session, TargetLookup, TargetMode,
+        TeardownSession, TrackedWindow, WindowAction, ambiguous_error,
+        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size,
+        persist_target_before_activation, place, resolve, save_new_to, save_over,
+        target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
+        workspace_selector,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Monitor, WorkspaceRef};
@@ -1135,6 +1473,18 @@ mod tests {
 
     fn matching_clients() -> Result<Vec<Client>, serde_json::Error> {
         serde_json::from_str(AMBIGUOUS_CLIENTS_JSON)
+    }
+
+    fn tracked_client(client: &Client) -> TrackedWindow {
+        TrackedWindow {
+            address: client.address.clone(),
+            title_at_adoption: client.title.clone(),
+            origin_workspace: client.workspace.name.clone(),
+            origin_at: client.at,
+            origin_size: client.size,
+            origin_floating: client.floating,
+            teardown: Disposition::Restore,
+        }
     }
 
     #[test]
@@ -1189,6 +1539,7 @@ mod tests {
     fn resolve_combines_title_class_and_pid_with_and() -> Result<(), Box<dyn StdError>> {
         let clients = matching_clients()?;
         let criteria = Criteria {
+            address: Some("0xbbb"),
             title: Some("Shared title"),
             class: Some("shared.class"),
             pid: Some(102),
@@ -1202,9 +1553,173 @@ mod tests {
     }
 
     #[test]
+    fn target_resolution_matrix_covers_tracking_count_wait_and_untracked()
+    -> Result<(), Box<dyn StdError>> {
+        let all_clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Shared title"),
+            ..Criteria::default()
+        };
+
+        for tracked in [false, true] {
+            for count in [0, 1, 3] {
+                for wait in [false, true] {
+                    for untracked in [false, true] {
+                        let clients = &all_clients[..count];
+                        let mut session = sample_session();
+                        if tracked {
+                            session.windows.extend(clients.iter().map(tracked_client));
+                        }
+                        let effective_count = if tracked && untracked { 0 } else { count };
+                        let result = target_lookup(clients, &session, &criteria, untracked, wait);
+                        let label = format!(
+                            "tracked={tracked}, count={count}, wait={wait}, untracked={untracked}"
+                        );
+
+                        match effective_count {
+                            0 if wait => {
+                                assert!(matches!(result, Ok(TargetLookup::Retry)), "{label}");
+                            }
+                            0 => {
+                                assert!(matches!(result, Err(Error::WindowNotFound(_))), "{label}");
+                            }
+                            1 => {
+                                let Ok(TargetLookup::Ready { mode, .. }) = result else {
+                                    return Err(format!("{label}: expected one target").into());
+                                };
+                                assert_eq!(
+                                    mode,
+                                    if tracked {
+                                        TargetMode::Switch
+                                    } else {
+                                        TargetMode::Adopt
+                                    },
+                                    "{label}"
+                                );
+                            }
+                            _ => {
+                                let Err(Error::WindowAmbiguous { candidates, .. }) = result else {
+                                    return Err(format!("{label}: expected ambiguity").into());
+                                };
+                                assert_eq!(
+                                    candidates.as_array().map(Vec::len),
+                                    Some(effective_count),
+                                    "{label}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Err(Error::WindowAmbiguous {
+            criteria,
+            candidates,
+        }) = target_lookup(
+            &all_clients,
+            &sample_session(),
+            &Criteria::default(),
+            true,
+            false,
+        )
+        else {
+            return Err("--untracked alone did not select all untracked clients".into());
+        };
+        assert_eq!(criteria, "untracked windows");
+        assert_eq!(candidates.as_array().map(Vec::len), Some(4));
+        Ok(())
+    }
+
+    #[test]
+    fn target_rejects_disposition_for_switch_and_defaults_adoption_to_restore()
+    -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            target_disposition("0xabc", TargetMode::Switch, None)?,
+            Disposition::Restore
+        );
+        let error = target_disposition("0xabc", TargetMode::Switch, Some(Disposition::Close))
+            .err()
+            .ok_or("tracked target accepted --on-teardown")?;
+        assert!(error.to_string().contains("already tracked"));
+        assert!(error.to_string().contains("omit --on-teardown"));
+        assert_eq!(
+            target_disposition("0xdef", TargetMode::Adopt, None)?,
+            Disposition::Restore
+        );
+        assert_eq!(
+            target_disposition("0xdef", TargetMode::Adopt, Some(Disposition::Close))?,
+            Disposition::Close
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn target_persistence_finishes_before_activation() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut session = sample_session();
+        save_new_to(&path, &session)?;
+        let client = matching_clients()?
+            .into_iter()
+            .find(|client| client.address == "0xddd")
+            .ok_or("target fixture missing")?;
+
+        persist_target_before_activation(
+            &path,
+            &mut session,
+            &client,
+            TargetMode::Adopt,
+            Disposition::Close,
+        )?;
+
+        let persisted = load_from(&path)?;
+        assert_eq!(persisted.active_address, "0xddd");
+        assert_eq!(persisted.windows.len(), 2);
+        assert_eq!(persisted.windows[1].address, "0xddd");
+        assert_eq!(persisted.windows[1].origin_workspace, "4");
+        assert_eq!(persisted.windows[1].origin_at, [70, 80]);
+        assert_eq!(persisted.windows[1].origin_size, [800, 600]);
+        assert!(!persisted.windows[1].origin_floating);
+        assert_eq!(persisted.windows[1].teardown, Disposition::Close);
+        Ok(())
+    }
+
+    #[test]
+    fn target_layout_requires_only_the_active_window_visible() -> Result<(), Box<dyn StdError>> {
+        let mut clients = matching_clients()?;
+        clients.truncate(2);
+        clients[0].workspace.name = "proto".to_owned();
+        clients[0].monitor = 1;
+        clients[1].workspace.name = "special:hyprpilot-parked".to_owned();
+        clients[1].monitor = 1;
+        let mut monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
+        let mut session = sample_session();
+        session.output = "headless-ci".to_owned();
+        session.active_workspace = "proto".to_owned();
+        session.active_address.clone_from(&clients[0].address);
+        session.primary_address.clone_from(&clients[0].address);
+        session.windows = clients.iter().map(tracked_client).collect();
+
+        assert!(target_layout_is_verified(&session, &clients, &monitors)?);
+
+        clients[1].workspace.name = "proto".to_owned();
+        assert!(!target_layout_is_verified(&session, &clients, &monitors)?);
+
+        clients[1].workspace.name = "special:hyprpilot-parked".to_owned();
+        monitors[0].special_workspace = "special:hyprpilot-parked".to_owned();
+        assert!(!target_layout_is_verified(&session, &clients, &monitors)?);
+
+        monitors[0].special_workspace.clear();
+        clients.pop();
+        assert!(target_layout_is_verified(&session, &clients, &monitors)?);
+        Ok(())
+    }
+
+    #[test]
     fn ambiguous_error_ends_with_machine_readable_candidates() -> Result<(), Box<dyn StdError>> {
         let clients = matching_clients()?;
         let criteria = Criteria {
+            address: None,
             title: Some("Shared title"),
             class: Some("shared.class"),
             pid: None,
