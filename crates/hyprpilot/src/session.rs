@@ -22,7 +22,9 @@ const PARKING_WORKSPACE_NAME: &str = "special:hyprpilot-parked";
 const SCHEMA_VERSION: u32 = 2;
 const WINDOW_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 const WINDOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+const WINDOW_PLACE_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+const VERIFIED_PLACEMENT_READS: u8 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -60,6 +62,38 @@ pub struct TrackedWindow {
 pub enum Disposition {
     Restore,
     Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Keep,
+    MoveTo(i32, i32),
+    Oversized(i32, i32),
+}
+
+pub fn place(window: Rect, output: Rect) -> Placement {
+    if window.w > output.w || window.h > output.h {
+        return Placement::Oversized(output.x, output.y);
+    }
+    if contains(output, window) {
+        return Placement::Keep;
+    }
+    Placement::MoveTo(
+        window
+            .x
+            .clamp(output.x, output.x.saturating_add(output.w - window.w)),
+        window
+            .y
+            .clamp(output.y, output.y.saturating_add(output.h - window.h)),
+    )
 }
 
 #[derive(Deserialize)]
@@ -360,10 +394,237 @@ fn wait_for_window(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "start keeps persistence before compositor effects visible"
-)]
+fn client_rect(client: &hypr::Client) -> Rect {
+    Rect {
+        x: client.at[0],
+        y: client.at[1],
+        w: client.size[0],
+        h: client.size[1],
+    }
+}
+
+fn exact_layout_integer(value: f64, field: &str, output: &str) -> Result<i32, Error> {
+    if !value.is_finite()
+        || value < f64::from(i32::MIN)
+        || value > f64::from(i32::MAX)
+        || value.fract().abs() > f64::EPSILON
+    {
+        return Err(Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("output {output} reports non-integer {field} {value}"),
+        });
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "finite integral value was range-checked above"
+    )]
+    let value = value as i32;
+    Ok(value)
+}
+
+fn output_rect(output: &hypr::Monitor) -> Result<Rect, Error> {
+    let (width, height) = output.logical_size();
+    Ok(Rect {
+        x: exact_layout_integer(output.x, "x", &output.name)?,
+        y: exact_layout_integer(output.y, "y", &output.name)?,
+        w: exact_layout_integer(width, "logical width", &output.name)?,
+        h: exact_layout_integer(height, "logical height", &output.name)?,
+    })
+}
+
+fn right(rect: Rect) -> i64 {
+    i64::from(rect.x) + i64::from(rect.w)
+}
+
+fn bottom(rect: Rect) -> i64 {
+    i64::from(rect.y) + i64::from(rect.h)
+}
+
+fn contains(outer: Rect, inner: Rect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && right(inner) <= right(outer)
+        && bottom(inner) <= bottom(outer)
+}
+
+fn oversized_overlap_is_verified(window: Rect, output: Rect) -> bool {
+    window.x == output.x
+        && window.y == output.y
+        && if window.w > output.w {
+            right(window) >= right(output)
+        } else {
+            right(window) <= right(output)
+        }
+        && if window.h > output.h {
+            bottom(window) >= bottom(output)
+        } else {
+            bottom(window) <= bottom(output)
+        }
+}
+
+fn read_park_state(
+    address: &str,
+    output_name: &str,
+) -> Result<(hypr::Client, hypr::Monitor), Error> {
+    let window = hypr::clients()?
+        .into_iter()
+        .find(|client| client.address == address)
+        .ok_or_else(|| Error::WindowGone(address.to_owned()))?;
+    let output = hypr::monitors()?
+        .into_iter()
+        .find(|monitor| monitor.name == output_name)
+        .ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("session output {output_name} is missing"),
+        })?;
+    Ok((window, output))
+}
+
+fn wait_for_session_workspace(
+    address: &str,
+    output_name: &str,
+    workspace_name: &str,
+) -> Result<(hypr::Client, hypr::Monitor), Error> {
+    let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
+    loop {
+        let state = read_park_state(address, output_name)?;
+        if state.0.workspace.name == workspace_name {
+            return Ok(state);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout {
+                what: format!(
+                    "window {address} to enter workspace {workspace_name} (last observed: {})",
+                    state.0.workspace.name
+                ),
+                after_ms: WINDOW_PLACE_TIMEOUT.as_millis(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn placement_is_verified(
+    window: &hypr::Client,
+    output: &hypr::Monitor,
+    workspace_name: &str,
+    placement: Placement,
+) -> Result<bool, Error> {
+    if window.workspace.name != workspace_name
+        || output.active_workspace.name != workspace_name
+        || !output.special_workspace.is_empty()
+    {
+        return Ok(false);
+    }
+    if !window.floating {
+        return Ok(true);
+    }
+    let window = client_rect(window);
+    let output = output_rect(output)?;
+    Ok(match placement {
+        Placement::Keep | Placement::MoveTo(_, _) => contains(output, window),
+        Placement::Oversized(_, _) => oversized_overlap_is_verified(window, output),
+    })
+}
+
+fn wait_for_verified_placement(
+    address: &str,
+    output_name: &str,
+    workspace_name: &str,
+    placement: Placement,
+) -> Result<(), Error> {
+    let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
+    let mut verified_reads = 0;
+    loop {
+        let (window, output) = read_park_state(address, output_name)?;
+        if placement_is_verified(&window, &output, workspace_name, placement)? {
+            verified_reads += 1;
+            if verified_reads == VERIFIED_PLACEMENT_READS {
+                return Ok(());
+            }
+        } else {
+            verified_reads = 0;
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout {
+                what: format!(
+                    "verified placement of window {address} on output {output_name} \
+                     (last observed: workspace {}, floating {}, at {:?}, size {:?}; \
+                     output at ({}, {}), logical size {:?})",
+                    window.workspace.name,
+                    window.floating,
+                    window.at,
+                    window.size,
+                    output.x,
+                    output.y,
+                    output.logical_size(),
+                ),
+                after_ms: WINDOW_PLACE_TIMEOUT.as_millis(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn evacuate_stray_workspace(output_name: &str, workspace_name: &str) -> Result<(), Error> {
+    let monitors = hypr::monitors()?;
+    let ours = monitors
+        .iter()
+        .find(|monitor| monitor.name == output_name)
+        .ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("output {output_name} missing right after creation"),
+        })?;
+    if ours.active_workspace.name == workspace_name {
+        return Ok(());
+    }
+    let refuge = monitors
+        .iter()
+        .find(|monitor| monitor.name != output_name)
+        .ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: "no other monitor to evacuate the stray workspace to".to_owned(),
+        })?;
+    hypr::dispatch(&[
+        "moveworkspacetomonitor",
+        &workspace_selector(&ours.active_workspace),
+        &refuge.name,
+    ])
+}
+
+fn park_window(
+    address: &str,
+    output_name: &str,
+    workspace_name: &str,
+) -> Result<Option<Placement>, Error> {
+    hypr::dispatch(&[
+        "movetoworkspacesilent",
+        &format!("name:{workspace_name},address:{address}"),
+    ])?;
+    hypr::dispatch(&[
+        "moveworkspacetomonitor",
+        &format!("name:{workspace_name}"),
+        output_name,
+    ])?;
+    evacuate_stray_workspace(output_name, workspace_name)?;
+
+    let (window, output) = wait_for_session_workspace(address, output_name, workspace_name)?;
+    let placement = place(client_rect(&window), output_rect(&output)?);
+    if window.floating {
+        match placement {
+            Placement::Keep => {}
+            Placement::MoveTo(x, y) | Placement::Oversized(x, y) => {
+                hypr::dispatch(&[
+                    "movewindowpixel",
+                    &format!("exact {x} {y},address:{address}"),
+                ])?;
+            }
+        }
+    }
+    wait_for_verified_placement(address, output_name, workspace_name, placement)?;
+    Ok(window.floating.then_some(placement))
+}
+
 pub fn start(
     app: Option<&str>,
     match_title: Option<&str>,
@@ -449,40 +710,16 @@ pub fn start(
     }
     hypr::keyword_monitor(OUTPUT_NAME, width, height)?;
 
-    hypr::dispatch(&[
-        "movetoworkspacesilent",
-        &format!("name:{WORKSPACE_NAME},address:{}", window.address),
-    ])?;
-    hypr::dispatch(&[
-        "moveworkspacetomonitor",
-        &format!("name:{WORKSPACE_NAME}"),
-        OUTPUT_NAME,
-    ])?;
-
-    // If the headless output woke up on an empty workspace, evacuate it to a
-    // physical monitor — otherwise grim would capture the wallpaper instead
-    // of the parked window.
-    let monitors = hypr::monitors()?;
-    let ours = monitors
-        .iter()
-        .find(|m| m.name == OUTPUT_NAME)
-        .ok_or_else(|| Error::Tool {
-            command: "hyprctl monitors".to_owned(),
-            message: format!("output {OUTPUT_NAME} missing right after creation"),
-        })?;
-    if ours.active_workspace.name != WORKSPACE_NAME {
-        let refuge = monitors
-            .iter()
-            .find(|m| m.name != OUTPUT_NAME)
-            .ok_or_else(|| Error::Tool {
-                command: "hyprctl monitors".to_owned(),
-                message: "no other monitor to evacuate the stray workspace to".to_owned(),
-            })?;
-        hypr::dispatch(&[
-            "moveworkspacetomonitor",
-            &workspace_selector(&ours.active_workspace),
-            &refuge.name,
-        ])?;
+    if matches!(
+        park_window(&window.address, OUTPUT_NAME, WORKSPACE_NAME)?,
+        Some(Placement::Oversized(_, _))
+    ) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "hyprpilot: warning: window {} is larger than output {OUTPUT_NAME}; \
+             use `hyprpilot session resize` when available",
+            window.address
+        );
     }
 
     Ok(format!(
@@ -789,9 +1026,9 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Disposition, Session, TeardownSession, TrackedWindow, WindowAction,
-        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size, save_new_to,
-        save_over, teardown_plan, workspace_selector,
+        Disposition, Placement, Rect, Session, TeardownSession, TrackedWindow, WindowAction,
+        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size, place,
+        save_new_to, save_over, teardown_plan, workspace_selector,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Monitor, WorkspaceRef};
@@ -835,6 +1072,61 @@ mod tests {
         assert!(parse_size("1600").is_err());
         assert!(parse_size("0x100").is_err());
         assert!(parse_size("axb").is_err());
+    }
+
+    #[test]
+    fn placement_clamps_all_axes_and_handles_oversized_windows() {
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        let output = rect(0, 0, 100, 80);
+        let cases = [
+            ("contained", rect(10, 20, 30, 20), output, Placement::Keep),
+            (
+                "overflow x",
+                rect(90, 20, 30, 20),
+                output,
+                Placement::MoveTo(70, 20),
+            ),
+            (
+                "overflow y",
+                rect(10, -5, 30, 20),
+                output,
+                Placement::MoveTo(10, 0),
+            ),
+            (
+                "overflow both",
+                rect(-10, 70, 30, 20),
+                output,
+                Placement::MoveTo(0, 60),
+            ),
+            (
+                "oversized x",
+                rect(10, 20, 101, 20),
+                output,
+                Placement::Oversized(0, 0),
+            ),
+            (
+                "oversized y",
+                rect(10, 20, 30, 81),
+                output,
+                Placement::Oversized(0, 0),
+            ),
+            (
+                "oversized both",
+                rect(10, 20, 101, 81),
+                output,
+                Placement::Oversized(0, 0),
+            ),
+            (
+                "negative output and window",
+                rect(-130, -40, 40, 30),
+                rect(-100, -80, 100, 80),
+                Placement::MoveTo(-100, -40),
+            ),
+        ];
+
+        for (label, window, output, expected) in cases {
+            assert_eq!(place(window, output), expected, "{label}");
+        }
     }
 
     #[test]

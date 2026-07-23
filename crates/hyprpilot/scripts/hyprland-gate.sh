@@ -180,6 +180,36 @@ read_monitor_origin() {
 	printf -v "${y_destination}" '%s' "${BASH_REMATCH[2]}"
 }
 
+read_layout_right_bound() {
+	local destination=$1
+	local label=$2
+	local raw compact remaining width height x right
+	local found=0 max_right=-2147483648
+	local monitor_re='"width":([0-9]+),"height":([0-9]+),[^}]*"x":(-?[0-9]+),"y":-?[0-9]+,'
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observes=erreur hyprctl (${raw}); attendu=geometrie du layout"
+		return 1
+	fi
+	compact=${raw//[[:space:]]/}
+	remaining=${compact}
+	while [[ ${remaining} =~ ${monitor_re} ]]; do
+		width=${BASH_REMATCH[1]}
+		height=${BASH_REMATCH[2]}
+		x=${BASH_REMATCH[3]}
+		# width+height couvre conservativement les outputs transformes.
+		right=$((x + width + height))
+		((right > max_right)) && max_right=${right}
+		found=1
+		remaining=${remaining#*\"x\":${x},}
+	done
+	if ((found == 0)); then
+		fail "${label}: geometrie observe=illisible (${raw}); attendu=au moins un monitor"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${max_right}"
+}
+
 client_present() {
 	local address=$1
 	local raw compact
@@ -210,6 +240,257 @@ wait_client_gone() {
 	fail "${label}: fenetre observe=${address} presente apres 3s; attendu=disparue"
 	return 1
 }
+
+scenario_start_offscreen() (
+	local cleanup_failed=0
+	local scenario_tmp="" zenity_pid="" window_address=""
+	local title="hyprpilot-e2e-start-offscreen-$$"
+	local command_output cleanup_output shot_output
+	local user_address user_x user_y user_width user_height user_workspace
+	local user_floating user_monitor center_x center_y
+	local window_x window_y window_width window_height window_workspace
+	local window_floating window_monitor current_geometry previous_geometry=""
+	local layout_right target_x target_y offscreen_gap=100000
+	local origin_x origin_y origin_width origin_height origin_workspace
+	local origin_floating origin_monitor
+	local restored_x restored_y restored_width restored_height restored_workspace
+	local restored_floating restored_monitor
+	local before_focus after_focus before_x before_y after_x after_y
+	local settle_focus settle_x settle_y stable_reads=0
+	local delta_x delta_y attempt floating_settled=0 position_settled=0 restored=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_start_offscreen() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+			if [[ ${cleanup_output} != *"no active session"* ]]; then
+				fail "nettoyage start_offscreen: teardown observe=echec (${cleanup_output}); attendu=succes ou session deja demontee"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${zenity_pid} ]] && kill -0 "${zenity_pid}" 2>/dev/null; then
+			kill "${zenity_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${zenity_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage start_offscreen"; then
+			cleanup_failed=1
+		fi
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-start-offscreen.* ]]; then
+				fail "nettoyage start_offscreen: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage start_offscreen: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_start_offscreen EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "start_offscreen: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-start-offscreen.XXXXXX"); then
+		fail "start_offscreen: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	read_active_address user_address "precondition start_offscreen" || return 1
+	if [[ -z ${user_address} ]]; then
+		skip "aucune fenêtre active pour établir un état restaurable"
+	fi
+	read_client_state "${user_address}" user_x user_y user_width user_height user_workspace \
+		user_floating user_monitor "precondition start_offscreen" || return 1
+	center_x=$((user_x + user_width / 2))
+	center_y=$((user_y + user_height / 2))
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_pid=$!
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		if find_client_address_by_title window_address "${title}"; then
+			break
+		fi
+		sleep 0.1
+	done
+	if [[ -z ${window_address} ]]; then
+		fail "setup start_offscreen: fenetre observe=absente apres 5s; attendu=zenity ${title}"
+		return 1
+	fi
+
+	read_client_state "${window_address}" window_x window_y window_width window_height \
+		window_workspace window_floating window_monitor "setup start_offscreen" || return 1
+	if [[ ${window_floating} != true ]]; then
+		if ! command_output=$(hyprctl dispatch togglefloating "address:${window_address}" 2>&1) ||
+			[[ ${command_output} != ok ]]; then
+			fail "setup start_offscreen: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+	fi
+	for ((attempt = 0; attempt < 20; attempt++)); do
+		read_client_state "${window_address}" window_x window_y window_width window_height \
+			window_workspace window_floating window_monitor "settle floating start_offscreen" ||
+			return 1
+		current_geometry=${window_x},${window_y},${window_width},${window_height}
+		if [[ ${window_floating} == true && ${current_geometry} == "${previous_geometry}" ]]; then
+			floating_settled=1
+			break
+		fi
+		if [[ ${window_floating} == true ]]; then
+			previous_geometry=${current_geometry}
+		else
+			previous_geometry=""
+		fi
+		sleep 0.15
+	done
+	if ((floating_settled == 0)); then
+		fail "settle floating start_offscreen: observe=floating ${window_floating}, geometrie (${window_x}, ${window_y}) ${window_width}x${window_height}; attendu=true et stable sur 2 lectures en 3s"
+		return 1
+	fi
+
+	read_layout_right_bound layout_right "setup start_offscreen" || return 1
+	target_x=$((layout_right + offscreen_gap))
+	target_y=${window_y}
+	if ! command_output=$(
+		hyprctl dispatch movewindowpixel \
+			"exact ${target_x} ${target_y},address:${window_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "setup start_offscreen: movewindowpixel observe=${command_output}; attendu=ok vers (${target_x}, ${target_y})"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 20; attempt++)); do
+		read_client_state "${window_address}" window_x window_y window_width window_height \
+			window_workspace window_floating window_monitor "settle offscreen start_offscreen" ||
+			return 1
+		delta_x=$((window_x - target_x))
+		delta_y=$((window_y - target_y))
+		((delta_x < 0)) && delta_x=$((-delta_x))
+		((delta_y < 0)) && delta_y=$((-delta_y))
+		if ((delta_x <= 2 && delta_y <= 2)); then
+			position_settled=1
+			break
+		fi
+		sleep 0.15
+	done
+	if ((position_settled == 0)); then
+		fail "settle offscreen start_offscreen: observe=(${window_x}, ${window_y}); attendu=(${target_x}, ${target_y}) +/-2 px en 3s"
+		return 1
+	fi
+	read_client_state "${window_address}" origin_x origin_y origin_width origin_height \
+		origin_workspace origin_floating origin_monitor "origine start_offscreen" || return 1
+
+	if ! command_output=$(
+		hyprctl dispatch focuswindow "address:${user_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "precondition start_offscreen: focuswindow observe=${command_output}; attendu=ok vers ${user_address}"
+		return 1
+	fi
+	if ! command_output=$(hyprctl dispatch movecursor "${center_x}" "${center_y}" 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "precondition start_offscreen: movecursor observe=${command_output}; attendu=ok vers (${center_x}, ${center_y})"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		read_active_address settle_focus "settle start_offscreen" || return 1
+		read_cursor settle_x settle_y "settle start_offscreen" || return 1
+		delta_x=$((settle_x - center_x))
+		delta_y=$((settle_y - center_y))
+		((delta_x < 0)) && delta_x=$((-delta_x))
+		((delta_y < 0)) && delta_y=$((-delta_y))
+		if [[ ${settle_focus} == "${user_address}" ]] && ((delta_x <= 1 && delta_y <= 1)); then
+			((stable_reads += 1))
+			if ((stable_reads == 5)); then
+				break
+			fi
+		else
+			stable_reads=0
+		fi
+		sleep 0.1
+	done
+	if ((stable_reads != 5)); then
+		fail "settle start_offscreen: observe=focus ${settle_focus:-<aucun>}, curseur (${settle_x}, ${settle_y}); attendu=${user_address} et (${center_x}, ${center_y}) +/-1 sur 5 lectures consecutives"
+		return 1
+	fi
+	read_active_address before_focus "avant start_offscreen" || return 1
+	read_cursor before_x before_y "avant start_offscreen" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start start_offscreen observe=echec (${command_output}); attendu=ready"
+		return 1
+	fi
+	if [[ ${command_output} != *"ready"* ]]; then
+		fail "session start start_offscreen observe=${command_output}; attendu=message ready"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" shot start-offscreen --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot immediat start_offscreen observe=echec (${shot_output}); attendu=PNG capturable apres ready"
+		return 1
+	fi
+	if [[ ! -s ${scenario_tmp}/start-offscreen.png ]]; then
+		fail "shot immediat start_offscreen observe=${shot_output}; attendu=${scenario_tmp}/start-offscreen.png non vide"
+		return 1
+	fi
+
+	read_active_address after_focus "apres shot start_offscreen" || return 1
+	read_cursor after_x after_y "apres shot start_offscreen" || return 1
+	delta_x=$((after_x - before_x))
+	delta_y=$((after_y - before_y))
+	((delta_x < 0)) && delta_x=$((-delta_x))
+	((delta_y < 0)) && delta_y=$((-delta_y))
+	if [[ ${after_focus} != "${before_focus}" ]] || ((delta_x > 1 || delta_y > 1)); then
+		fail "invariant start_offscreen apres shot: observe=focus ${after_focus:-<aucun>}, curseur (${after_x}, ${after_y}); attendu=focus ${before_focus:-<aucun>}, curseur (${before_x}, ${before_y})"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown start_offscreen observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 20; attempt++)); do
+		read_client_state "${window_address}" restored_x restored_y restored_width restored_height \
+			restored_workspace restored_floating restored_monitor "restore start_offscreen" ||
+			return 1
+		if ((restored_x == origin_x && restored_y == origin_y &&
+			restored_width == origin_width && restored_height == origin_height)) &&
+			[[ ${restored_workspace} == "${origin_workspace}" &&
+				${restored_floating} == "${origin_floating}" &&
+				${restored_monitor} == "${origin_monitor}" ]]; then
+			restored=1
+			break
+		fi
+		sleep 0.15
+	done
+	if ((restored == 0)); then
+		fail "teardown start_offscreen geometrie: observe=(${restored_x}, ${restored_y}) ${restored_width}x${restored_height}, workspace=${restored_workspace}, floating=${restored_floating}, monitor=${restored_monitor}; attendu=(${origin_x}, ${origin_y}) ${origin_width}x${origin_height}, workspace=${origin_workspace}, floating=${origin_floating}, monitor=${origin_monitor}"
+		return 1
+	fi
+	# Hyprland recentre le curseur sur le moniteur restant lors de
+	# `output remove`; ce comportement verifie est hors du contrat T3.
+	read_active_address after_focus "apres teardown start_offscreen" || return 1
+	if [[ ${after_focus} != "${before_focus}" ]]; then
+		fail "invariant start_offscreen apres teardown: focus observe=${after_focus:-<aucun>}; attendu=${before_focus:-<aucun>}"
+		return 1
+	fi
+	assert_output_absent "teardown start_offscreen" || return 1
+
+	kill "${zenity_pid}" 2>/dev/null || true
+	wait "${zenity_pid}" 2>/dev/null || true
+	zenity_pid=""
+)
 
 scenario_guard_click() (
 	local scenario_tmp=""
