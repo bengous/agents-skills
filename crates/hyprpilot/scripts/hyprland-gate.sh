@@ -222,6 +222,7 @@ scenario_guard_click() (
 	local active_json active_compact active_address active_x active_y
 	local active_width active_height center_x center_y centered_x centered_y
 	local active_window_re
+	local settle_focus settle_attempt stable_focus_reads=0
 
 	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
 	cleanup_guard_click() {
@@ -385,6 +386,25 @@ scenario_guard_click() (
 		return 1
 	fi
 
+	# Au spawn froid, zenity GTK vole le focus au map et peut encore emettre
+	# des evenements tardifs. Le guard doit mesurer un bureau stabilise.
+	for ((settle_attempt = 0; settle_attempt < 50; settle_attempt++)); do
+		read_active_address settle_focus "settle guard_click" || return 1
+		if [[ ${settle_focus} == "${before_focus}" ]]; then
+			((stable_focus_reads += 1))
+			if ((stable_focus_reads == 5)); then
+				break
+			fi
+		else
+			stable_focus_reads=0
+		fi
+		sleep 0.1
+	done
+	if ((stable_focus_reads != 5)); then
+		fail "settle guard_click: focus jamais stabilisé après session start; observe=${settle_focus:-<aucun>}; attendu=${before_focus} sur 5 lectures consecutives"
+		return 1
+	fi
+
 	if ! command_output=$("${HYPRPILOT}" click 20 20 2>&1); then
 		fail "click guard_click observe=echec (${command_output}); attendu=succes aux coordonnees relatives (20, 20)"
 		return 1
@@ -423,6 +443,8 @@ scenario_teardown_restore() (
 	local target_x target_y target_width=520 target_height=300
 	local restored_x restored_y restored_width restored_height restored_workspace
 	local restored_floating
+	local current_geometry previous_geometry="" floating_settled=0
+	local delta_x delta_y position_settled=0
 
 	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
 	cleanup_teardown_restore() {
@@ -474,12 +496,28 @@ scenario_teardown_restore() (
 			fail "setup teardown_restore: togglefloating observe=${command_output}; attendu=ok"
 			return 1
 		fi
-		read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
-			initial_workspace initial_floating initial_monitor "setup teardown_restore flottant" ||
-			return 1
 	fi
-	if [[ ${initial_floating} != true ]]; then
-		fail "setup teardown_restore: floating observe=${initial_floating}; attendu=true"
+
+	# Le placement flottant Hyprland est asynchrone apres tiled→float et peut
+	# ecraser un move trop precoce. Attendre deux geometries stables.
+	for ((attempt = 0; attempt < 20; attempt++)); do
+		read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
+			initial_workspace initial_floating initial_monitor "settle floating teardown_restore" ||
+			return 1
+		current_geometry=${initial_x},${initial_y},${initial_width},${initial_height}
+		if [[ ${initial_floating} == true && ${current_geometry} == "${previous_geometry}" ]]; then
+			floating_settled=1
+			break
+		fi
+		if [[ ${initial_floating} == true ]]; then
+			previous_geometry=${current_geometry}
+		else
+			previous_geometry=""
+		fi
+		sleep 0.15
+	done
+	if ((floating_settled == 0)); then
+		fail "settle floating teardown_restore: observe=floating ${initial_floating}, geometrie (${initial_x}, ${initial_y}) ${initial_width}x${initial_height}; attendu=true et stable sur 2 lectures en 3s"
 		return 1
 	fi
 
@@ -488,25 +526,39 @@ scenario_teardown_restore() (
 	target_x=$((monitor_x + 120))
 	target_y=$((monitor_y + 140))
 	if ! command_output=$(
-		hyprctl dispatch resizewindowpixel \
-			"exact ${target_width} ${target_height},address:${window_address}" 2>&1
-	) || [[ ${command_output} != ok ]]; then
-		fail "setup teardown_restore: resize observe=${command_output}; attendu=ok vers ${target_width}x${target_height}"
-		return 1
-	fi
-	if ! command_output=$(
 		hyprctl dispatch movewindowpixel \
 			"exact ${target_x} ${target_y},address:${window_address}" 2>&1
 	) || [[ ${command_output} != ok ]]; then
 		fail "setup teardown_restore: move observe=${command_output}; attendu=ok vers (${target_x}, ${target_y})"
 		return 1
 	fi
+	if ! command_output=$(
+		hyprctl dispatch resizewindowpixel \
+			"exact ${target_width} ${target_height},address:${window_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "setup teardown_restore: resize observe=${command_output}; attendu=ok vers ${target_width}x${target_height}"
+		return 1
+	fi
 
-	read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
-		initial_workspace initial_floating initial_monitor "origine teardown_restore" || return 1
-	if ((initial_x != target_x || initial_y != target_y ||
-		initial_width != target_width || initial_height != target_height)); then
-		fail "origine teardown_restore: geometrie observe=(${initial_x}, ${initial_y}) ${initial_width}x${initial_height}; attendu=(${target_x}, ${target_y}) ${target_width}x${target_height}"
+	# Zenity GTK4 refuse le resize du compositeur : la geometrie relue est la
+	# reference. Le resize du teardown reste couvert en unitaire ; cet E2E
+	# couvre workspace et position.
+	for ((attempt = 0; attempt < 20; attempt++)); do
+		read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
+			initial_workspace initial_floating initial_monitor "settle position teardown_restore" ||
+			return 1
+		delta_x=$((initial_x - target_x))
+		delta_y=$((initial_y - target_y))
+		((delta_x < 0)) && delta_x=$((-delta_x))
+		((delta_y < 0)) && delta_y=$((-delta_y))
+		if ((delta_x <= 2 && delta_y <= 2)); then
+			position_settled=1
+			break
+		fi
+		sleep 0.15
+	done
+	if ((position_settled == 0)); then
+		fail "settle position teardown_restore: observe=(${initial_x}, ${initial_y}); attendu=(${target_x}, ${target_y}) +/-2 px en 3s"
 		return 1
 	fi
 
