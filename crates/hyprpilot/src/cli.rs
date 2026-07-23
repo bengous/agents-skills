@@ -107,10 +107,10 @@ enum Command {
     /// to its original workspace), remove the output
     Teardown {
         /// Kill the spawned process group instead of closing its window
-        #[arg(long)]
+        #[arg(long, conflicts_with = "close")]
         kill: bool,
         /// Close the window even if it was attached, not spawned
-        #[arg(long)]
+        #[arg(long, conflicts_with = "kill")]
         close: bool,
     },
 }
@@ -349,5 +349,16 @@ fn doctor() -> Result<String, Error> {
         Ok(report)
     } else {
         Err(Error::DoctorFailed { report, failures })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn teardown_kill_and_close_conflict() {
+        assert!(Cli::try_parse_from(["hyprpilot", "teardown", "--kill", "--close"]).is_err());
     }
 }

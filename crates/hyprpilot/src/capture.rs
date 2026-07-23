@@ -104,6 +104,30 @@ struct Frame {
     geometry: Option<String>,
 }
 
+fn ensure_capture_visible(expected_workspace: &str, monitor: &hypr::Monitor) -> Result<(), Error> {
+    if !monitor.special_workspace.is_empty() {
+        return Err(Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!(
+                "special workspace {} is visible on output {} — captures would hide the session \
+                 window",
+                monitor.special_workspace, monitor.name
+            ),
+        });
+    }
+    if monitor.active_workspace.name != expected_workspace {
+        return Err(Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!(
+                "workspace {expected_workspace} is not active on output {} (active: {}) — \
+                 captures would not show the window",
+                monitor.name, monitor.active_workspace.name
+            ),
+        });
+    }
+    Ok(())
+}
+
 impl Frame {
     fn for_session(full: bool) -> Result<Self, Error> {
         let (session, window) = session::current_window()?;
@@ -114,16 +138,7 @@ impl Frame {
         // grim captures screen regions: if the parked workspace is not the
         // active one on the headless output, the capture would silently show
         // the wallpaper instead of the window.
-        if monitor.active_workspace.name != session.workspace {
-            return Err(Error::Tool {
-                command: "hyprctl monitors".to_owned(),
-                message: format!(
-                    "workspace {} is not active on output {} (active: {}) — captures would \
-                     not show the window",
-                    session.workspace, session.output, monitor.active_workspace.name
-                ),
-            });
-        }
+        ensure_capture_visible(&session.workspace, &monitor)?;
         let geometry = if full {
             None
         } else {
@@ -300,7 +315,7 @@ fn wait_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{Image, crop_geometry, parse_timeout, read_png};
+    use super::{Image, crop_geometry, ensure_capture_visible, parse_timeout, read_png};
     use crate::hypr::Monitor;
     use std::error::Error as StdError;
     use std::fs;
@@ -409,5 +424,19 @@ mod tests {
             data: vec![0; 12],
         };
         assert!(!a.identical(&b));
+    }
+
+    #[test]
+    fn capture_refuses_visible_special_workspace() -> Result<(), Box<dyn StdError>> {
+        let mut monitor = monitor(5120.0, 0.0, 1600.0, 1000.0)?;
+        monitor.active_workspace.name = "proto".to_owned();
+        monitor.special_workspace = "special:hyprpilot-parked".to_owned();
+
+        let error = ensure_capture_visible("proto", &monitor)
+            .err()
+            .ok_or("visible special workspace unexpectedly accepted")?;
+        assert!(error.to_string().contains("special workspace"));
+        assert!(error.to_string().contains("captures would hide"));
+        Ok(())
     }
 }

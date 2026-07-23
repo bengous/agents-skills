@@ -67,7 +67,7 @@ struct SessionVersion {
     schema_version: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LegacySession {
     window_address: String,
     output: String,
@@ -76,15 +76,12 @@ struct LegacySession {
     spawned_pid: Option<u32>,
 }
 
-struct TeardownSession {
-    window_address: String,
-    output: String,
-    output_created: bool,
-    origin_workspace: Option<String>,
-    spawned_pid: Option<u32>,
+enum TeardownSession {
+    V2(Session),
+    Legacy(LegacySession),
 }
 
-impl TeardownSession {
+impl LegacySession {
     fn attached(&self) -> bool {
         self.spawned_pid.is_none()
     }
@@ -145,33 +142,34 @@ fn load_from(path: &Path) -> Result<Session, Error> {
 // old, unversioned format.
 fn load_for_teardown_from(path: &Path) -> Result<TeardownSession, Error> {
     let raw = read_from(path)?;
-    let value: serde_json::Value = parse_json(&raw, path)?;
+    let corrupt = |error: Error| Error::CorruptSession {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    };
+    let value: serde_json::Value = parse_json(&raw, path).map_err(&corrupt)?;
     if value.get("schema_version").is_some() {
-        let version: SessionVersion = parse_json_value(value.clone(), path)?;
+        let version: SessionVersion = parse_json_value(value.clone(), path).map_err(&corrupt)?;
         if version.schema_version != SCHEMA_VERSION {
             return Err(Error::UnsupportedSessionVersion(version.schema_version));
         }
-        let session: Session = parse_json_value(value, path)?;
-        let primary = session
+        let session: Session = parse_json_value(value, path).map_err(&corrupt)?;
+        if session
             .windows
             .iter()
-            .find(|window| window.address == session.primary_address);
-        Ok(TeardownSession {
-            window_address: session.primary_address,
-            output: session.output,
-            output_created: session.output_created,
-            origin_workspace: primary.map(|window| window.origin_workspace.clone()),
-            spawned_pid: session.spawned_pid,
-        })
+            .filter(|window| window.address == session.primary_address)
+            .count()
+            != 1
+        {
+            return Err(Error::CorruptSession {
+                path: path.to_path_buf(),
+                message: "primary_address must identify exactly one tracked window".to_owned(),
+            });
+        }
+        Ok(TeardownSession::V2(session))
     } else {
-        let legacy: LegacySession = parse_json_value(value, path)?;
-        Ok(TeardownSession {
-            window_address: legacy.window_address,
-            output: legacy.output,
-            output_created: legacy.output_created,
-            origin_workspace: legacy.origin_workspace,
-            spawned_pid: legacy.spawned_pid,
-        })
+        parse_json_value(value, path)
+            .map(TeardownSession::Legacy)
+            .map_err(corrupt)
     }
 }
 
@@ -299,10 +297,10 @@ pub fn parse_size(raw: &str) -> Result<(u32, u32), Error> {
     Ok((width, height))
 }
 
-/// Selector accepted by workspace dispatchers: numeric names pass through
-/// (they double as ids), anything else needs the `name:` prefix.
+/// Selector accepted by workspace dispatchers: numeric names and special
+/// workspaces pass through; ordinary named workspaces need `name:`.
 pub fn workspace_selector(workspace: &hypr::WorkspaceRef) -> String {
-    if workspace.name.parse::<i64>().is_ok() {
+    if workspace.name.parse::<i64>().is_ok() || workspace.name.starts_with("special:") {
         workspace.name.clone()
     } else {
         format!("name:{}", workspace.name)
@@ -532,76 +530,226 @@ fn wait_window_gone(address: &str, hint: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
-    let path = session_path()?;
-    // Only an unparseable session file falls back to best-effort cleanup by
-    // the well-known output name; I/O errors propagate untouched.
-    let session = match load_for_teardown_from(&path) {
-        Ok(session) => Some(session),
-        Err(Error::Json { .. }) => None,
-        // No session but a stray output bearing our name: sweep it anyway
-        // (our namespace) instead of leaving it in the user's layout.
-        Err(Error::NoSession) => {
-            if find_output(OUTPUT_NAME)?.is_some() {
-                hypr::output_remove(OUTPUT_NAME)?;
-                return Ok(format!(
-                    "no active session, but removed stray output {OUTPUT_NAME}"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowAction {
+    Restore,
+    Close,
+    Kill(u32),
+}
+
+fn validate_teardown_flags(spawned_pid: Option<u32>, kill: bool, close: bool) -> Result<(), Error> {
+    if kill && close {
+        return Err(Error::Invalid {
+            what: "teardown flags",
+            value: "--kill --close".to_owned(),
+            hint: "--kill and --close are mutually exclusive".to_owned(),
+        });
+    }
+    if kill && spawned_pid.is_none() {
+        return Err(Error::Invalid {
+            what: "teardown flag",
+            value: "--kill".to_owned(),
+            hint: "--kill requires a spawned session with a spawned_pid".to_owned(),
+        });
+    }
+    if close && spawned_pid.is_some() {
+        return Err(Error::Invalid {
+            what: "teardown flag",
+            value: "--close".to_owned(),
+            hint: "--close only applies to an attached primary; spawned sessions close by default"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn teardown_plan(
+    session: &Session,
+    kill: bool,
+    close: bool,
+) -> Result<Vec<(&TrackedWindow, WindowAction)>, Error> {
+    validate_teardown_flags(session.spawned_pid, kill, close)?;
+    let kill_pid = kill.then_some(session.spawned_pid).flatten();
+    Ok(session
+        .windows
+        .iter()
+        .rev()
+        .map(|window| {
+            let action = if window.address == session.primary_address {
+                let default = if close {
+                    WindowAction::Close
+                } else {
+                    match window.teardown {
+                        Disposition::Restore => WindowAction::Restore,
+                        Disposition::Close => WindowAction::Close,
+                    }
+                };
+                kill_pid.map_or(default, WindowAction::Kill)
+            } else {
+                match window.teardown {
+                    Disposition::Restore => WindowAction::Restore,
+                    Disposition::Close => WindowAction::Close,
+                }
+            };
+            (window, action)
+        })
+        .collect())
+}
+
+fn close_window(address: &str, hint: &str) -> Result<(), Error> {
+    hypr::dispatch(&["closewindow", &format!("address:{address}")])?;
+    wait_window_gone(address, hint)
+}
+
+fn restore_window(window: &TrackedWindow) -> Result<(), Error> {
+    let selector = workspace_selector(&hypr::WorkspaceRef {
+        name: window.origin_workspace.clone(),
+    });
+    hypr::dispatch(&[
+        "movetoworkspacesilent",
+        &format!("{selector},address:{}", window.address),
+    ])?;
+
+    if window.origin_floating {
+        // GlobalWindowController.cpp:35-68 recalculates relative position on
+        // cross-monitor moves, so geometry must follow the workspace change.
+        hypr::dispatch(&[
+            "movewindowpixel",
+            &format!(
+                "exact {} {},address:{}",
+                window.origin_at[0], window.origin_at[1], window.address
+            ),
+        ])?;
+        hypr::dispatch(&[
+            "resizewindowpixel",
+            &format!(
+                "exact {} {},address:{}",
+                window.origin_size[0], window.origin_size[1], window.address
+            ),
+        ])?;
+    }
+    Ok(())
+}
+
+fn teardown_v2(session: &Session, kill: bool, close: bool) -> Result<Vec<String>, Error> {
+    let mut notes = Vec::new();
+    for (window, action) in teardown_plan(session, kill, close)? {
+        if !window_exists(&window.address)? {
+            notes.push(format!("window {} already gone", window.address));
+            continue;
+        }
+        match action {
+            WindowAction::Restore => {
+                restore_window(window)?;
+                notes.push(format!(
+                    "restored window {} to workspace {}",
+                    window.address, window.origin_workspace
                 ));
             }
-            return Err(Error::NoSession);
-        }
-        Err(error) => return Err(error),
-    };
-
-    let mut notes = Vec::new();
-
-    if let Some(session) = &session {
-        if window_exists(&session.window_address)? {
-            let close_window = close || !session.attached();
-            match (kill, session.spawned_pid) {
-                (true, Some(pid)) => {
-                    kill_process_group(pid)?;
-                    notes.push(format!("killed spawned process group {pid}"));
-                    wait_window_gone(&session.window_address, "after kill")?;
-                }
-                _ if close_window => {
-                    hypr::dispatch(&[
-                        "closewindow",
-                        &format!("address:{}", session.window_address),
-                    ])?;
-                    notes.push(format!("closed window {}", session.window_address));
-                    wait_window_gone(
-                        &session.window_address,
-                        "app may be prompting — retry with --kill if spawned",
-                    )?;
-                }
-                _ => {
-                    // Attached window: give it back instead of closing an app
-                    // the user had opened themselves.
-                    let origin = session.origin_workspace.as_deref().unwrap_or("1");
-                    let selector = workspace_selector(&hypr::WorkspaceRef {
-                        name: origin.to_owned(),
-                    });
-                    hypr::dispatch(&[
-                        "movetoworkspacesilent",
-                        &format!("{selector},address:{}", session.window_address),
-                    ])?;
-                    notes.push(format!(
-                        "moved attached window {} back to workspace {origin}",
-                        session.window_address
-                    ));
-                }
+            WindowAction::Close => {
+                close_window(
+                    &window.address,
+                    "app may be prompting — retry with --kill if spawned",
+                )?;
+                notes.push(format!("closed window {}", window.address));
             }
-        } else {
-            notes.push("window already gone".to_owned());
+            WindowAction::Kill(pid) => {
+                kill_process_group(pid)?;
+                wait_window_gone(&window.address, "after kill")?;
+                notes.push(format!("killed spawned process group {pid}"));
+            }
         }
-    } else {
-        notes.push("session file was corrupt — cleaning up by output name".to_owned());
+    }
+    Ok(notes)
+}
+
+fn teardown_legacy(session: &LegacySession, kill: bool, close: bool) -> Result<Vec<String>, Error> {
+    validate_teardown_flags(session.spawned_pid, kill, close)?;
+    if !window_exists(&session.window_address)? {
+        return Ok(vec!["window already gone".to_owned()]);
     }
 
-    let output_name = session.as_ref().map_or(OUTPUT_NAME, |s| s.output.as_str());
-    let output_owned = session.as_ref().is_none_or(|s| s.output_created);
-    if !output_owned {
+    if let (true, Some(pid)) = (kill, session.spawned_pid) {
+        kill_process_group(pid)?;
+        wait_window_gone(&session.window_address, "after kill")?;
+        return Ok(vec![format!("killed spawned process group {pid}")]);
+    }
+    if close || !session.attached() {
+        close_window(
+            &session.window_address,
+            "app may be prompting — retry with --kill if spawned",
+        )?;
+        return Ok(vec![format!("closed window {}", session.window_address)]);
+    }
+
+    let origin = session.origin_workspace.as_deref().unwrap_or("1");
+    let selector = workspace_selector(&hypr::WorkspaceRef {
+        name: origin.to_owned(),
+    });
+    hypr::dispatch(&[
+        "movetoworkspacesilent",
+        &format!("{selector},address:{}", session.window_address),
+    ])?;
+    Ok(vec![format!(
+        "moved attached window {} back to workspace {origin}",
+        session.window_address
+    )])
+}
+
+fn ensure_output_empty_for_sweep(
+    output: &hypr::Monitor,
+    monitors: &[hypr::Monitor],
+    clients: &[hypr::Client],
+) -> Result<(), Error> {
+    if output.id < 0 {
+        return Err(Error::SweepRefused {
+            output: output.name.clone(),
+            reason: format!("output reports unexpected monitor id {}", output.id),
+        });
+    }
+    for client in clients {
+        if client.monitor == output.id {
+            return Err(Error::SweepRefused {
+                output: output.name.clone(),
+                reason: format!(
+                    "client {} (`{}`) still reports monitor {}",
+                    client.address, client.title, client.monitor
+                ),
+            });
+        }
+        if client.monitor < 0 || !monitors.iter().any(|monitor| monitor.id == client.monitor) {
+            return Err(Error::SweepRefused {
+                output: output.name.clone(),
+                reason: format!(
+                    "client {} (`{}`) reports unexpected monitor {}",
+                    client.address, client.title, client.monitor
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn sweep_orphan_output() -> Result<String, Error> {
+    let monitors = hypr::monitors()?;
+    let Some(output) = monitors.iter().find(|monitor| monitor.name == OUTPUT_NAME) else {
+        return Err(Error::NoSession);
+    };
+    let clients = hypr::clients()?;
+    ensure_output_empty_for_sweep(output, &monitors, &clients)?;
+    hypr::output_remove(OUTPUT_NAME)?;
+    Ok(format!(
+        "no active session, removed empty orphan output {OUTPUT_NAME}"
+    ))
+}
+
+fn finish_teardown(
+    path: &Path,
+    output_name: &str,
+    output_created: bool,
+    mut notes: Vec<String>,
+) -> Result<String, Error> {
+    if !output_created {
         notes.push(format!("output {output_name} pre-existed — left in place"));
     } else if find_output(output_name)?.is_some() {
         hypr::output_remove(output_name)?;
@@ -610,24 +758,51 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
         notes.push(format!("output {output_name} already absent"));
     }
 
-    fs::remove_file(&path).map_err(|source| Error::Io {
+    fs::remove_file(path).map_err(|source| Error::Io {
         context: format!("removing session file {}", path.display()),
         source,
     })?;
     notes.push("session state cleared".to_owned());
-
     Ok(format!("teardown done — {}", notes.join(", ")))
+}
+
+pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
+    let path = session_path()?;
+    let session = match load_for_teardown_from(&path) {
+        Ok(session) => session,
+        Err(Error::NoSession) => return sweep_orphan_output(),
+        Err(error) => return Err(error),
+    };
+
+    match session {
+        TeardownSession::V2(session) => {
+            let notes = teardown_v2(&session, kill, close)?;
+            finish_teardown(&path, &session.output, session.output_created, notes)
+        }
+        TeardownSession::Legacy(session) => {
+            let notes = teardown_legacy(&session, kill, close)?;
+            finish_teardown(&path, &session.output, session.output_created, notes)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Disposition, Session, TrackedWindow, load_for_teardown_from, load_from, parse_size,
-        save_new_to, save_over, workspace_selector,
+        Disposition, Session, TeardownSession, TrackedWindow, WindowAction,
+        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size, save_new_to,
+        save_over, teardown_plan, workspace_selector,
     };
     use crate::error::Error;
-    use crate::hypr::WorkspaceRef;
+    use crate::hypr::{Client, Monitor, WorkspaceRef};
     use std::error::Error as StdError;
+
+    const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
+    const SWEEP_OCCUPIED_JSON: &str =
+        include_str!("../fixtures/sweep-clients-output-occupied.json");
+    const SWEEP_EMPTY_JSON: &str = include_str!("../fixtures/sweep-clients-output-empty.json");
+    const SWEEP_MINUS_ONE_JSON: &str =
+        include_str!("../fixtures/sweep-clients-monitor-minus-one.json");
 
     fn sample_session() -> Session {
         Session {
@@ -670,8 +845,77 @@ mod tests {
         let numeric = WorkspaceRef {
             name: "5".to_owned(),
         };
+        let special = WorkspaceRef {
+            name: "special:hyprpilot-parked".to_owned(),
+        };
         assert_eq!(workspace_selector(&named), "name:proto");
         assert_eq!(workspace_selector(&numeric), "5");
+        assert_eq!(workspace_selector(&special), "special:hyprpilot-parked");
+    }
+
+    #[test]
+    fn teardown_flag_matrix_matches_session_ownership() -> Result<(), Box<dyn StdError>> {
+        let spawned = sample_session();
+        assert_eq!(
+            teardown_plan(&spawned, false, false)
+                .ok()
+                .and_then(|plan| plan.first().map(|step| step.1)),
+            Some(WindowAction::Close)
+        );
+        assert_eq!(
+            teardown_plan(&spawned, true, false)
+                .ok()
+                .and_then(|plan| plan.first().map(|step| step.1)),
+            Some(WindowAction::Kill(42))
+        );
+        let spawned_close = teardown_plan(&spawned, false, true)
+            .err()
+            .ok_or("--close accepted a spawned session")?;
+        assert!(spawned_close.to_string().contains("attached primary"));
+
+        let mut attached = sample_session();
+        attached.spawned_pid = None;
+        attached.windows[0].teardown = Disposition::Restore;
+        assert_eq!(
+            teardown_plan(&attached, false, false)
+                .ok()
+                .and_then(|plan| plan.first().map(|step| step.1)),
+            Some(WindowAction::Restore)
+        );
+        assert_eq!(
+            teardown_plan(&attached, false, true)
+                .ok()
+                .and_then(|plan| plan.first().map(|step| step.1)),
+            Some(WindowAction::Close)
+        );
+        let attached_kill = teardown_plan(&attached, true, false)
+            .err()
+            .ok_or("--kill accepted an attached session")?;
+        assert!(attached_kill.to_string().contains("spawned_pid"));
+
+        assert!(teardown_plan(&spawned, true, true).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn teardown_plan_processes_windows_in_reverse_order() -> Result<(), Box<dyn StdError>> {
+        let mut session = sample_session();
+        session.windows.push(TrackedWindow {
+            address: "0xaux".to_owned(),
+            title_at_adoption: "Auxiliary".to_owned(),
+            origin_workspace: "special:notes".to_owned(),
+            origin_at: [300, 200],
+            origin_size: [600, 400],
+            origin_floating: true,
+            teardown: Disposition::Restore,
+        });
+
+        let plan = teardown_plan(&session, false, false)?;
+        assert_eq!(plan[0].0.address, "0xaux");
+        assert_eq!(plan[0].1, WindowAction::Restore);
+        assert_eq!(plan[1].0.address, "0xabc");
+        assert_eq!(plan[1].1, WindowAction::Close);
+        Ok(())
     }
 
     #[test]
@@ -744,7 +988,9 @@ mod tests {
         )?;
 
         assert!(matches!(load_from(&path), Err(Error::Json { .. })));
-        let legacy = load_for_teardown_from(&path)?;
+        let TeardownSession::Legacy(legacy) = load_for_teardown_from(&path)? else {
+            return Err("legacy file loaded as v2".into());
+        };
         assert_eq!(legacy.window_address, "0xabc");
         assert_eq!(legacy.origin_workspace.as_deref(), Some("3"));
         assert!(legacy.attached());
@@ -762,12 +1008,9 @@ mod tests {
         let Err(error) = load_from(&path) else {
             return Err("unknown schema was accepted".into());
         };
-        assert!(matches!(error, Error::UnsupportedSessionVersion(3)));
-        assert!(
-            error
-                .to_string()
-                .contains("use a compatible hyprpilot version")
-        );
+        assert!(matches!(&error, Error::UnsupportedSessionVersion(3)));
+        assert!(error.to_string().contains("no output was removed"));
+        assert!(error.to_string().contains("hyprpilot windows"));
         assert!(matches!(
             load_for_teardown_from(&path),
             Err(Error::UnsupportedSessionVersion(3))
@@ -779,5 +1022,57 @@ mod tests {
     fn missing_session_file_is_no_session() {
         let result = load_from(std::path::Path::new("/nonexistent/session.json"));
         assert!(matches!(result, Err(Error::NoSession)));
+    }
+
+    #[test]
+    fn corrupt_session_reports_manual_recovery() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"{broken")?;
+
+        let error = load_for_teardown_from(&path)
+            .err()
+            .ok_or("corrupt session unexpectedly loaded")?;
+        assert!(matches!(&error, Error::CorruptSession { .. }));
+        let message = error.to_string();
+        assert!(message.contains("no output was removed"));
+        assert!(message.contains("movetoworkspacesilent"));
+        assert!(message.contains("closewindow"));
+        assert!(message.contains("output remove hyprpilot"));
+        Ok(())
+    }
+
+    fn sweep_fixture(clients_json: &str) -> Result<(Vec<Monitor>, Vec<Client>), Box<dyn StdError>> {
+        Ok((
+            serde_json::from_str(MONITORS_JSON)?,
+            serde_json::from_str(clients_json)?,
+        ))
+    }
+
+    #[test]
+    fn sweep_refuses_occupied_output_fixture() -> Result<(), Box<dyn StdError>> {
+        let (monitors, clients) = sweep_fixture(SWEEP_OCCUPIED_JSON)?;
+        let error = ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)
+            .err()
+            .ok_or("occupied output unexpectedly accepted for sweep")?;
+        assert!(error.to_string().contains("still reports monitor 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn sweep_accepts_empty_output_fixture() -> Result<(), Box<dyn StdError>> {
+        let (monitors, clients) = sweep_fixture(SWEEP_EMPTY_JSON)?;
+        ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sweep_refuses_monitor_minus_one_fixture() -> Result<(), Box<dyn StdError>> {
+        let (monitors, clients) = sweep_fixture(SWEEP_MINUS_ONE_JSON)?;
+        let error = ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)
+            .err()
+            .ok_or("monitor -1 unexpectedly accepted for sweep")?;
+        assert!(error.to_string().contains("unexpected monitor -1"));
+        Ok(())
     }
 }

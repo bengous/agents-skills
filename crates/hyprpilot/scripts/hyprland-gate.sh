@@ -94,6 +94,123 @@ assert_output_absent() {
 	fi
 }
 
+assert_output_present() {
+	local label=$1
+	local monitors
+	local output_re='"name"[[:space:]]*:[[:space:]]*"hyprpilot"'
+
+	if ! monitors=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observes=erreur hyprctl (${monitors}); attendu=output hyprpilot"
+		return 1
+	fi
+	if [[ ! ${monitors} =~ ${output_re} ]]; then
+		fail "${label}: output observe=absent; attendu=hyprpilot present"
+		return 1
+	fi
+}
+
+find_client_address_by_title() {
+	local destination=$1
+	local wanted_title=$2
+	local raw line current_address="" found_address=""
+
+	raw=$(hyprctl clients 2>/dev/null) || return 1
+	while IFS= read -r line; do
+		if [[ ${line} =~ ^Window[[:space:]]+(0x)?([0-9a-fA-F]+)[[:space:]] ]]; then
+			current_address=0x${BASH_REMATCH[2]}
+		elif [[ ${line} =~ ^[[:space:]]*title:[[:space:]](.*)$ ]] &&
+			[[ ${BASH_REMATCH[1]} == "${wanted_title}" ]]; then
+			found_address=${current_address}
+		fi
+	done <<<"${raw}"
+	[[ -n ${found_address} ]] || return 1
+	printf -v "${destination}" '%s' "${found_address}"
+}
+
+read_client_state() {
+	local address=$1
+	local x_destination=$2
+	local y_destination=$3
+	local width_destination=$4
+	local height_destination=$5
+	local workspace_destination=$6
+	local floating_destination=$7
+	local monitor_destination=$8
+	local label=$9
+	local raw compact
+	local client_re
+
+	if ! raw=$(hyprctl clients -j 2>&1); then
+		fail "${label}: clients observes=erreur hyprctl (${raw}); attendu=fenetre ${address}"
+		return 1
+	fi
+	compact=${raw//[[:space:]]/}
+	client_re="\"address\":\"${address}\"[^}]*\"at\":\\[(-?[0-9]+),(-?[0-9]+)\\][^}]*\"size\":\\[([0-9]+),([0-9]+)\\][^}]*\"workspace\":\\{[^}]*\"name\":\"([^\"]+)\"\\}[^}]*\"floating\":(true|false)[^}]*\"monitor\":(-?[0-9]+)"
+	if [[ ! ${compact} =~ ${client_re} ]]; then
+		fail "${label}: etat observe=absent ou invalide pour ${address}; attendu=at, size, workspace, floating, monitor"
+		return 1
+	fi
+	printf -v "${x_destination}" '%s' "${BASH_REMATCH[1]}"
+	printf -v "${y_destination}" '%s' "${BASH_REMATCH[2]}"
+	printf -v "${width_destination}" '%s' "${BASH_REMATCH[3]}"
+	printf -v "${height_destination}" '%s' "${BASH_REMATCH[4]}"
+	printf -v "${workspace_destination}" '%s' "${BASH_REMATCH[5]}"
+	printf -v "${floating_destination}" '%s' "${BASH_REMATCH[6]}"
+	printf -v "${monitor_destination}" '%s' "${BASH_REMATCH[7]}"
+}
+
+read_monitor_origin() {
+	local monitor_id=$1
+	local x_destination=$2
+	local y_destination=$3
+	local label=$4
+	local raw compact monitor_re
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observes=erreur hyprctl (${raw}); attendu=monitor ${monitor_id}"
+		return 1
+	fi
+	compact=${raw//[[:space:]]/}
+	monitor_re="\"id\":${monitor_id},[^}]*\"x\":(-?[0-9]+),\"y\":(-?[0-9]+),"
+	if [[ ! ${compact} =~ ${monitor_re} ]]; then
+		fail "${label}: origine observe=absente pour monitor ${monitor_id}; attendu=x/y entiers"
+		return 1
+	fi
+	printf -v "${x_destination}" '%s' "${BASH_REMATCH[1]}"
+	printf -v "${y_destination}" '%s' "${BASH_REMATCH[2]}"
+}
+
+client_present() {
+	local address=$1
+	local raw compact
+
+	raw=$(hyprctl clients -j 2>/dev/null) || return 2
+	compact=${raw//[[:space:]]/}
+	[[ ${compact} == *"\"address\":\"${address}\""* ]]
+}
+
+wait_client_gone() {
+	local address=$1
+	local label=$2
+	local attempt status
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if client_present "${address}"; then
+			sleep 0.1
+			continue
+		else
+			status=$?
+		fi
+		if ((status == 1)); then
+			return 0
+		fi
+		fail "${label}: clients observe=erreur hyprctl; attendu=liste permettant de verifier ${address}"
+		return 1
+	done
+	fail "${label}: fenetre observe=${address} presente apres 3s; attendu=disparue"
+	return 1
+}
+
 scenario_guard_click() (
 	local scenario_tmp=""
 	local cleanup_failed=0
@@ -294,6 +411,351 @@ scenario_guard_click() (
 		return 1
 	fi
 	assert_output_absent "teardown guard_click"
+)
+
+scenario_teardown_restore() (
+	local cleanup_failed=0
+	local zenity_pid="" window_address=""
+	local title=hyprpilot-e2e-teardown-restore
+	local command_output cleanup_output attempt
+	local initial_x initial_y initial_width initial_height initial_workspace
+	local initial_floating initial_monitor monitor_x monitor_y
+	local target_x target_y target_width=520 target_height=300
+	local restored_x restored_y restored_width restored_height restored_workspace
+	local restored_floating
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_teardown_restore() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+			if [[ ${cleanup_output} != *"no active session"* ]]; then
+				fail "nettoyage teardown_restore: teardown observe=echec (${cleanup_output}); attendu=succes ou session deja demontee"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${zenity_pid} ]] && kill -0 "${zenity_pid}" 2>/dev/null; then
+			kill "${zenity_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${zenity_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage teardown_restore"; then
+			cleanup_failed=1
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_teardown_restore EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_pid=$!
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		if find_client_address_by_title window_address "${title}"; then
+			break
+		fi
+		sleep 0.1
+	done
+	if [[ -z ${window_address} ]]; then
+		fail "setup teardown_restore: fenetre observe=absente apres 5s; attendu=zenity ${title}"
+		return 1
+	fi
+
+	read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
+		initial_workspace initial_floating initial_monitor "setup teardown_restore" || return 1
+	if [[ ${initial_floating} != true ]]; then
+		if ! command_output=$(hyprctl dispatch togglefloating "address:${window_address}" 2>&1) ||
+			[[ ${command_output} != ok ]]; then
+			fail "setup teardown_restore: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+		read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
+			initial_workspace initial_floating initial_monitor "setup teardown_restore flottant" ||
+			return 1
+	fi
+	if [[ ${initial_floating} != true ]]; then
+		fail "setup teardown_restore: floating observe=${initial_floating}; attendu=true"
+		return 1
+	fi
+
+	read_monitor_origin "${initial_monitor}" monitor_x monitor_y "setup teardown_restore" ||
+		return 1
+	target_x=$((monitor_x + 120))
+	target_y=$((monitor_y + 140))
+	if ! command_output=$(
+		hyprctl dispatch resizewindowpixel \
+			"exact ${target_width} ${target_height},address:${window_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "setup teardown_restore: resize observe=${command_output}; attendu=ok vers ${target_width}x${target_height}"
+		return 1
+	fi
+	if ! command_output=$(
+		hyprctl dispatch movewindowpixel \
+			"exact ${target_x} ${target_y},address:${window_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "setup teardown_restore: move observe=${command_output}; attendu=ok vers (${target_x}, ${target_y})"
+		return 1
+	fi
+
+	read_client_state "${window_address}" initial_x initial_y initial_width initial_height \
+		initial_workspace initial_floating initial_monitor "origine teardown_restore" || return 1
+	if ((initial_x != target_x || initial_y != target_y ||
+		initial_width != target_width || initial_height != target_height)); then
+		fail "origine teardown_restore: geometrie observe=(${initial_x}, ${initial_y}) ${initial_width}x${initial_height}; attendu=(${target_x}, ${target_y}) ${target_width}x${target_height}"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start teardown_restore observe=echec (${command_output}); attendu=attachement reussi"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown restore observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+
+	read_client_state "${window_address}" restored_x restored_y restored_width restored_height \
+		restored_workspace restored_floating initial_monitor "apres teardown_restore" || return 1
+	if [[ ${restored_workspace} != "${initial_workspace}" ]]; then
+		fail "teardown restore workspace: observe=${restored_workspace}; attendu=${initial_workspace}"
+		return 1
+	fi
+	if ((restored_x != initial_x || restored_y != initial_y ||
+		restored_width != initial_width || restored_height != initial_height)); then
+		fail "teardown restore geometrie: observe=(${restored_x}, ${restored_y}) ${restored_width}x${restored_height}; attendu=(${initial_x}, ${initial_y}) ${initial_width}x${initial_height}"
+		return 1
+	fi
+	if [[ ${restored_floating} != true ]]; then
+		fail "teardown restore floating: observe=${restored_floating}; attendu=true"
+		return 1
+	fi
+	if ! kill -0 "${zenity_pid}" 2>/dev/null; then
+		fail "teardown restore survie: process observe=disparu (${zenity_pid}); attendu=vivant"
+		return 1
+	fi
+	assert_output_absent "teardown restore" || return 1
+
+	kill "${zenity_pid}" 2>/dev/null || true
+	wait "${zenity_pid}" 2>/dev/null || true
+	zenity_pid=""
+)
+
+scenario_teardown_kill() (
+	local cleanup_failed=0
+	local title=hyprpilot-e2e-teardown-kill
+	local command_output cleanup_output status_json spawned_pid="" window_address=""
+	local status_window_re status_pid_re attempt process_gone=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_teardown_kill() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! cleanup_output=$("${HYPRPILOT}" teardown --kill 2>&1); then
+			if [[ ${cleanup_output} != *"no active session"* ]]; then
+				fail "nettoyage teardown_kill: teardown observe=echec (${cleanup_output}); attendu=succes ou session deja demontee"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${spawned_pid} ]] && kill -0 -- "-${spawned_pid}" 2>/dev/null; then
+			kill -- "-${spawned_pid}" 2>/dev/null || cleanup_failed=1
+		fi
+		if ! assert_output_absent "nettoyage teardown_kill"; then
+			cleanup_failed=1
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_teardown_kill EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" 2>&1
+	); then
+		fail "session start teardown_kill observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! status_json=$("${HYPRPILOT}" status 2>&1); then
+		fail "status teardown_kill observe=echec (${status_json}); attendu=JSON de session"
+		return 1
+	fi
+	status_window_re='"window"[[:space:]]*:[[:space:]]*\{[^}]*"address"[[:space:]]*:[[:space:]]*"([^"]+)"'
+	status_pid_re='"spawned_pid"[[:space:]]*:[[:space:]]*([0-9]+)'
+	if [[ ! ${status_json} =~ ${status_window_re} ]]; then
+		fail "status teardown_kill: adresse observe=absente; attendu=status.window.address"
+		return 1
+	fi
+	window_address=${BASH_REMATCH[1]}
+	if [[ ! ${status_json} =~ ${status_pid_re} ]]; then
+		fail "status teardown_kill: spawned_pid observe=absent; attendu=entier"
+		return 1
+	fi
+	spawned_pid=${BASH_REMATCH[1]}
+
+	if ! command_output=$("${HYPRPILOT}" teardown --kill 2>&1); then
+		fail "teardown kill observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if ! kill -0 -- "-${spawned_pid}" 2>/dev/null; then
+			process_gone=1
+			break
+		fi
+		sleep 0.1
+	done
+	if ((process_gone == 0)); then
+		fail "teardown kill process: observe=groupe ${spawned_pid} present apres 3s; attendu=disparu"
+		return 1
+	fi
+	if find_client_address_by_title window_address "${title}"; then
+		fail "teardown kill fenetre: observe=${window_address}; attendu=disparue"
+		return 1
+	fi
+	assert_output_absent "teardown kill"
+)
+
+scenario_teardown_corrupt() (
+	local cleanup_failed=0
+	local title=hyprpilot-e2e-teardown-corrupt
+	local command_output status_json spawned_pid="" window_address="" session_file=""
+	local status_window_re status_pid_re
+	local before_x before_y before_width before_height before_workspace before_floating before_monitor
+	local state_x state_y state_width state_height state_workspace state_floating state_monitor
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_teardown_corrupt() {
+		local scenario_status=$?
+		local monitors cleanup_output
+		trap - EXIT INT TERM
+
+		if [[ -n ${window_address} ]] && client_present "${window_address}"; then
+			hyprctl dispatch closewindow "address:${window_address}" >/dev/null 2>&1 ||
+				cleanup_failed=1
+		fi
+		if [[ -n ${spawned_pid} ]] && kill -0 -- "-${spawned_pid}" 2>/dev/null; then
+			kill -- "-${spawned_pid}" 2>/dev/null || cleanup_failed=1
+		fi
+		if monitors=$(hyprctl monitors -j 2>/dev/null) &&
+			[[ ${monitors} =~ \"name\"[[:space:]]*:[[:space:]]*\"hyprpilot\" ]]; then
+			if ! cleanup_output=$(hyprctl output remove hyprpilot 2>&1) ||
+				[[ ${cleanup_output} != ok ]]; then
+				fail "nettoyage teardown_corrupt: output remove observe=${cleanup_output}; attendu=ok"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if [[ ${session_file} != "${XDG_RUNTIME_DIR}/hyprpilot/session.json" ]]; then
+				fail "nettoyage teardown_corrupt: fichier observe=${session_file}; attendu=session runtime hyprpilot"
+				cleanup_failed=1
+			elif ! rm -- "${session_file}"; then
+				cleanup_failed=1
+			fi
+		fi
+		if ! assert_output_absent "nettoyage teardown_corrupt"; then
+			cleanup_failed=1
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_teardown_corrupt EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "teardown_corrupt: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	if ! command_output=$(
+		"${HYPRPILOT}" session start \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" 2>&1
+	); then
+		fail "session start teardown_corrupt observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! status_json=$("${HYPRPILOT}" status 2>&1); then
+		fail "status teardown_corrupt observe=echec (${status_json}); attendu=JSON de session"
+		return 1
+	fi
+	status_window_re='"window"[[:space:]]*:[[:space:]]*\{[^}]*"address"[[:space:]]*:[[:space:]]*"([^"]+)"'
+	status_pid_re='"spawned_pid"[[:space:]]*:[[:space:]]*([0-9]+)'
+	if [[ ! ${status_json} =~ ${status_window_re} ]]; then
+		fail "status teardown_corrupt: adresse observe=absente; attendu=status.window.address"
+		return 1
+	fi
+	window_address=${BASH_REMATCH[1]}
+	if [[ ! ${status_json} =~ ${status_pid_re} ]]; then
+		fail "status teardown_corrupt: spawned_pid observe=absent; attendu=entier"
+		return 1
+	fi
+	spawned_pid=${BASH_REMATCH[1]}
+	read_client_state "${window_address}" before_x before_y before_width before_height \
+		before_workspace before_floating before_monitor "avant corruption teardown_corrupt" ||
+		return 1
+	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	if [[ ! -f ${session_file} ]]; then
+		fail "corruption teardown_corrupt: fichier observe=absent (${session_file}); attendu=session.json"
+		return 1
+	fi
+	printf '{broken\n' >"${session_file}"
+
+	if command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown corrupt observe=succes (${command_output}); attendu=exit non nul"
+		return 1
+	fi
+	if [[ ${command_output} != *"no output was removed"* ]]; then
+		fail "teardown corrupt message observe=${command_output}; attendu=instruction no output was removed"
+		return 1
+	fi
+	assert_output_present "teardown corrupt" || return 1
+	read_client_state "${window_address}" state_x state_y state_width state_height state_workspace \
+		state_floating state_monitor "teardown corrupt fenetre intacte" || return 1
+	if ((state_x != before_x || state_y != before_y ||
+		state_width != before_width || state_height != before_height)) ||
+		[[ ${state_workspace} != "${before_workspace}" ||
+			${state_floating} != "${before_floating}" ||
+			${state_monitor} != "${before_monitor}" ]]; then
+		fail "teardown corrupt fenetre: etat observe=(${state_x}, ${state_y}) ${state_width}x${state_height} workspace=${state_workspace} floating=${state_floating} monitor=${state_monitor}; attendu=(${before_x}, ${before_y}) ${before_width}x${before_height} workspace=${before_workspace} floating=${before_floating} monitor=${before_monitor}"
+		return 1
+	fi
+
+	if ! command_output=$(
+		hyprctl dispatch closewindow "address:${window_address}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "nettoyage manuel teardown_corrupt: closewindow observe=${command_output}; attendu=ok"
+		return 1
+	fi
+	wait_client_gone "${window_address}" "nettoyage manuel teardown_corrupt" || return 1
+	window_address=""
+	if ! command_output=$(hyprctl output remove hyprpilot 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "nettoyage manuel teardown_corrupt: output remove observe=${command_output}; attendu=ok"
+		return 1
+	fi
+	if ! rm -- "${session_file}"; then
+		fail "nettoyage manuel teardown_corrupt: rm observe=echec (${session_file}); attendu=fichier supprime"
+		return 1
+	fi
+	session_file=""
+	assert_output_absent "nettoyage manuel teardown_corrupt"
 )
 
 discover_scenarios() {

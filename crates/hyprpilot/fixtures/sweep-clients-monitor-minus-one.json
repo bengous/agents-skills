@@ -1,0 +1,13 @@
+[
+  {
+    "address": "0xunknown",
+    "at": [0, 0],
+    "size": [800, 600],
+    "workspace": {"name": "special:hyprpilot-parked"},
+    "floating": true,
+    "monitor": -1,
+    "class": "fixture",
+    "title": "Unassigned client",
+    "pid": 1003
+  }
+]

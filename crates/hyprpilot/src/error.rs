@@ -31,7 +31,15 @@ pub enum Error {
     Env(&'static str),
     NoSession,
     SessionExists(PathBuf),
+    CorruptSession {
+        path: PathBuf,
+        message: String,
+    },
     UnsupportedSessionVersion(u32),
+    SweepRefused {
+        output: String,
+        reason: String,
+    },
     WindowNotFound(String),
     WindowGone(String),
     UnmappedChar(char),
@@ -77,10 +85,25 @@ impl fmt::Display for Error {
                 "a session is already active ({}) — run `hyprpilot teardown` first",
                 path.display()
             ),
-            Self::UnsupportedSessionVersion(version) => write!(
+            Self::CorruptSession { path, message } => {
+                write!(
+                    f,
+                    "session file {} is corrupt ({message}); no output was removed. ",
+                    path.display()
+                )?;
+                write_session_recovery(f)
+            }
+            Self::UnsupportedSessionVersion(version) => {
+                write!(
+                    f,
+                    "session schema version {version} is unsupported (expected 2); no output was \
+                     removed. "
+                )?;
+                write_session_recovery(f)
+            }
+            Self::SweepRefused { output, reason } => write!(
                 f,
-                "session schema version {version} is unsupported (expected 2) — use a compatible \
-                 hyprpilot version to run teardown"
+                "refusing to remove orphan output {output}: {reason}; no output was removed"
             ),
             Self::WindowNotFound(criteria) => write!(f, "no window matches {criteria}"),
             Self::WindowGone(address) => write!(
@@ -125,6 +148,14 @@ impl fmt::Display for Error {
             }
         }
     }
+}
+
+fn write_session_recovery(f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+        f,
+        "recover with `hyprpilot windows`, `hyprctl dispatch movetoworkspacesilent ...`, \
+         `hyprctl dispatch closewindow ...`, then `hyprctl output remove hyprpilot`"
+    )
 }
 
 impl std::error::Error for Error {}
