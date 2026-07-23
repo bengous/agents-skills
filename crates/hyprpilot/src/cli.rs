@@ -67,6 +67,9 @@ enum Command {
         /// Delay between chords, in milliseconds
         #[arg(long, default_value_t = 50)]
         delay_ms: u64,
+        /// Temporarily focus the session window for this action
+        #[arg(long)]
+        focus: bool,
     },
     /// Type text character by character into the session window
     Type {
@@ -74,6 +77,9 @@ enum Command {
         /// Delay between characters, in milliseconds
         #[arg(long, default_value_t = 25)]
         delay_ms: u64,
+        /// Temporarily focus the session window for this action
+        #[arg(long)]
+        focus: bool,
     },
     /// Click in the session window (cursor and focus are restored)
     Click {
@@ -91,6 +97,9 @@ enum Command {
         /// Treat X Y as global layout coordinates
         #[arg(long)]
         absolute: bool,
+        /// Temporarily focus the session window for this action
+        #[arg(long)]
+        focus: bool,
     },
     /// Scroll wheel detents at a point in the session window (cursor and
     /// focus are restored)
@@ -110,6 +119,9 @@ enum Command {
         /// Treat X Y as global layout coordinates
         #[arg(long)]
         absolute: bool,
+        /// Temporarily focus the session window for this action
+        #[arg(long)]
+        focus: bool,
     },
     /// Capture the session window (or the whole output) to a PNG
     Shot {
@@ -236,22 +248,32 @@ pub fn run() -> Result<String, Error> {
                 on_teardown.map(Into::into),
             )
         }
-        Command::Key { keys, delay_ms } => crate::keys::send_keys(&keys, delay_ms),
-        Command::Type { text, delay_ms } => keys::type_text(&text, delay_ms),
+        Command::Key {
+            keys,
+            delay_ms,
+            focus,
+        } => crate::keys::send_keys(&keys, delay_ms, focus),
+        Command::Type {
+            text,
+            delay_ms,
+            focus,
+        } => keys::type_text(&text, delay_ms, focus),
         Command::Click {
             x,
             y,
             button,
             double,
             absolute,
-        } => pointer::click(x, y, button.into(), double, absolute),
+            focus,
+        } => pointer::click(x, y, button.into(), double, absolute, focus),
         Command::Scroll {
             x,
             y,
             dy,
             dx,
             absolute,
-        } => pointer::scroll(x, y, dx, dy, absolute),
+            focus,
+        } => pointer::scroll(x, y, dx, dy, absolute, focus),
         Command::Shot { name, full, out } => capture::shot(name.as_deref(), full, out.as_deref()),
         Command::Wait {
             changed_from,
@@ -602,6 +624,34 @@ mod tests {
             ]),
             Ok(Cli {
                 command: Command::Target(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn action_commands_parse_focus_flag() {
+        assert!(matches!(
+            Cli::try_parse_from(["hyprpilot", "key", "--focus", "Return"]),
+            Ok(Cli {
+                command: Command::Key { focus: true, .. }
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hyprpilot", "type", "--focus", "text"]),
+            Ok(Cli {
+                command: Command::Type { focus: true, .. }
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hyprpilot", "click", "--focus", "20", "20"]),
+            Ok(Cli {
+                command: Command::Click { focus: true, .. }
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hyprpilot", "scroll", "--focus", "20", "20", "--dy", "1",]),
+            Ok(Cli {
+                command: Command::Scroll { focus: true, .. }
             })
         ));
     }

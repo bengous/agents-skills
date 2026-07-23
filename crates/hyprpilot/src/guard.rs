@@ -15,6 +15,44 @@ pub fn snapshot() -> Result<Snapshot, Error> {
     })
 }
 
+fn run_with<S, P, R, E>(
+    snapshot: impl FnOnce() -> Result<S, E>,
+    prepare: impl FnOnce() -> Result<P, E>,
+    focus: impl FnOnce() -> Result<(), E>,
+    action: impl FnOnce(&P) -> Result<(), E>,
+    restore: impl FnOnce(S, &P, Result<(), E>) -> Result<R, E>,
+) -> Result<R, E> {
+    let snapshot = snapshot()?;
+    let prepared = prepare()?;
+    let action = focus().and_then(|()| action(&prepared));
+    restore(snapshot, &prepared, action)
+}
+
+pub fn run<P>(
+    focus_address: Option<&str>,
+    prepare: impl FnOnce() -> Result<P, Error>,
+    action: impl FnOnce(&P) -> Result<(), Error>,
+    restore_cursor: impl FnOnce(&P, (i32, i32)) -> Result<(), Error>,
+) -> Result<(String, String), Error> {
+    run_with(
+        snapshot,
+        prepare,
+        || {
+            focus_address.map_or(Ok(()), |address| {
+                hypr::dispatch(&["focuswindow", &format!("address:{address}")])
+            })
+        },
+        action,
+        |snapshot, prepared, action| {
+            restore(snapshot, action, |cursor| restore_cursor(prepared, cursor))
+        },
+    )
+}
+
+pub fn restore_cursor(cursor: (i32, i32)) -> Result<(), Error> {
+    hypr::dispatch(&["movecursor", &cursor.0.to_string(), &cursor.1.to_string()])
+}
+
 pub fn cursor_near(actual: (i32, i32), expected: (i32, i32)) -> bool {
     (actual.0 - expected.0).abs() <= WARP_TOLERANCE
         && (actual.1 - expected.1).abs() <= WARP_TOLERANCE
@@ -101,4 +139,49 @@ pub fn restore(
         |address| format!("focus restored to {address}"),
     );
     Ok((cursor_note, focus_note))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::run_with;
+
+    #[test]
+    fn guard_composes_snapshot_focus_action_and_restore_in_order() {
+        let calls = RefCell::new(Vec::new());
+
+        let result = run_with(
+            || {
+                calls.borrow_mut().push("snapshot");
+                Ok::<_, ()>("desktop")
+            },
+            || {
+                calls.borrow_mut().push("prepare");
+                Ok::<_, ()>("target")
+            },
+            || {
+                calls.borrow_mut().push("focus");
+                Ok(())
+            },
+            |target| {
+                assert_eq!(*target, "target");
+                calls.borrow_mut().push("action");
+                Ok(())
+            },
+            |desktop, target, action| {
+                assert_eq!(desktop, "desktop");
+                assert_eq!(*target, "target");
+                assert_eq!(action, Ok(()));
+                calls.borrow_mut().push("restore");
+                Ok("restored")
+            },
+        );
+
+        assert_eq!(result, Ok("restored"));
+        assert_eq!(
+            calls.into_inner(),
+            ["snapshot", "prepare", "focus", "action", "restore"]
+        );
+    }
 }

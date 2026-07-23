@@ -215,10 +215,12 @@ pub fn click(
     button: MouseButton,
     double: bool,
     absolute: bool,
+    focus: bool,
 ) -> Result<String, Error> {
     let (_, window) = session::current_window()?;
     let (gx, gy) = resolve_target(&window, x, y, absolute)?;
-    let (cursor_note, focus_note) = at_target(gx, gy, |pointer| {
+    let focus_address = focus.then_some(window.address.as_str());
+    let (cursor_note, focus_note) = at_target(gx, gy, focus_address, |pointer| {
         if double {
             pointer.double_click(button)
         } else {
@@ -232,11 +234,20 @@ pub fn click(
     ))
 }
 
-pub fn scroll(x: i32, y: i32, dx: i32, dy: i32, absolute: bool) -> Result<String, Error> {
+pub fn scroll(
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+    absolute: bool,
+    focus: bool,
+) -> Result<String, Error> {
     let plan = detent_plan(dx, dy)?;
     let (_, window) = session::current_window()?;
     let (gx, gy) = resolve_target(&window, x, y, absolute)?;
-    let (cursor_note, focus_note) = at_target(gx, gy, |pointer| pointer.scroll(&plan))?;
+    let focus_address = focus.then_some(window.address.as_str());
+    let (cursor_note, focus_note) =
+        at_target(gx, gy, focus_address, |pointer| pointer.scroll(&plan))?;
     let mut amounts = Vec::new();
     if dy != 0 {
         amounts.push(format!("dy {dy}"));
@@ -300,21 +311,25 @@ fn detent_plan(dx: i32, dy: i32) -> Result<Vec<(wl_pointer::Axis, f64, i32)>, Er
 fn at_target(
     gx: i32,
     gy: i32,
+    focus_address: Option<&str>,
     act: impl FnOnce(&mut VirtualPointer) -> Result<(), Error>,
 ) -> Result<(String, String), Error> {
-    let snapshot = guard::snapshot()?;
-    let monitors = hypr::monitors()?;
-    let layout = hypr::layout_box(&monitors)?;
-    let action = (|| {
-        let mut pointer = VirtualPointer::connect(&layout)?;
-        pointer.warp(gx, gy)?;
-        verify_and_act(&mut pointer, gx, gy, act)
-    })();
-
-    guard::restore(snapshot, action, |cursor| {
-        let mut pointer = VirtualPointer::connect(&layout)?;
-        pointer.warp(cursor.0, cursor.1)
-    })
+    guard::run(
+        focus_address,
+        || {
+            let monitors = hypr::monitors()?;
+            hypr::layout_box(&monitors)
+        },
+        |layout| {
+            let mut pointer = VirtualPointer::connect(layout)?;
+            pointer.warp(gx, gy)?;
+            verify_and_act(&mut pointer, gx, gy, act)
+        },
+        |layout, cursor| {
+            let mut pointer = VirtualPointer::connect(layout)?;
+            pointer.warp(cursor.0, cursor.1)
+        },
+    )
 }
 
 fn verify_and_act(

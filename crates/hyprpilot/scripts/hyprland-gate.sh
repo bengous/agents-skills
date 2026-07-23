@@ -1235,6 +1235,172 @@ scenario_guard_click() (
 	assert_output_absent "teardown guard_click"
 )
 
+scenario_focus_type() (
+	local scenario_tmp="" zenity_pid="" window_address=""
+	local cleanup_failed=0
+	local title="hyprpilot-e2e-focus-type-$$"
+	local typed_text="focus-type-$$"
+	local stdout_file="" expected_output="" actual_output=""
+	local before_focus before_x before_y
+	local user_x user_y user_width user_height user_workspace user_floating user_monitor
+	local center_x center_y addresses_json="" command_output="" cleanup_output=""
+
+	assert_focus_type_user_state() {
+		local label=$1
+		local observed_focus observed_x observed_y delta_x delta_y attempt stable_reads=0
+
+		for ((attempt = 0; attempt < 50; attempt++)); do
+			read_active_address observed_focus "${label}" || return 1
+			read_cursor observed_x observed_y "${label}" || return 1
+			delta_x=$((observed_x - before_x))
+			delta_y=$((observed_y - before_y))
+			((delta_x < 0)) && delta_x=$((-delta_x))
+			((delta_y < 0)) && delta_y=$((-delta_y))
+			if [[ ${observed_focus} == "${before_focus}" ]] &&
+				((delta_x <= 1 && delta_y <= 1)); then
+				((stable_reads += 1))
+				if ((stable_reads == 5)); then
+					return 0
+				fi
+			else
+				stable_reads=0
+			fi
+			sleep 0.1
+		done
+		fail "${label}: observe=focus ${observed_focus:-<aucun>}, curseur (${observed_x}, ${observed_y}); attendu=focus ${before_focus}, curseur (${before_x}, ${before_y}) +/-1 sur 5 lectures consecutives"
+		return 1
+	}
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_focus_type() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+			if [[ ${cleanup_output} != *"no active session"* ]]; then
+				fail "nettoyage focus_type: teardown observe=echec (${cleanup_output}); attendu=succes ou session deja demontee"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${zenity_pid} ]] && kill -0 "${zenity_pid}" 2>/dev/null; then
+			kill "${zenity_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${zenity_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage focus_type"; then
+			cleanup_failed=1
+		fi
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-focus-type.* ]]; then
+				fail "nettoyage focus_type: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage focus_type: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_focus_type EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "focus_type: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-focus-type.XXXXXX"); then
+		fail "focus_type: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+	stdout_file=${scenario_tmp}/zenity.stdout
+
+	read_active_address before_focus "precondition focus_type" || return 1
+	if [[ -z ${before_focus} ]]; then
+		skip "aucune fenêtre active pour établir un état restaurable"
+	fi
+	read_client_state "${before_focus}" user_x user_y user_width user_height user_workspace \
+		user_floating user_monitor "precondition focus_type" || return 1
+	center_x=$((user_x + user_width / 2))
+	center_y=$((user_y + user_height / 2))
+	if ! command_output=$(hyprctl dispatch movecursor "${center_x}" "${center_y}" 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "precondition focus_type: movecursor observe=${command_output}; attendu=ok vers (${center_x}, ${center_y})"
+		return 1
+	fi
+	read_cursor before_x before_y "precondition focus_type" || return 1
+	assert_focus_type_user_state "settle precondition focus_type" || return 1
+
+	zenity --entry --title="${title}" >"${stdout_file}" 2>/dev/null &
+	zenity_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 1 \
+		"settle spawn focus_type" || return 1
+	window_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+
+	if ! command_output=$(
+		hyprctl dispatch focuswindow "address:${before_focus}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "precondition focus_type: focuswindow observe=${command_output}; attendu=ok vers ${before_focus}"
+		return 1
+	fi
+	if ! command_output=$(hyprctl dispatch movecursor "${before_x}" "${before_y}" 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "precondition focus_type apres spawn: movecursor observe=${command_output}; attendu=ok vers (${before_x}, ${before_y})"
+		return 1
+	fi
+	assert_focus_type_user_state "settle spawn focus_type" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start focus_type observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	assert_focus_type_user_state "settle session start focus_type" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" click --focus 20 20 2>&1); then
+		fail "click --focus focus_type observe=echec (${command_output}); attendu=champ zenity clique"
+		return 1
+	fi
+	assert_focus_type_user_state "apres click --focus focus_type" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" type --focus "${typed_text}" 2>&1); then
+		fail "type --focus focus_type observe=echec (${command_output}); attendu=${typed_text}"
+		return 1
+	fi
+	assert_focus_type_user_state "apres type --focus focus_type" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" key --focus Return 2>&1); then
+		fail "key --focus focus_type observe=echec (${command_output}); attendu=Return accepte"
+		return 1
+	fi
+	assert_focus_type_user_state "apres key --focus focus_type" || return 1
+
+	if ! wait "${zenity_pid}"; then
+		fail "zenity focus_type observe=sortie non nulle; attendu=validation par Return"
+		return 1
+	fi
+	zenity_pid=""
+	wait_client_gone "${window_address}" "apres Return focus_type" || return 1
+
+	expected_output="${typed_text}"$'\n'
+	IFS= read -r -d '' actual_output <"${stdout_file}" || true
+	if [[ ${actual_output} != "${expected_output}" ]]; then
+		fail "stdout zenity focus_type observe=${actual_output@Q}; attendu=${expected_output@Q}"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown focus_type observe=echec (${command_output}); attendu=succes avec fenetre deja disparue"
+		return 1
+	fi
+	assert_output_absent "teardown focus_type"
+)
+
 scenario_teardown_restore() (
 	local cleanup_failed=0
 	local zenity_pid="" window_address=""

@@ -11,6 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error::Error;
+use crate::guard;
 use crate::hypr;
 use crate::session;
 
@@ -183,17 +184,30 @@ fn enrich_key_error(error: Error, chord: &Chord) -> Error {
     }
 }
 
-pub fn send_keys(raw_chords: &[String], delay_ms: u64) -> Result<String, Error> {
+pub fn send_keys(raw_chords: &[String], delay_ms: u64, focus: bool) -> Result<String, Error> {
     let (_, window) = session::current_window()?;
     let chords = raw_chords
         .iter()
         .map(|raw| parse_chord(raw))
         .collect::<Result<Vec<_>, _>>()?;
-    for (index, chord) in chords.iter().enumerate() {
-        if index > 0 {
-            thread::sleep(Duration::from_millis(delay_ms));
+    let action = || {
+        for (index, chord) in chords.iter().enumerate() {
+            if index > 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            send_chord(chord, &window.address)?;
         }
-        send_chord(chord, &window.address)?;
+        Ok(())
+    };
+    if focus {
+        guard::run(
+            Some(&window.address),
+            || Ok(()),
+            |()| action(),
+            |&(), cursor| guard::restore_cursor(cursor),
+        )?;
+    } else {
+        action()?;
     }
     Ok(format!(
         "sent {} key(s) to {}",
@@ -202,7 +216,7 @@ pub fn send_keys(raw_chords: &[String], delay_ms: u64) -> Result<String, Error> 
     ))
 }
 
-pub fn type_text(text: &str, delay_ms: u64) -> Result<String, Error> {
+pub fn type_text(text: &str, delay_ms: u64, focus: bool) -> Result<String, Error> {
     let (_, window) = session::current_window()?;
     let chords = text
         .chars()
@@ -214,11 +228,24 @@ pub fn type_text(text: &str, delay_ms: u64) -> Result<String, Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    for (index, chord) in chords.iter().enumerate() {
-        if index > 0 {
-            thread::sleep(Duration::from_millis(delay_ms));
+    let action = || {
+        for (index, chord) in chords.iter().enumerate() {
+            if index > 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            send_chord(chord, &window.address)?;
         }
-        send_chord(chord, &window.address)?;
+        Ok(())
+    };
+    if focus {
+        guard::run(
+            Some(&window.address),
+            || Ok(()),
+            |()| action(),
+            |&(), cursor| guard::restore_cursor(cursor),
+        )?;
+    } else {
+        action()?;
     }
     Ok(format!(
         "typed {} character(s) into {}",
