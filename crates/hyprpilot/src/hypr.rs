@@ -12,6 +12,7 @@ pub struct WorkspaceRef {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Client {
     pub address: String,
     pub at: [i32; 2],
@@ -20,7 +21,9 @@ pub struct Client {
     pub floating: bool,
     pub monitor: i64,
     pub class: String,
+    pub initial_class: String,
     pub title: String,
+    pub initial_title: String,
     pub pid: i32,
 }
 
@@ -257,6 +260,8 @@ mod tests {
         assert_eq!(proto.at, [5122, 28]);
         assert_eq!(proto.size, [1596, 970]);
         assert_eq!(proto.class, "");
+        assert_eq!(proto.initial_class, "");
+        assert_eq!(proto.initial_title, "PageCairn — Prototype visuel");
         assert_eq!(proto.workspace.name, "proto");
         assert!(!proto.floating);
         assert_eq!(proto.monitor, 1);
@@ -334,7 +339,9 @@ mod tests {
             "floating": clients[0].floating,
             "monitor": clients[0].monitor,
             "class": clients[0].class,
+            "initialClass": clients[0].initial_class,
             "title": clients[0].title,
+            "initialTitle": clients[0].initial_title,
             "pid": clients[0].pid,
         }))?;
         let parsed = parse_active_window(&raw)?.ok_or("expected a client")?;

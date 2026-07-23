@@ -112,19 +112,55 @@ assert_output_present() {
 find_client_address_by_title() {
 	local destination=$1
 	local wanted_title=$2
-	local raw line current_address="" found_address=""
+	local raw found_address
 
-	raw=$(hyprctl clients 2>/dev/null) || return 1
-	while IFS= read -r line; do
-		if [[ ${line} =~ ^Window[[:space:]]+(0x)?([0-9a-fA-F]+)[[:space:]] ]]; then
-			current_address=0x${BASH_REMATCH[2]}
-		elif [[ ${line} =~ ^[[:space:]]*title:[[:space:]](.*)$ ]] &&
-			[[ ${BASH_REMATCH[1]} == "${wanted_title}" ]]; then
-			found_address=${current_address}
-		fi
-	done <<<"${raw}"
-	[[ -n ${found_address} ]] || return 1
+	raw=$(hyprctl clients -j 2>/dev/null) || return 1
+	found_address=$(
+		jq -er --arg title "${wanted_title}" \
+			'[.[] | select(.title == $title) | .address] | last // empty' <<<"${raw}"
+	) || return 1
 	printf -v "${destination}" '%s' "${found_address}"
+}
+
+wait_client_addresses_by_title() {
+	local destination=$1
+	local wanted_title=$2
+	local expected_count=$3
+	local label=$4
+	local raw addresses count previous="" attempt stable_reads=0
+
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		if ! raw=$(hyprctl clients -j 2>&1); then
+			fail "${label}: clients observe=erreur hyprctl (${raw}); attendu=${expected_count} fenêtre(s)"
+			return 1
+		fi
+		if ! addresses=$(
+			jq -c --arg title "${wanted_title}" \
+				'[.[] | select(.title == $title) | .address] | sort' <<<"${raw}"
+		); then
+			fail "${label}: clients observe=JSON invalide; attendu=tableau Hyprland filtrable"
+			return 1
+		fi
+		count=$(jq 'length' <<<"${addresses}")
+		if ((count == expected_count)); then
+			if [[ ${addresses} == "${previous}" ]]; then
+				((stable_reads += 1))
+			else
+				stable_reads=1
+				previous=${addresses}
+			fi
+			if ((stable_reads == 2)); then
+				printf -v "${destination}" '%s' "${addresses}"
+				return 0
+			fi
+		else
+			stable_reads=0
+			previous=""
+		fi
+		sleep 0.1
+	done
+	fail "${label}: adresses observe=${addresses}; attendu=${expected_count} fenêtre(s) stables en 5s"
+	return 1
 }
 
 read_client_state() {
@@ -490,6 +526,118 @@ scenario_start_offscreen() (
 	kill "${zenity_pid}" 2>/dev/null || true
 	wait "${zenity_pid}" 2>/dev/null || true
 	zenity_pid=""
+)
+
+scenario_windows_ambiguous() (
+	local cleanup_failed=0
+	local zenity_one_pid="" zenity_two_pid=""
+	local title=hyprpilot-e2e-ambiguous
+	local addresses_json="" command_output="" cleanup_output="" last_line=""
+	local windows_json="" active_address="" session_file=""
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_windows_ambiguous() {
+		local scenario_status=$?
+		local pid
+		trap - EXIT INT TERM
+
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+				fail "nettoyage windows_ambiguous: teardown observe=echec (${cleanup_output}); attendu=succes"
+				cleanup_failed=1
+			fi
+		fi
+		for pid in "${zenity_one_pid}" "${zenity_two_pid}"; do
+			if [[ -n ${pid} ]] && kill -0 "${pid}" 2>/dev/null; then
+				kill "${pid}" 2>/dev/null || cleanup_failed=1
+				wait "${pid}" 2>/dev/null || true
+			fi
+		done
+		if ! assert_output_absent "nettoyage windows_ambiguous"; then
+			cleanup_failed=1
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_windows_ambiguous EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "windows_ambiguous: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	if [[ -e ${session_file} ]]; then
+		fail "precondition windows_ambiguous: session observe=presente (${session_file}); attendu=absente"
+		return 1
+	fi
+	assert_output_absent "precondition windows_ambiguous" || return 1
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_one_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 1 \
+		"settle premier spawn windows_ambiguous" || return 1
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_two_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 2 \
+		"settle second spawn windows_ambiguous" || return 1
+
+	if command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start windows_ambiguous observe=succes (${command_output}); attendu=exit non nul"
+		return 1
+	fi
+	if [[ ${command_output} != *$'\n'* ||
+		${command_output%%$'\n'*} != *"multiple windows match"* ]]; then
+		fail "session start windows_ambiguous message observe=${command_output}; attendu=message humain puis JSON"
+		return 1
+	fi
+	last_line=${command_output##*$'\n'}
+	if ! jq -e --argjson expected "${addresses_json}" \
+		'type == "array" and length == 2 and
+		 ([.[].address] | sort) == ($expected | sort)' \
+		<<<"${last_line}" >/dev/null; then
+		fail "session start windows_ambiguous candidats observe=${last_line}; attendu=${addresses_json}"
+		return 1
+	fi
+
+	if ! windows_json=$("${HYPRPILOT}" windows); then
+		fail "windows windows_ambiguous observe=echec; attendu=tableau JSON"
+		return 1
+	fi
+	if ! jq -e --arg title "${title}" --argjson expected "${addresses_json}" \
+		'type == "array" and
+		 ([.[] | select(.title == $title) | .address] | sort) == ($expected | sort) and
+		 all(.[]; .tracked == false and .active == false)' \
+		<<<"${windows_json}" >/dev/null; then
+		fail "windows windows_ambiguous observe=${windows_json}; attendu=deux fenêtres non suivies"
+		return 1
+	fi
+	read_active_address active_address "windows windows_ambiguous" || return 1
+	if ! jq -e --arg active "${active_address}" \
+		'all(.[]; .focused == (.address == $active))' \
+		<<<"${windows_json}" >/dev/null; then
+		fail "windows windows_ambiguous focused observe=${windows_json}; attendu=coherent avec ${active_address:-aucun}"
+		return 1
+	fi
+	if [[ -e ${session_file} ]]; then
+		fail "windows_ambiguous session observe=presente (${session_file}); attendu=aucun état créé"
+		return 1
+	fi
+	assert_output_absent "windows_ambiguous" || return 1
+
+	kill "${zenity_one_pid}" "${zenity_two_pid}" 2>/dev/null || true
+	wait "${zenity_one_pid}" 2>/dev/null || true
+	wait "${zenity_two_pid}" 2>/dev/null || true
+	zenity_one_pid=""
+	zenity_two_pid=""
 )
 
 scenario_guard_click() (
@@ -1129,7 +1277,7 @@ preflight() {
 
 	[[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] ||
 		skip "HYPRLAND_INSTANCE_SIGNATURE est vide"
-	for binary in hyprctl grim zenity; do
+	for binary in hyprctl grim jq zenity; do
 		command -v "${binary}" >/dev/null 2>&1 ||
 			skip "binaire ${binary} absent du PATH"
 	done

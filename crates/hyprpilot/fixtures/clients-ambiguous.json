@@ -1,0 +1,54 @@
+[
+  {
+    "address": "0xaaa",
+    "at": [10, 20],
+    "size": [800, 600],
+    "workspace": {"name": "1"},
+    "floating": true,
+    "monitor": 0,
+    "class": "shared.class",
+    "initialClass": "shared.class",
+    "title": "Shared title",
+    "initialTitle": "Shared title",
+    "pid": 101
+  },
+  {
+    "address": "0xbbb",
+    "at": [30, 40],
+    "size": [800, 600],
+    "workspace": {"name": "2"},
+    "floating": true,
+    "monitor": 0,
+    "class": "shared.class",
+    "initialClass": "shared.class",
+    "title": "Shared title",
+    "initialTitle": "Shared title",
+    "pid": 102
+  },
+  {
+    "address": "0xccc",
+    "at": [50, 60],
+    "size": [800, 600],
+    "workspace": {"name": "3"},
+    "floating": false,
+    "monitor": 0,
+    "class": "other.class",
+    "initialClass": "other.class",
+    "title": "Shared title",
+    "initialTitle": "Shared title",
+    "pid": 103
+  },
+  {
+    "address": "0xddd",
+    "at": [70, 80],
+    "size": [800, 600],
+    "workspace": {"name": "4"},
+    "floating": false,
+    "monitor": 0,
+    "class": "shared.class",
+    "initialClass": "shared.class",
+    "title": "Unique title",
+    "initialTitle": "Unique title",
+    "pid": 104
+  }
+]

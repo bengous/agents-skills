@@ -349,7 +349,9 @@ mod tests {
             floating: false,
             monitor: 0,
             class: String::new(),
+            initial_class: String::new(),
             title: "App".to_owned(),
+            initial_title: "App".to_owned(),
             pid: 1,
         }
     }

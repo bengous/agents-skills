@@ -1,8 +1,10 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use crate::error::Error;
 use crate::{capture, hypr, keys, pointer, session};
@@ -101,6 +103,8 @@ enum Command {
     },
     /// Print session state as JSON (window, output, user focus)
     Status,
+    /// List Hyprland windows as JSON
+    Windows,
     /// Check the environment (hyprctl, grim, protocols, permissions)
     Doctor,
     /// End the session: close a spawned app (or return an attached window
@@ -192,9 +196,104 @@ pub fn run() -> Result<String, Error> {
             capture::wait(&mode, timeout)
         }
         Command::Status => status(),
+        Command::Windows => windows(),
         Command::Doctor => doctor(),
         Command::Teardown { kill, close } => session::teardown(kill, close),
     }
+}
+
+enum WindowSession {
+    Absent,
+    Valid(session::Session),
+    Unknown,
+}
+
+#[derive(Serialize)]
+struct WindowInfo<'a> {
+    address: &'a str,
+    class: &'a str,
+    initial_class: &'a str,
+    title: &'a str,
+    initial_title: &'a str,
+    pid: i32,
+    workspace: &'a str,
+    at: [i32; 2],
+    size: [i32; 2],
+    floating: bool,
+    focused: bool,
+    monitor: i64,
+    tracked: Option<bool>,
+    active: Option<bool>,
+}
+
+fn serialize_windows(
+    clients: &[hypr::Client],
+    focused: Option<&hypr::Client>,
+    session: &WindowSession,
+) -> Result<String, Error> {
+    let focused_address = focused.map(|client| client.address.as_str());
+    let windows = clients
+        .iter()
+        .map(|client| {
+            let (tracked, active) = match session {
+                WindowSession::Absent => (Some(false), Some(false)),
+                WindowSession::Valid(session) => (
+                    Some(
+                        session
+                            .windows
+                            .iter()
+                            .any(|window| window.address == client.address),
+                    ),
+                    Some(session.active_address == client.address),
+                ),
+                WindowSession::Unknown => (None, None),
+            };
+            WindowInfo {
+                address: &client.address,
+                class: &client.class,
+                initial_class: &client.initial_class,
+                title: &client.title,
+                initial_title: &client.initial_title,
+                pid: client.pid,
+                workspace: &client.workspace.name,
+                at: client.at,
+                size: client.size,
+                floating: client.floating,
+                focused: focused_address == Some(client.address.as_str()),
+                monitor: client.monitor,
+                tracked,
+                active,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::to_string_pretty(&windows).map_err(|source| Error::Json {
+        context: "serializing windows".to_owned(),
+        source,
+    })
+}
+
+fn windows() -> Result<String, Error> {
+    let clients = hypr::clients()?;
+    let focused = hypr::active_window()?;
+    let session = match session::load() {
+        Ok(session) => WindowSession::Valid(session),
+        Err(Error::NoSession) => WindowSession::Absent,
+        Err(
+            error @ (Error::Json { .. }
+            | Error::CorruptSession { .. }
+            | Error::UnsupportedSessionVersion(_)),
+        ) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "hyprpilot: warning: cannot read session state ({error}); \
+                 tracked and active are null"
+            );
+            WindowSession::Unknown
+        }
+        Err(error) => return Err(error),
+    };
+    serialize_windows(&clients, focused.as_ref(), &session)
 }
 
 fn status() -> Result<String, Error> {
@@ -354,11 +453,146 @@ fn doctor() -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use std::collections::BTreeSet;
+    use std::error::Error as StdError;
+
     use clap::Parser;
+
+    use super::{Cli, WindowSession, serialize_windows};
+    use crate::hypr::Client;
+    use crate::session::{Disposition, Session, TrackedWindow};
+
+    const CLIENTS_JSON: &str = include_str!("../fixtures/clients.json");
+
+    fn clients() -> Result<Vec<Client>, serde_json::Error> {
+        serde_json::from_str(CLIENTS_JSON)
+    }
+
+    fn tracked(client: &Client) -> TrackedWindow {
+        TrackedWindow {
+            address: client.address.clone(),
+            title_at_adoption: client.title.clone(),
+            origin_workspace: client.workspace.name.clone(),
+            origin_at: client.at,
+            origin_size: client.size,
+            origin_floating: client.floating,
+            teardown: Disposition::Restore,
+        }
+    }
+
+    fn valid_session(clients: &[Client]) -> Session {
+        Session {
+            schema_version: 2,
+            output: "hyprpilot".to_owned(),
+            output_created: true,
+            active_workspace: "hyprpilot".to_owned(),
+            parking_workspace: "special:hyprpilot-parked".to_owned(),
+            size: [1600, 1000],
+            spawned_pid: None,
+            initial_user_focus: None,
+            primary_address: clients[0].address.clone(),
+            active_address: clients[1].address.clone(),
+            windows: vec![tracked(&clients[0]), tracked(&clients[1])],
+        }
+    }
 
     #[test]
     fn teardown_kill_and_close_conflict() {
         assert!(Cli::try_parse_from(["hyprpilot", "teardown", "--kill", "--close"]).is_err());
+    }
+
+    #[test]
+    fn windows_serializes_exact_fields_and_calculates_focus() -> Result<(), Box<dyn StdError>> {
+        let clients = clients()?;
+        let raw = serialize_windows(&clients, Some(&clients[1]), &WindowSession::Absent)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+        let keys = rows[0]
+            .as_object()
+            .ok_or("window row is not an object")?
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            "address",
+            "class",
+            "initial_class",
+            "title",
+            "initial_title",
+            "pid",
+            "workspace",
+            "at",
+            "size",
+            "floating",
+            "focused",
+            "monitor",
+            "tracked",
+            "active",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(keys, expected);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["focused"] == serde_json::Value::Bool(true))
+                .map(|row| row["address"].as_str())
+                .collect::<Vec<_>>(),
+            vec![Some(clients[1].address.as_str())]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_without_session_marks_every_client_untracked_and_inactive()
+    -> Result<(), Box<dyn StdError>> {
+        let clients = clients()?;
+        let raw = serialize_windows(&clients, None, &WindowSession::Absent)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+
+        assert!(
+            rows.iter()
+                .all(|row| row["tracked"] == false && row["active"] == false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_with_valid_session_marks_tracked_and_active_addresses()
+    -> Result<(), Box<dyn StdError>> {
+        let clients = clients()?;
+        let session = WindowSession::Valid(valid_session(&clients));
+        let raw = serialize_windows(&clients, None, &session)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row["tracked"].as_bool(), row["active"].as_bool()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(true), Some(false)),
+                (Some(true), Some(true)),
+                (Some(false), Some(false)),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_with_corrupt_session_marks_annotations_unknown() -> Result<(), Box<dyn StdError>> {
+        let clients = clients()?;
+        let raw = serialize_windows(&clients, None, &WindowSession::Unknown)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+
+        assert!(
+            rows.iter()
+                .all(|row| row["tracked"].is_null() && row["active"].is_null())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_without_clients_is_an_empty_json_array() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(serialize_windows(&[], None, &WindowSession::Absent)?, "[]");
+        Ok(())
     }
 }

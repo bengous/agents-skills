@@ -40,6 +40,10 @@ pub enum Error {
         output: String,
         reason: String,
     },
+    WindowAmbiguous {
+        criteria: String,
+        candidates: serde_json::Value,
+    },
     WindowNotFound(String),
     WindowGone(String),
     UnmappedChar(char),
@@ -104,6 +108,13 @@ impl fmt::Display for Error {
             Self::SweepRefused { output, reason } => write!(
                 f,
                 "refusing to remove orphan output {output}: {reason}; no output was removed"
+            ),
+            Self::WindowAmbiguous {
+                criteria,
+                candidates,
+            } => write!(
+                f,
+                "multiple windows match {criteria}; refine the match criteria\n{candidates}"
             ),
             Self::WindowNotFound(criteria) => write!(f, "no window matches {criteria}"),
             Self::WindowGone(address) => write!(

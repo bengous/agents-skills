@@ -79,6 +79,37 @@ pub enum Placement {
     Oversized(i32, i32),
 }
 
+#[derive(Debug, Default)]
+pub struct Criteria<'a> {
+    pub title: Option<&'a str>,
+    pub class: Option<&'a str>,
+    pub pid: Option<i32>,
+}
+
+#[derive(Debug)]
+pub enum Resolution<'a> {
+    Unique(&'a hypr::Client),
+    None,
+    Ambiguous(Vec<&'a hypr::Client>),
+}
+
+pub fn resolve<'a>(clients: &'a [hypr::Client], criteria: &Criteria<'_>) -> Resolution<'a> {
+    let matches = clients
+        .iter()
+        .filter(|client| {
+            criteria.title.is_none_or(|title| client.title == title)
+                && criteria.class.is_none_or(|class| client.class == class)
+                && criteria.pid.is_none_or(|pid| client.pid == pid)
+        })
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        0 => Resolution::None,
+        1 => Resolution::Unique(matches[0]),
+        _ => Resolution::Ambiguous(matches),
+    }
+}
+
 pub fn place(window: Rect, output: Rect) -> Placement {
     if window.w > output.w || window.h > output.h {
         return Placement::Oversized(output.x, output.y);
@@ -341,25 +372,52 @@ pub fn workspace_selector(workspace: &hypr::WorkspaceRef) -> String {
     }
 }
 
-fn matches(client: &hypr::Client, title: Option<&str>, class: Option<&str>) -> bool {
-    title.is_none_or(|t| client.title == t) && class.is_none_or(|c| client.class == c)
-}
-
-fn criteria_label(title: Option<&str>, class: Option<&str>) -> String {
+fn criteria_label(criteria: &Criteria<'_>) -> String {
     let mut parts = Vec::new();
-    if let Some(t) = title {
-        parts.push(format!("title `{t}`"));
+    if let Some(title) = criteria.title {
+        parts.push(format!("title `{title}`"));
     }
-    if let Some(c) = class {
-        parts.push(format!("class `{c}`"));
+    if let Some(class) = criteria.class {
+        parts.push(format!("class `{class}`"));
+    }
+    if let Some(pid) = criteria.pid {
+        parts.push(format!("pid `{pid}`"));
     }
     parts.join(" and ")
 }
 
-fn find_window(title: Option<&str>, class: Option<&str>) -> Result<Option<hypr::Client>, Error> {
-    Ok(hypr::clients()?
+fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> Error {
+    let candidates = candidates
         .into_iter()
-        .find(|c| matches(c, title, class)))
+        .map(|client| {
+            serde_json::json!({
+                "address": client.address,
+                "class": client.class,
+                "initial_class": client.initial_class,
+                "title": client.title,
+                "initial_title": client.initial_title,
+                "pid": client.pid,
+                "workspace": client.workspace.name,
+                "at": client.at,
+                "size": client.size,
+                "floating": client.floating,
+                "monitor": client.monitor,
+            })
+        })
+        .collect();
+    Error::WindowAmbiguous {
+        criteria: criteria_label(criteria),
+        candidates: serde_json::Value::Array(candidates),
+    }
+}
+
+fn find_window(criteria: &Criteria<'_>) -> Result<Option<hypr::Client>, Error> {
+    let clients = hypr::clients()?;
+    match resolve(&clients, criteria) {
+        Resolution::Unique(client) => Ok(Some(client.clone())),
+        Resolution::None => Ok(None),
+        Resolution::Ambiguous(candidates) => Err(ambiguous_error(criteria, candidates)),
+    }
 }
 
 fn spawn_app(command: &str) -> Result<u32, Error> {
@@ -378,13 +436,10 @@ fn spawn_app(command: &str) -> Result<u32, Error> {
     Ok(child.id())
 }
 
-fn wait_for_window(
-    title: Option<&str>,
-    class: Option<&str>,
-) -> Result<Option<hypr::Client>, Error> {
+fn wait_for_window(criteria: &Criteria<'_>) -> Result<Option<hypr::Client>, Error> {
     let deadline = Instant::now() + WINDOW_APPEAR_TIMEOUT;
     loop {
-        if let Some(window) = find_window(title, class)? {
+        if let Some(window) = find_window(criteria)? {
             return Ok(Some(window));
         }
         if Instant::now() >= deadline {
@@ -650,27 +705,38 @@ pub fn start(
     // what the user had.
     let initial_user_focus = hypr::active_window()?.map(|w| w.address);
 
-    let criteria = criteria_label(match_title, match_class);
+    let criteria = Criteria {
+        title: match_title,
+        class: match_class,
+        pid: None,
+    };
+    let criteria_description = criteria_label(&criteria);
     let mut spawned_pid = None;
-    let window = if let Some(window) = find_window(match_title, match_class)? {
+    let window = if let Some(window) = find_window(&criteria)? {
         window
     } else {
         let Some(command) = app else {
             return Err(Error::WindowNotFound(format!(
-                "{criteria} — pass --app to launch it"
+                "{criteria_description} — pass --app to launch it"
             )));
         };
         let pid = spawn_app(command)?;
         spawned_pid = Some(pid);
-        let Some(window) = wait_for_window(match_title, match_class)? else {
-            // Do not leak the app we just launched.
-            let _ = kill_process_group(pid);
-            return Err(Error::WindowNotFound(format!(
-                "{criteria} after launching `{command}` ({}s timeout) — process killed",
-                WINDOW_APPEAR_TIMEOUT.as_secs()
-            )));
-        };
-        window
+        match wait_for_window(&criteria) {
+            Ok(Some(window)) => window,
+            Ok(None) => {
+                let _ = kill_process_group(pid);
+                return Err(Error::WindowNotFound(format!(
+                    "{criteria_description} after launching `{command}` ({}s timeout) — process \
+                     killed",
+                    WINDOW_APPEAR_TIMEOUT.as_secs()
+                )));
+            }
+            Err(error) => {
+                let _ = kill_process_group(pid);
+                return Err(error);
+            }
+        }
     };
 
     let output_created = find_output(OUTPUT_NAME)?.is_none();
@@ -1026,15 +1092,17 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Disposition, Placement, Rect, Session, TeardownSession, TrackedWindow, WindowAction,
-        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size, place,
-        save_new_to, save_over, teardown_plan, workspace_selector,
+        Criteria, Disposition, Placement, Rect, Resolution, Session, TeardownSession,
+        TrackedWindow, WindowAction, ambiguous_error, ensure_output_empty_for_sweep,
+        load_for_teardown_from, load_from, parse_size, place, resolve, save_new_to, save_over,
+        teardown_plan, workspace_selector,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Monitor, WorkspaceRef};
     use std::error::Error as StdError;
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
+    const AMBIGUOUS_CLIENTS_JSON: &str = include_str!("../fixtures/clients-ambiguous.json");
     const SWEEP_OCCUPIED_JSON: &str =
         include_str!("../fixtures/sweep-clients-output-occupied.json");
     const SWEEP_EMPTY_JSON: &str = include_str!("../fixtures/sweep-clients-output-empty.json");
@@ -1063,6 +1131,99 @@ mod tests {
                 teardown: Disposition::Close,
             }],
         }
+    }
+
+    fn matching_clients() -> Result<Vec<Client>, serde_json::Error> {
+        serde_json::from_str(AMBIGUOUS_CLIENTS_JSON)
+    }
+
+    #[test]
+    fn resolve_returns_none_when_no_client_matches() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Missing title"),
+            ..Criteria::default()
+        };
+
+        assert!(matches!(resolve(&clients, &criteria), Resolution::None));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_returns_unique_client_for_one_exact_match() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Unique title"),
+            ..Criteria::default()
+        };
+        let Resolution::Unique(client) = resolve(&clients, &criteria) else {
+            return Err("expected one matching client".into());
+        };
+
+        assert_eq!(client.address, "0xddd");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_returns_every_ambiguous_exact_match() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Shared title"),
+            ..Criteria::default()
+        };
+        let Resolution::Ambiguous(candidates) = resolve(&clients, &criteria) else {
+            return Err("expected ambiguous clients".into());
+        };
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|client| client.address.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0xaaa", "0xbbb", "0xccc"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_combines_title_class_and_pid_with_and() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Shared title"),
+            class: Some("shared.class"),
+            pid: Some(102),
+        };
+        let Resolution::Unique(client) = resolve(&clients, &criteria) else {
+            return Err("combined criteria did not resolve uniquely".into());
+        };
+
+        assert_eq!(client.address, "0xbbb");
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_error_ends_with_machine_readable_candidates() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let criteria = Criteria {
+            title: Some("Shared title"),
+            class: Some("shared.class"),
+            pid: None,
+        };
+        let Resolution::Ambiguous(candidates) = resolve(&clients, &criteria) else {
+            return Err("expected ambiguous clients".into());
+        };
+        let message = ambiguous_error(&criteria, candidates).to_string();
+        let last_line = message.lines().last().ok_or("missing candidate line")?;
+        let candidates: Vec<serde_json::Value> = serde_json::from_str(last_line)?;
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate["address"].as_str())
+                .collect::<Vec<_>>(),
+            vec![Some("0xaaa"), Some("0xbbb")]
+        );
+        Ok(())
     }
 
     #[test]

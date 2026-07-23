@@ -7,7 +7,9 @@
     "floating": true,
     "monitor": 1,
     "class": "fixture",
+    "initialClass": "fixture",
     "title": "Output occupant",
+    "initialTitle": "Output occupant",
     "pid": 1001
   }
 ]

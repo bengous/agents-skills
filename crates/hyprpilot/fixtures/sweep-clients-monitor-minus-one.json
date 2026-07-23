@@ -7,7 +7,9 @@
     "floating": true,
     "monitor": -1,
     "class": "fixture",
+    "initialClass": "fixture",
     "title": "Unassigned client",
+    "initialTitle": "Unassigned client",
     "pid": 1003
   }
 ]
