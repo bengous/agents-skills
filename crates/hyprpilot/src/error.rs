@@ -3,6 +3,13 @@ use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug)]
+pub struct RestoreFailure {
+    pub what: &'static str,
+    pub expected: String,
+    pub actual: String,
+}
+
+#[derive(Debug)]
 pub enum Error {
     Io {
         context: String,
@@ -34,6 +41,10 @@ pub enum Error {
         hint: String,
     },
     Pointer(String),
+    Guarded {
+        action: Option<Box<Self>>,
+        restore: Vec<RestoreFailure>,
+    },
     Timeout {
         what: String,
         after_ms: u128,
@@ -82,6 +93,24 @@ impl fmt::Display for Error {
                 write!(f, "invalid {what} `{value}` — {hint}")
             }
             Self::Pointer(message) => write!(f, "virtual pointer: {message}"),
+            Self::Guarded { action, restore } => {
+                if let Some(action) = action {
+                    write!(f, "action failed: {action}")?;
+                } else {
+                    write!(f, "action executed but desktop invariant violated")?;
+                }
+                if !restore.is_empty() {
+                    write!(f, "\nrestoration failed:")?;
+                    for failure in restore {
+                        write!(
+                            f,
+                            "\n- {}: expected {}, actual {}",
+                            failure.what, failure.expected, failure.actual
+                        )?;
+                    }
+                }
+                Ok(())
+            }
             Self::Timeout { what, after_ms } => {
                 write!(f, "timed out waiting for {what} after {after_ms}ms")
             }
@@ -93,3 +122,87 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, RestoreFailure};
+
+    #[test]
+    fn guarded_display_reports_action_failure_alone() {
+        let error = Error::Guarded {
+            action: Some(Box::new(Error::Pointer("click failed".to_owned()))),
+            restore: Vec::new(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "action failed: virtual pointer: click failed"
+        );
+    }
+
+    #[test]
+    fn guarded_display_reports_restoration_failure_alone() {
+        let error = Error::Guarded {
+            action: None,
+            restore: vec![RestoreFailure {
+                what: "cursor",
+                expected: "(10, 20)".to_owned(),
+                actual: "(12, 20)".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "action executed but desktop invariant violated\n\
+             restoration failed:\n\
+             - cursor: expected (10, 20), actual (12, 20)"
+        );
+    }
+
+    #[test]
+    fn guarded_display_reports_action_and_restoration_failures_together() {
+        let error = Error::Guarded {
+            action: Some(Box::new(Error::Pointer("scroll failed".to_owned()))),
+            restore: vec![
+                RestoreFailure {
+                    what: "focus",
+                    expected: "address:0xabc".to_owned(),
+                    actual: "address:0xdef".to_owned(),
+                },
+                RestoreFailure {
+                    what: "cursor",
+                    expected: "(10, 20)".to_owned(),
+                    actual: "(14, 25)".to_owned(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "action failed: virtual pointer: scroll failed\n\
+             restoration failed:\n\
+             - focus: expected address:0xabc, actual address:0xdef\n\
+             - cursor: expected (10, 20), actual (14, 25)"
+        );
+    }
+
+    #[test]
+    fn guarded_display_reports_unrestorable_prior_no_focus_state() {
+        let error = Error::Guarded {
+            action: None,
+            restore: vec![RestoreFailure {
+                what: "focus",
+                expected: "no focused window".to_owned(),
+                actual: "address:0xabc; cannot restore prior no-focus state".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "action executed but desktop invariant violated\n\
+             restoration failed:\n\
+             - focus: expected no focused window, actual address:0xabc; \
+             cannot restore prior no-focus state"
+        );
+    }
+}

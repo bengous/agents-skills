@@ -15,6 +15,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 };
 
 use crate::error::Error;
+use crate::guard;
 use crate::hypr;
 use crate::session;
 
@@ -25,7 +26,6 @@ const DOUBLE_CLICK_GAP: Duration = Duration::from_millis(80);
 const DETENT_GAP: Duration = Duration::from_millis(20);
 /// One standard wheel detent in `wl_pointer` continuous-axis units.
 const DETENT_VALUE: f64 = 15.0;
-const WARP_TOLERANCE: i32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MouseButton {
@@ -209,11 +209,6 @@ fn f64_to_u32(value: f64) -> u32 {
     value.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-fn near(actual: (i32, i32), expected: (i32, i32)) -> bool {
-    (actual.0 - expected.0).abs() <= WARP_TOLERANCE
-        && (actual.1 - expected.1).abs() <= WARP_TOLERANCE
-}
-
 pub fn click(
     x: i32,
     y: i32,
@@ -302,40 +297,24 @@ fn detent_plan(dx: i32, dy: i32) -> Result<Vec<(wl_pointer::Axis, f64, i32)>, Er
     Ok(plan)
 }
 
-/// Shared warp envelope: records the user's cursor and focus, warps to the
-/// target, verifies the landing position, runs `act`, then always attempts to
-/// warp back and re-focus — even when `act` fails — before reporting the
-/// primary error. Returns the cursor and focus restoration notes.
 fn at_target(
     gx: i32,
     gy: i32,
     act: impl FnOnce(&mut VirtualPointer) -> Result<(), Error>,
 ) -> Result<(String, String), Error> {
+    let snapshot = guard::snapshot()?;
     let monitors = hypr::monitors()?;
     let layout = hypr::layout_box(&monitors)?;
-    let before_cursor = hypr::cursor_pos()?;
-    let before_active = hypr::active_window()?;
+    let action = (|| {
+        let mut pointer = VirtualPointer::connect(&layout)?;
+        pointer.warp(gx, gy)?;
+        verify_and_act(&mut pointer, gx, gy, act)
+    })();
 
-    let mut pointer = VirtualPointer::connect(&layout)?;
-    pointer.warp(gx, gy)?;
-
-    // From here the cursor has moved: whatever happens next, always attempt
-    // to warp back and re-focus before reporting the primary error.
-    let action = verify_and_act(&mut pointer, gx, gy, act);
-    let warp_back = pointer.warp(before_cursor.0, before_cursor.1);
-    drop(pointer);
-    let focus_note = restore_focus(before_active.map(|w| w.address));
-    action?;
-    warp_back?;
-    let focus_note = focus_note?;
-
-    let restored_cursor = hypr::cursor_pos()?;
-    let cursor_note = if near(restored_cursor, before_cursor) {
-        format!("cursor restored to {restored_cursor:?}")
-    } else {
-        format!("cursor at {restored_cursor:?}, expected {before_cursor:?}")
-    };
-    Ok((cursor_note, focus_note))
+    guard::restore(snapshot, action, |cursor| {
+        let mut pointer = VirtualPointer::connect(&layout)?;
+        pointer.warp(cursor.0, cursor.1)
+    })
 }
 
 fn verify_and_act(
@@ -345,7 +324,7 @@ fn verify_and_act(
     act: impl FnOnce(&mut VirtualPointer) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let warped = hypr::cursor_pos()?;
-    if !near(warped, (gx, gy)) {
+    if !guard::cursor_near(warped, (gx, gy)) {
         return Err(Error::Pointer(format!(
             "warp landed at {warped:?} instead of ({gx}, {gy}) — absolute motion mapping mismatch"
         )));
@@ -353,20 +332,6 @@ fn verify_and_act(
     act(pointer)?;
     thread::sleep(BUTTON_GAP);
     Ok(())
-}
-
-fn restore_focus(before_address: Option<String>) -> Result<String, Error> {
-    let after_address = hypr::active_window()?.map(|w| w.address);
-    if before_address == after_address {
-        return Ok("focus unchanged".to_owned());
-    }
-    match before_address {
-        Some(address) => {
-            hypr::dispatch(&["focuswindow", &format!("address:{address}")])?;
-            Ok(format!("focus restored to {address}"))
-        }
-        None => Ok("no previous focus to restore".to_owned()),
-    }
 }
 
 #[cfg(test)]

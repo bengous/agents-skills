@@ -4,6 +4,7 @@ use std::process::ExitCode;
 mod capture;
 mod cli;
 mod error;
+mod guard;
 mod hypr;
 mod keys;
 mod pointer;
