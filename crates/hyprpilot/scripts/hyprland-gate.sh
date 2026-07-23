@@ -1193,65 +1193,6 @@ scenario_guard_click() (
 		return 1
 	fi
 
-	# Bequille E2E pour HP-04 : le placement garanti arrive dans une slice
-	# ulterieure ; ce deplacement interieur restera alors inoffensif.
-	if ! status_json=$("${HYPRPILOT}" status 2>&1); then
-		fail "setup guard_click: status observe=echec (${status_json}); attendu=JSON de session"
-		return 1
-	fi
-	status_window_re='"window"[[:space:]]*:[[:space:]]*\{[^}]*"address"[[:space:]]*:[[:space:]]*"([^"]+)"'
-	if [[ ! ${status_json} =~ ${status_window_re} ]]; then
-		fail "setup guard_click: adresse observe=absente dans status; attendu=status.window.address"
-		return 1
-	fi
-	window_address=${BASH_REMATCH[1]}
-	if [[ ! ${window_address} =~ ^0x[0-9a-fA-F]+$ ]]; then
-		fail "setup guard_click: adresse observe=${window_address}; attendu=adresse Hyprland 0x..."
-		return 1
-	fi
-
-	if ! monitors_json=$(hyprctl monitors -j 2>&1); then
-		fail "setup guard_click: monitors observes=erreur hyprctl (${monitors_json}); attendu=output hyprpilot"
-		return 1
-	fi
-	monitor_re='"name"[[:space:]]*:[[:space:]]*"hyprpilot"[^}]*"x"[[:space:]]*:[[:space:]]*(-?[0-9]+)[^}]*"y"[[:space:]]*:[[:space:]]*(-?[0-9]+)'
-	if [[ ! ${monitors_json} =~ ${monitor_re} ]]; then
-		fail "setup guard_click: geometrie output observe=absente; attendu=hyprpilot avec x/y entiers"
-		return 1
-	fi
-	out_x=${BASH_REMATCH[1]}
-	out_y=${BASH_REMATCH[2]}
-	target_x=$((out_x + 50))
-	target_y=$((out_y + 50))
-
-	if ! command_output=$(
-		hyprctl dispatch movewindowpixel \
-			"exact ${target_x} ${target_y},address:${window_address}" 2>&1
-	); then
-		fail "setup guard_click: movewindowpixel observe=echec (${command_output}); attendu=ok vers (${target_x}, ${target_y})"
-		return 1
-	fi
-	if [[ ${command_output} != "ok" ]]; then
-		fail "setup guard_click: movewindowpixel observe=${command_output}; attendu=ok vers (${target_x}, ${target_y})"
-		return 1
-	fi
-
-	if ! clients_json=$(hyprctl clients -j 2>&1); then
-		fail "setup guard_click: clients observes=erreur hyprctl (${clients_json}); attendu=fenetre ${window_address}"
-		return 1
-	fi
-	client_re="\"address\"[[:space:]]*:[[:space:]]*\"${window_address}\"[^}]*\"at\"[[:space:]]*:[[:space:]]*\\[[[:space:]]*(-?[0-9]+),[[:space:]]*(-?[0-9]+)"
-	if [[ ! ${clients_json} =~ ${client_re} ]]; then
-		fail "setup guard_click: position observe=absente pour ${window_address}; attendu=(${target_x}, ${target_y})"
-		return 1
-	fi
-	actual_x=${BASH_REMATCH[1]}
-	actual_y=${BASH_REMATCH[2]}
-	if ((actual_x != target_x || actual_y != target_y)); then
-		fail "setup guard_click: position observe=(${actual_x}, ${actual_y}); attendu=(${target_x}, ${target_y})"
-		return 1
-	fi
-
 	# Au spawn froid, zenity GTK vole le focus au map et peut encore emettre
 	# des evenements tardifs. Le guard doit mesurer un bureau stabilise.
 	for ((settle_attempt = 0; settle_attempt < 50; settle_attempt++)); do

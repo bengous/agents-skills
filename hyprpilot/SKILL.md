@@ -55,6 +55,41 @@ hyprpilot teardown                      # ALWAYS, at the end of every session
 Every visual assertion = read the PNG with the Read tool. Never claim a UI
 state you have not seen in a capture.
 
+## Secondary windows (portals, pickers, "Library"-style popups)
+
+When the app opens another window (file chooser, portal, secondary
+browser window), do NOT tear down and restart. Adopt it:
+
+```bash
+hyprpilot windows                                   # JSON list, tracked/active/focused annotated
+hyprpilot target --untracked --match-title "All Files" --wait 5s
+#   … drive the popup (shot / click / type) …
+hyprpilot target --address 0x<main-window>          # switch back; popup stays tracked, parked
+hyprpilot teardown                                  # restores/closes every adopted window
+```
+
+- `target` criteria are exact-match and combined with AND; ambiguity fails
+  with the candidates as a JSON array on the last stderr line — pick by
+  `--address`.
+- Adopted windows default to `--on-teardown restore`; use
+  `--on-teardown close` for windows that should die with the session
+  (e.g. a picker you opened). Switching back to a tracked window forbids
+  `--on-teardown`.
+- Only the active target is visible on the output; the others are parked
+  invisibly. `session resize WxH` adapts the output when a dialog is
+  larger than the current size (no teardown needed; the start warning
+  suggests it).
+
+## When to use `--focus`
+
+Default: stay focusless (`key`/`type`/`click` as-is) — it works on
+winit/Iced/egui and most GTK apps. Reach for `--focus` when a widget
+visibly ignores focusless input: portal file choosers, XUL/Firefox menus,
+Chromium chrome shortcuts (`Ctrl+L`…). It focuses the session window for
+one action, then restores the user's focus and cursor strictly (non-zero
+exit if restoration fails). The physical keyboard reaches the target
+during that window — keep `--focus` actions short.
+
 - `session start` matches windows by **exact** title/class (`hyprctl clients`
   values). Iced/winit windows often have an empty class — match by title.
 - `--size WxH` (default 1600x1000) sets the headless output resolution.
@@ -87,11 +122,20 @@ Caveats:
   down/right; `--dy`/`--dx` both zero is an error.
 - Captures are pixels, not semantics: there is no element tree. Derive click
   coordinates from a fresh `shot` plus the window geometry in `status`.
+- Routing: web/Electron **content** → agent-browser; browser **chrome**,
+  portals and native windows → hyprpilot. A browser's page DOM is better
+  driven semantically; its file-picker dialog is not.
+- Do not run concurrent hyprpilot commands on one session (state file is
+  not a lock). Teardown re-centers the user's cursor (Hyprland output
+  removal); focus is restored, cursor position is not.
 - One session at a time. If `session start` reports an existing session, run
   `hyprpilot teardown` first. A start that failed midway leaves its state on
   purpose — `teardown` cleans it up.
-- `teardown` closes a **spawned** app (`--kill` kills its process group) but
-  returns an **attached** window to its original workspace instead of closing
-  an app the user had opened (`--close` overrides). It then removes the
-  headless output. Leaving outputs behind pollutes the user's monitor
-  layout — always tear down.
+- `teardown` walks every tracked window in reverse adoption order:
+  **attached** windows go back to their origin workspace, position and
+  size (`restore`), `close`-disposition windows are actually closed, a
+  **spawned** primary is closed (`--kill` kills its process group,
+  `--close` closes an attached primary instead). Then the output is
+  removed. Leaving outputs behind pollutes the user's monitor layout —
+  always tear down. A corrupt state aborts without removing anything and
+  tells you how to recover with `hyprpilot windows` + `hyprctl`.
