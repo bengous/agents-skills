@@ -600,6 +600,92 @@ fn output_rect(output: &hypr::Monitor) -> Result<Rect, Error> {
     })
 }
 
+fn effective_output_size(output: &hypr::Monitor) -> Result<[u32; 2], Error> {
+    let dimension = |value: f64, field: &str| {
+        let value = value.to_string().parse::<u32>().map_err(|_| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("output {} reports invalid {field} {value}", output.name),
+        })?;
+        if value == 0 {
+            return Err(Error::Tool {
+                command: "hyprctl monitors".to_owned(),
+                message: format!("output {} reports zero {field}", output.name),
+            });
+        }
+        Ok(value)
+    };
+    Ok([
+        dimension(output.width, "width")?,
+        dimension(output.height, "height")?,
+    ])
+}
+
+fn monitor_rule(output: &hypr::Monitor, width: u32, height: u32) -> Result<String, Error> {
+    let x = exact_layout_integer(output.x, "x", &output.name)?;
+    let y = exact_layout_integer(output.y, "y", &output.name)?;
+    Ok(format!(
+        "{},{width}x{height}@60,{x}x{y},{}",
+        output.name, output.scale
+    ))
+}
+
+fn resize_monitor(output: &hypr::Monitor, width: u32, height: u32) -> Result<(), Error> {
+    let rule = monitor_rule(output, width, height)?;
+    let command = format!("hyprctl keyword monitor {rule}");
+    let result = Command::new("hyprctl")
+        .args(["keyword", "monitor", &rule])
+        .output()
+        .map_err(|source| Error::Io {
+            context: format!("running `{command}`"),
+            source,
+        })?;
+    let stdout = String::from_utf8_lossy(&result.stdout).trim().to_owned();
+    if result.status.success() && stdout == "ok" {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+    Err(Error::Tool {
+        command,
+        message: if stderr.is_empty() { stdout } else { stderr },
+    })
+}
+
+fn resize_has_applied(
+    previous_size: [u32; 2],
+    requested_size: [u32; 2],
+    effective_size: [u32; 2],
+) -> bool {
+    requested_size == previous_size || effective_size != previous_size
+}
+
+fn wait_for_effective_resize(
+    output_name: &str,
+    previous_size: [u32; 2],
+    requested_size: [u32; 2],
+) -> Result<[u32; 2], Error> {
+    let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
+    loop {
+        let output = find_output(output_name)?.ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!("session output {output_name} is missing after resize"),
+        })?;
+        let effective_size = effective_output_size(&output)?;
+        if resize_has_applied(previous_size, requested_size, effective_size) {
+            return Ok(effective_size);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout {
+                what: format!(
+                    "output {output_name} to apply resize {}x{} (last effective size: {}x{})",
+                    requested_size[0], requested_size[1], effective_size[0], effective_size[1]
+                ),
+                after_ms: WINDOW_PLACE_TIMEOUT.as_millis(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn right(rect: Rect) -> i64 {
     i64::from(rect.x) + i64::from(rect.w)
 }
@@ -900,6 +986,10 @@ fn activate_persisted_target(session: &Session) -> Result<(), Error> {
         ])?;
     }
 
+    place_active_target(session)
+}
+
+fn place_active_target(session: &Session) -> Result<(), Error> {
     if matches!(
         place_session_window(
             &session.active_address,
@@ -911,7 +1001,7 @@ fn activate_persisted_target(session: &Session) -> Result<(), Error> {
         let _ = writeln!(
             std::io::stderr(),
             "hyprpilot: warning: window {} is larger than output {}; \
-             use `hyprpilot session resize` when available",
+             use `hyprpilot session resize`",
             session.active_address,
             session.output
         );
@@ -1012,6 +1102,30 @@ pub fn target(
         },
         client.address,
         client.title
+    ))
+}
+
+pub fn resize(size: &str) -> Result<String, Error> {
+    let (width, height) = parse_size(size)?;
+    let requested_size = [width, height];
+    let path = session_path()?;
+    let mut session = load_from(&path)?;
+    let output = find_output(&session.output)?.ok_or_else(|| Error::Tool {
+        command: "hyprctl monitors".to_owned(),
+        message: format!("session output {} is missing", session.output),
+    })?;
+    let previous_size = effective_output_size(&output)?;
+
+    resize_monitor(&output, width, height)?;
+
+    let effective_size = wait_for_effective_resize(&session.output, previous_size, requested_size)?;
+    session.size = effective_size;
+    save_over(&path, &session)?;
+    place_active_target(&session)?;
+
+    Ok(format!(
+        "session resized — output {} is {}x{}, window {} repositioned",
+        session.output, effective_size[0], effective_size[1], session.active_address
     ))
 }
 
@@ -1119,7 +1233,7 @@ pub fn start(
         let _ = writeln!(
             std::io::stderr(),
             "hyprpilot: warning: window {} is larger than output {OUTPUT_NAME}; \
-             use `hyprpilot session resize` when available",
+             use `hyprpilot session resize`",
             window.address
         );
     }
@@ -1429,10 +1543,10 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 mod tests {
     use super::{
         Criteria, Disposition, Placement, Rect, Resolution, Session, TargetLookup, TargetMode,
-        TeardownSession, TrackedWindow, WindowAction, ambiguous_error,
-        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, parse_size,
-        persist_target_before_activation, place, resolve, save_new_to, save_over,
-        target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
+        TeardownSession, TrackedWindow, WindowAction, ambiguous_error, effective_output_size,
+        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, monitor_rule, parse_size,
+        persist_target_before_activation, place, resize_has_applied, resolve, save_new_to,
+        save_over, target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
         workspace_selector,
     };
     use crate::error::Error;
@@ -1748,6 +1862,30 @@ mod tests {
         assert!(parse_size("1600").is_err());
         assert!(parse_size("0x100").is_err());
         assert!(parse_size("axb").is_err());
+    }
+
+    #[test]
+    fn monitor_rule_preserves_position_and_scale() -> Result<(), Box<dyn StdError>> {
+        let monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
+
+        assert_eq!(
+            monitor_rule(&monitors[1], 1200, 800)?,
+            "headless-ci,1200x800@60,5120x0,1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn effective_output_size_uses_compositor_dimensions() -> Result<(), Box<dyn StdError>> {
+        let monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
+
+        assert_eq!(effective_output_size(&monitors[1])?, [1600, 1000]);
+        Ok(())
+    }
+
+    #[test]
+    fn resize_rejects_stale_pre_keyword_dimensions() {
+        assert!(!resize_has_applied([300, 200], [1200, 800], [300, 200]));
     }
 
     #[test]

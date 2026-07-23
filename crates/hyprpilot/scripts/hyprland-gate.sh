@@ -295,6 +295,70 @@ read_monitor_origin() {
 	printf -v "${y_destination}" '%s' "${BASH_REMATCH[2]}"
 }
 
+read_output_geometry() {
+	local x_destination=$1
+	local y_destination=$2
+	local width_destination=$3
+	local height_destination=$4
+	local label=$5
+	local raw values x y width height extra
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observe=erreur hyprctl (${raw}); attendu=output hyprpilot"
+		return 1
+	fi
+	if ! values=$(
+		jq -er '
+			[.[] | select(.name == "hyprpilot")]
+			| select(length == 1)
+			| .[0]
+			| [.x, .y, .width, .height]
+			| select(all(.[]; type == "number" and floor == .))
+			| @tsv
+		' <<<"${raw}"
+	); then
+		fail "${label}: geometrie observe=absente ou invalide; attendu=x/y/width/height entiers"
+		return 1
+	fi
+	IFS=$'\t' read -r x y width height extra <<<"${values}"
+	if [[ -n ${extra:-} || ! ${x} =~ ^-?[0-9]+$ || ! ${y} =~ ^-?[0-9]+$ ||
+		! ${width} =~ ^[1-9][0-9]*$ || ! ${height} =~ ^[1-9][0-9]*$ ]]; then
+		fail "${label}: geometrie observe=${values}; attendu=x/y entiers et taille positive"
+		return 1
+	fi
+	printf -v "${x_destination}" '%s' "${x}"
+	printf -v "${y_destination}" '%s' "${y}"
+	printf -v "${width_destination}" '%s' "${width}"
+	printf -v "${height_destination}" '%s' "${height}"
+}
+
+read_png_size() {
+	local path=$1
+	local width_destination=$2
+	local height_destination=$3
+	local label=$4
+	local width height
+	local -a bytes=()
+
+	if [[ ! -s ${path} ]]; then
+		fail "${label}: PNG observe=absent ou vide (${path}); attendu=image non vide"
+		return 1
+	fi
+	read -r -a bytes < <(od -An -t u1 -j 16 -N 8 -- "${path}")
+	if ((${#bytes[@]} != 8)); then
+		fail "${label}: IHDR observe=illisible (${path}); attendu=8 octets de dimensions PNG"
+		return 1
+	fi
+	width=$(((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]))
+	height=$(((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]))
+	if ((width <= 0 || height <= 0)); then
+		fail "${label}: taille observe=${width}x${height}; attendu=dimensions PNG positives"
+		return 1
+	fi
+	printf -v "${width_destination}" '%s' "${width}"
+	printf -v "${height_destination}" '%s' "${height}"
+}
+
 read_layout_right_bound() {
 	local destination=$1
 	local label=$2
@@ -1399,6 +1463,184 @@ scenario_focus_type() (
 		return 1
 	fi
 	assert_output_absent "teardown focus_type"
+)
+
+scenario_resize() (
+	local cleanup_failed=0
+	local scenario_tmp="" zenity_pid="" window_address=""
+	local title="hyprpilot-e2e-resize-$$"
+	local command_output cleanup_output shot_output status_json addresses_json
+	local origin_x origin_y origin_width origin_height origin_workspace
+	local origin_floating origin_monitor
+	local window_x window_y window_width window_height window_workspace
+	local window_floating window_monitor
+	local output_x output_y output_width output_height
+	local png_width png_height attempt stable_reads=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_resize() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+			if [[ ${cleanup_output} != *"no active session"* ]]; then
+				fail "nettoyage resize: teardown observe=echec (${cleanup_output}); attendu=succes ou session deja demontee"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${zenity_pid} ]] && kill -0 "${zenity_pid}" 2>/dev/null; then
+			kill "${zenity_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${zenity_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage resize"; then
+			cleanup_failed=1
+		fi
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-resize.* ]]; then
+				fail "nettoyage resize: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage resize: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_resize EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "resize: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-resize.XXXXXX"); then
+		fail "resize: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 1 "settle spawn resize" || return 1
+	window_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+
+	read_stable_client_state "${window_address}" origin_x origin_y origin_width origin_height \
+		origin_workspace origin_floating origin_monitor "settle origine resize" || return 1
+	if [[ ${origin_floating} != true ]]; then
+		if ! command_output=$(hyprctl dispatch togglefloating "address:${window_address}" 2>&1) ||
+			[[ ${command_output} != ok ]]; then
+			fail "setup resize: togglefloating observe=${command_output}; attendu=ok"
+			return 1
+		fi
+		read_stable_client_state "${window_address}" origin_x origin_y origin_width origin_height \
+			origin_workspace origin_floating origin_monitor "settle floating resize" || return 1
+	fi
+	if [[ ${origin_floating} != true ]]; then
+		fail "setup resize: floating observe=${origin_floating}; attendu=true"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" --size 300x200 2>&1
+	); then
+		fail "session start resize observe=echec (${command_output}); attendu=succes oversized"
+		return 1
+	fi
+	if [[ ${command_output} != *"larger than output"* ]]; then
+		fail "session start resize avertissement observe=${command_output}; attendu=warning oversized"
+		return 1
+	fi
+	read_output_geometry output_x output_y output_width output_height \
+		"apres session start resize" || return 1
+	if ((output_width != 300 || output_height != 200)); then
+		fail "session start resize output observe=${output_width}x${output_height}; attendu=300x200"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" shot resize-clamped --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot oversized resize observe=echec (${shot_output}); attendu=capture clamp reussie"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" session resize 1200x800 2>&1); then
+		fail "session resize observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		read_output_geometry output_x output_y output_width output_height \
+			"settle output resize" || return 1
+		if ((output_width == 1200 && output_height == 800)); then
+			((stable_reads += 1))
+			if ((stable_reads == 2)); then
+				break
+			fi
+		else
+			stable_reads=0
+		fi
+		sleep 0.1
+	done
+	if ((stable_reads != 2)); then
+		fail "settle output resize observe=${output_width}x${output_height}; attendu=1200x800 stable"
+		return 1
+	fi
+
+	if ! status_json=$("${HYPRPILOT}" status 2>&1); then
+		fail "status resize observe=echec (${status_json}); attendu=JSON sans mismatch"
+		return 1
+	fi
+	if ! jq -e '
+		.configured_size == [1200, 800]
+		and .effective_size == [1200, 800]
+		and .size_mismatch == false
+	' <<<"${status_json}" >/dev/null; then
+		fail "status resize observe=${status_json}; attendu=configured/effective 1200x800 sans mismatch"
+		return 1
+	fi
+
+	read_stable_client_state "${window_address}" window_x window_y window_width window_height \
+		window_workspace window_floating window_monitor "settle fenetre resize" || return 1
+	if [[ ${window_workspace} != hyprpilot ]]; then
+		fail "placement resize workspace observe=${window_workspace}; attendu=hyprpilot"
+		return 1
+	fi
+	if ((window_x < output_x || window_y < output_y ||
+		window_x + window_width > output_x + output_width ||
+		window_y + window_height > output_y + output_height)); then
+		fail "placement resize observe=fenetre (${window_x}, ${window_y}) ${window_width}x${window_height}, output (${output_x}, ${output_y}) ${output_width}x${output_height}; attendu=fenetre entierement contenue"
+		return 1
+	fi
+
+	if ! shot_output=$(
+		"${HYPRPILOT}" shot resize-full-window --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot apres resize observe=echec (${shot_output}); attendu=capture complete"
+		return 1
+	fi
+	read_png_size "${scenario_tmp}/resize-full-window.png" png_width png_height \
+		"shot apres resize" || return 1
+	if ((png_width != window_width || png_height != window_height)); then
+		fail "shot apres resize taille observe=${png_width}x${png_height}; attendu=fenetre ${window_width}x${window_height}"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown resize observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_client_state_equals "${window_address}" "${origin_x}" "${origin_y}" "${origin_width}" \
+		"${origin_height}" "${origin_workspace}" "${origin_floating}" "${origin_monitor}" \
+		"restauration resize" || return 1
+	assert_output_absent "teardown resize" || return 1
+
+	kill "${zenity_pid}" 2>/dev/null || true
+	wait "${zenity_pid}" 2>/dev/null || true
+	zenity_pid=""
 )
 
 scenario_teardown_restore() (

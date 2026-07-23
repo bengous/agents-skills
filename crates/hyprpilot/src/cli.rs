@@ -181,6 +181,12 @@ enum SessionCommand {
         #[arg(long, default_value = "1600x1000")]
         size: String,
     },
+    /// Resize the session output without recreating the session
+    Resize {
+        /// New headless output resolution
+        #[arg(value_name = "WxH")]
+        size: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -228,6 +234,7 @@ pub fn run() -> Result<String, Error> {
             match_class.as_deref(),
             &size,
         ),
+        Command::Session(SessionCommand::Resize { size }) => session::resize(&size),
         Command::Target(TargetArgs {
             address,
             match_title,
@@ -409,6 +416,7 @@ fn status() -> Result<String, Error> {
     let effective_size = output
         .as_ref()
         .map(|monitor| [monitor.width, monitor.height]);
+    let size_mismatch = effective_size.map(|size| sizes_mismatch(state.size, size));
 
     let value = serde_json::json!({
         "schema_version": state.schema_version,
@@ -417,6 +425,7 @@ fn status() -> Result<String, Error> {
         "parked_windows": parked_windows,
         "configured_size": state.size,
         "effective_size": effective_size,
+        "size_mismatch": size_mismatch,
         "window": {
             "address": window.address,
             "title": window.title,
@@ -450,6 +459,15 @@ fn status() -> Result<String, Error> {
         context: "serializing status".to_owned(),
         source,
     })
+}
+
+fn sizes_mismatch(configured: [u32; 2], effective: [f64; 2]) -> bool {
+    effective
+        .into_iter()
+        .zip(configured)
+        .any(|(actual, expected)| {
+            actual.total_cmp(&f64::from(expected)) != std::cmp::Ordering::Equal
+        })
 }
 
 fn on_path(binary: &str) -> bool {
@@ -548,7 +566,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, WindowSession, serialize_windows};
+    use super::{Cli, Command, SessionCommand, WindowSession, serialize_windows, sizes_mismatch};
     use crate::hypr::Client;
     use crate::session::{Disposition, Session, TrackedWindow};
 
@@ -600,6 +618,24 @@ mod tests {
                 command: Command::Target(_)
             })
         ));
+    }
+
+    #[test]
+    fn session_resize_parses_size_with_existing_parser() -> Result<(), Box<dyn StdError>> {
+        let Cli {
+            command: Command::Session(SessionCommand::Resize { size }),
+        } = Cli::try_parse_from(["hyprpilot", "session", "resize", "1200x800"])?
+        else {
+            return Err("session resize did not parse".into());
+        };
+
+        assert_eq!(crate::session::parse_size(&size)?, (1200, 800));
+        Ok(())
+    }
+
+    #[test]
+    fn status_detects_configured_effective_size_mismatch() {
+        assert!(sizes_mismatch([1600, 1000], [1200.0, 800.0]));
     }
 
     #[test]
