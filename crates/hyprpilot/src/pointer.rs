@@ -346,6 +346,8 @@ mod tests {
             workspace: hypr::WorkspaceRef {
                 name: "special:pilot".to_owned(),
             },
+            floating: false,
+            monitor: 0,
             class: String::new(),
             title: "App".to_owned(),
             pid: 1,

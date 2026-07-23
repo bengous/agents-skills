@@ -191,10 +191,76 @@ pub fn run() -> Result<String, Error> {
             let timeout = capture::parse_timeout(&timeout)?;
             capture::wait(&mode, timeout)
         }
-        Command::Status => session::status(),
+        Command::Status => status(),
         Command::Doctor => doctor(),
         Command::Teardown { kill, close } => session::teardown(kill, close),
     }
+}
+
+fn status() -> Result<String, Error> {
+    let state = session::load()?;
+    let clients = hypr::clients()?;
+    let window = clients
+        .iter()
+        .find(|client| client.address == state.active_address)
+        .ok_or_else(|| Error::WindowGone(state.active_address.clone()))?;
+    let output = session::find_output(&state.output)?;
+    let active = hypr::active_window()?;
+    let parked_windows = state
+        .windows
+        .iter()
+        .filter(|tracked| {
+            clients.iter().any(|client| {
+                client.address == tracked.address
+                    && client.workspace.name == state.parking_workspace
+            })
+        })
+        .map(|tracked| tracked.address.as_str())
+        .collect::<Vec<_>>();
+    let effective_size = output
+        .as_ref()
+        .map(|monitor| [monitor.width, monitor.height]);
+
+    let value = serde_json::json!({
+        "schema_version": state.schema_version,
+        "windows": &state.windows,
+        "active_address": &state.active_address,
+        "parked_windows": parked_windows,
+        "configured_size": state.size,
+        "effective_size": effective_size,
+        "window": {
+            "address": window.address,
+            "title": window.title,
+            "class": window.class,
+            "at": window.at,
+            "size": window.size,
+            "workspace": window.workspace.name,
+            "floating": window.floating,
+            "monitor": window.monitor,
+            "pid": window.pid,
+        },
+        "output": output.map(|monitor| serde_json::json!({
+            "id": monitor.id,
+            "name": monitor.name,
+            "x": monitor.x,
+            "y": monitor.y,
+            "width": monitor.width,
+            "height": monitor.height,
+            "active_workspace": monitor.active_workspace.name,
+            "special_workspace": monitor.special_workspace,
+        })),
+        "user_active_window": active.map(|window| serde_json::json!({
+            "address": window.address,
+            "title": window.title,
+        })),
+        "initial_user_focus": &state.initial_user_focus,
+        "attached": state.spawned_pid.is_none(),
+        "spawned_pid": state.spawned_pid,
+    });
+    serde_json::to_string_pretty(&value).map_err(|source| Error::Json {
+        context: "serializing status".to_owned(),
+        source,
+    })
 }
 
 fn on_path(binary: &str) -> bool {

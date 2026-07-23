@@ -1,4 +1,4 @@
-//! Session state: one driven window parked on a dedicated headless output.
+//! Session state: tracked windows driven on a dedicated headless output.
 //! State lives in `$XDG_RUNTIME_DIR/hyprpilot/session.json`; creating it with
 //! `create_new` is the single-session lock, and it is written **before** any
 //! compositor side effect so a failed start stays recoverable via `teardown`.
@@ -18,34 +18,81 @@ use crate::hypr;
 
 pub const OUTPUT_NAME: &str = "hyprpilot";
 pub const WORKSPACE_NAME: &str = "hyprpilot";
+const PARKING_WORKSPACE_NAME: &str = "special:hyprpilot-parked";
+const SCHEMA_VERSION: u32 = 2;
 const WINDOW_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 const WINDOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
-    pub window_address: String,
-    pub window_title: String,
+    pub schema_version: u32,
     pub output: String,
     /// False when an output with our name already existed and was reused —
     /// teardown then leaves it in place.
     pub output_created: bool,
-    pub workspace: String,
-    /// For attached (not spawned) windows: the workspace to move the window
-    /// back to on teardown instead of closing an app we do not own.
-    pub origin_workspace: Option<String>,
+    pub active_workspace: String,
+    pub parking_workspace: String,
     pub size: [u32; 2],
     /// None when attached to a pre-existing window.
     pub spawned_pid: Option<u32>,
     /// Address of the user's focused window when the session started, so
     /// `status` can assert the focus was left untouched.
     pub initial_user_focus: Option<String>,
+    pub primary_address: String,
+    pub active_address: String,
+    pub windows: Vec<TrackedWindow>,
 }
 
-impl Session {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TrackedWindow {
+    pub address: String,
+    pub title_at_adoption: String,
+    pub origin_workspace: String,
+    pub origin_at: [i32; 2],
+    pub origin_size: [i32; 2],
+    pub origin_floating: bool,
+    pub teardown: Disposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Disposition {
+    Restore,
+    Close,
+}
+
+#[derive(Deserialize)]
+struct SessionVersion {
+    schema_version: u32,
+}
+
+#[derive(Deserialize)]
+struct LegacySession {
+    window_address: String,
+    output: String,
+    output_created: bool,
+    origin_workspace: Option<String>,
+    spawned_pid: Option<u32>,
+}
+
+struct TeardownSession {
+    window_address: String,
+    output: String,
+    output_created: bool,
+    origin_workspace: Option<String>,
+    spawned_pid: Option<u32>,
+}
+
+impl TeardownSession {
     fn attached(&self) -> bool {
         self.spawned_pid.is_none()
     }
+}
+
+pub struct CurrentSession {
+    pub output: String,
+    pub workspace: String,
 }
 
 pub fn runtime_dir() -> Result<PathBuf, Error> {
@@ -57,23 +104,75 @@ pub fn session_path() -> Result<PathBuf, Error> {
     Ok(runtime_dir()?.join("session.json"))
 }
 
-fn load_from(path: &Path) -> Result<Session, Error> {
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NoSession);
-        }
-        Err(source) => {
-            return Err(Error::Io {
-                context: format!("reading session file {}", path.display()),
-                source,
-            });
-        }
-    };
-    serde_json::from_str(&raw).map_err(|source| Error::Json {
+fn read_from(path: &Path) -> Result<String, Error> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok(raw),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Err(Error::NoSession),
+        Err(source) => Err(Error::Io {
+            context: format!("reading session file {}", path.display()),
+            source,
+        }),
+    }
+}
+
+fn parse_json<'a, T: Deserialize<'a>>(raw: &'a str, path: &Path) -> Result<T, Error> {
+    serde_json::from_str(raw).map_err(|source| Error::Json {
         context: format!("parsing session file {}", path.display()),
         source,
     })
+}
+
+fn parse_json_value<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    path: &Path,
+) -> Result<T, Error> {
+    serde_json::from_value(value).map_err(|source| Error::Json {
+        context: format!("parsing session file {}", path.display()),
+        source,
+    })
+}
+
+fn load_from(path: &Path) -> Result<Session, Error> {
+    let raw = read_from(path)?;
+    let version: SessionVersion = parse_json(&raw, path)?;
+    if version.schema_version != SCHEMA_VERSION {
+        return Err(Error::UnsupportedSessionVersion(version.schema_version));
+    }
+    parse_json(&raw, path)
+}
+
+// Legacy parsing stays separate so no command except teardown can accept the
+// old, unversioned format.
+fn load_for_teardown_from(path: &Path) -> Result<TeardownSession, Error> {
+    let raw = read_from(path)?;
+    let value: serde_json::Value = parse_json(&raw, path)?;
+    if value.get("schema_version").is_some() {
+        let version: SessionVersion = parse_json_value(value.clone(), path)?;
+        if version.schema_version != SCHEMA_VERSION {
+            return Err(Error::UnsupportedSessionVersion(version.schema_version));
+        }
+        let session: Session = parse_json_value(value, path)?;
+        let primary = session
+            .windows
+            .iter()
+            .find(|window| window.address == session.primary_address);
+        Ok(TeardownSession {
+            window_address: session.primary_address,
+            output: session.output,
+            output_created: session.output_created,
+            origin_workspace: primary.map(|window| window.origin_workspace.clone()),
+            spawned_pid: session.spawned_pid,
+        })
+    } else {
+        let legacy: LegacySession = parse_json_value(value, path)?;
+        Ok(TeardownSession {
+            window_address: legacy.window_address,
+            output: legacy.output,
+            output_created: legacy.output_created,
+            origin_workspace: legacy.origin_workspace,
+            spawned_pid: legacy.spawned_pid,
+        })
+    }
 }
 
 fn serialize(session: &Session) -> Result<String, Error> {
@@ -112,22 +211,73 @@ fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
     file.write_all(raw.as_bytes()).map_err(|source| Error::Io {
         context: format!("writing session file {}", path.display()),
         source,
+    })?;
+    file.sync_all().map_err(|source| Error::Io {
+        context: format!("syncing session file {}", path.display()),
+        source,
     })
+}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "required session mutation API"))]
+pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
+    let raw = serialize(session)?;
+    let file_name = path.file_name().ok_or_else(|| Error::Invalid {
+        what: "session path",
+        value: path.display().to_string(),
+        hint: "expected a file name".to_owned(),
+    })?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp_path = path.with_file_name(tmp_name);
+
+    let write_result = (|| {
+        let mut file = fs::File::create(&tmp_path).map_err(|source| Error::Io {
+            context: format!("creating temporary session file {}", tmp_path.display()),
+            source,
+        })?;
+        file.write_all(raw.as_bytes()).map_err(|source| Error::Io {
+            context: format!("writing temporary session file {}", tmp_path.display()),
+            source,
+        })?;
+        file.sync_all().map_err(|source| Error::Io {
+            context: format!("syncing temporary session file {}", tmp_path.display()),
+            source,
+        })?;
+        fs::rename(&tmp_path, path).map_err(|source| Error::Io {
+            context: format!(
+                "replacing session file {} with {}",
+                path.display(),
+                tmp_path.display()
+            ),
+            source,
+        })
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(tmp_path);
+    }
+    write_result
 }
 
 pub fn load() -> Result<Session, Error> {
     load_from(&session_path()?)
 }
 
-/// The session's window as Hyprland currently sees it.
-pub fn current_window() -> Result<(Session, hypr::Client), Error> {
+/// The session's active window as Hyprland currently sees it.
+pub fn current_window() -> Result<(CurrentSession, hypr::Client), Error> {
     let session = load()?;
     let clients = hypr::clients()?;
     let window = clients
         .into_iter()
-        .find(|c| c.address == session.window_address)
-        .ok_or_else(|| Error::WindowGone(session.window_address.clone()))?;
-    Ok((session, window))
+        .find(|c| c.address == session.active_address)
+        .ok_or_else(|| Error::WindowGone(session.active_address.clone()))?;
+    Ok((
+        CurrentSession {
+            output: session.output,
+            workspace: session.active_workspace,
+        },
+        window,
+    ))
 }
 
 pub fn find_output(name: &str) -> Result<Option<hypr::Monitor>, Error> {
@@ -212,6 +362,10 @@ fn wait_for_window(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "start keeps persistence before compositor effects visible"
+)]
 pub fn start(
     app: Option<&str>,
     match_title: Option<&str>,
@@ -261,16 +415,27 @@ pub fn start(
     };
 
     let output_created = find_output(OUTPUT_NAME)?.is_none();
+    let teardown = spawned_pid.map_or(Disposition::Restore, |_| Disposition::Close);
     let session = Session {
-        window_address: window.address.clone(),
-        window_title: window.title.clone(),
+        schema_version: SCHEMA_VERSION,
         output: OUTPUT_NAME.to_owned(),
         output_created,
-        workspace: WORKSPACE_NAME.to_owned(),
-        origin_workspace: spawned_pid.is_none().then(|| window.workspace.name.clone()),
+        active_workspace: WORKSPACE_NAME.to_owned(),
+        parking_workspace: PARKING_WORKSPACE_NAME.to_owned(),
         size: [width, height],
         spawned_pid,
         initial_user_focus,
+        primary_address: window.address.clone(),
+        active_address: window.address.clone(),
+        windows: vec![TrackedWindow {
+            address: window.address.clone(),
+            title_at_adoption: window.title.clone(),
+            origin_workspace: window.workspace.name.clone(),
+            origin_at: window.at,
+            origin_size: window.size,
+            origin_floating: window.floating,
+            teardown,
+        }],
     };
     // Lock + persist before touching the compositor: if anything below
     // fails, `hyprpilot teardown` can still clean up from this state.
@@ -328,43 +493,6 @@ pub fn start(
     ))
 }
 
-pub fn status() -> Result<String, Error> {
-    let (session, window) = current_window()?;
-    let output = find_output(&session.output)?;
-    let active = hypr::active_window()?;
-
-    let value = serde_json::json!({
-        "window": {
-            "address": window.address,
-            "title": window.title,
-            "class": window.class,
-            "at": window.at,
-            "size": window.size,
-            "workspace": window.workspace.name,
-            "pid": window.pid,
-        },
-        "output": output.map(|m| serde_json::json!({
-            "name": m.name,
-            "x": m.x,
-            "y": m.y,
-            "width": m.width,
-            "height": m.height,
-            "active_workspace": m.active_workspace.name,
-        })),
-        "user_active_window": active.map(|w| serde_json::json!({
-            "address": w.address,
-            "title": w.title,
-        })),
-        "initial_user_focus": session.initial_user_focus,
-        "attached": session.attached(),
-        "spawned_pid": session.spawned_pid,
-    });
-    serde_json::to_string_pretty(&value).map_err(|source| Error::Json {
-        context: "serializing status".to_owned(),
-        source,
-    })
-}
-
 fn kill_process_group(pid: u32) -> Result<(), Error> {
     let output = Command::new("kill")
         .args(["--", &format!("-{pid}")])
@@ -408,7 +536,7 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
     let path = session_path()?;
     // Only an unparseable session file falls back to best-effort cleanup by
     // the well-known output name; I/O errors propagate untouched.
-    let session = match load_from(&path) {
+    let session = match load_for_teardown_from(&path) {
         Ok(session) => Some(session),
         Err(Error::Json { .. }) => None,
         // No session but a stray output bearing our name: sweep it anyway
@@ -493,22 +621,35 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, load_from, parse_size, save_new_to, workspace_selector};
+    use super::{
+        Disposition, Session, TrackedWindow, load_for_teardown_from, load_from, parse_size,
+        save_new_to, save_over, workspace_selector,
+    };
     use crate::error::Error;
     use crate::hypr::WorkspaceRef;
     use std::error::Error as StdError;
 
     fn sample_session() -> Session {
         Session {
-            window_address: "0xabc".to_owned(),
-            window_title: "App".to_owned(),
+            schema_version: 2,
             output: "hyprpilot".to_owned(),
             output_created: true,
-            workspace: "hyprpilot".to_owned(),
-            origin_workspace: Some("3".to_owned()),
+            active_workspace: "hyprpilot".to_owned(),
+            parking_workspace: "special:hyprpilot-parked".to_owned(),
             size: [1600, 1000],
             spawned_pid: Some(42),
             initial_user_focus: Some("0xdef".to_owned()),
+            primary_address: "0xabc".to_owned(),
+            active_address: "0xabc".to_owned(),
+            windows: vec![TrackedWindow {
+                address: "0xabc".to_owned(),
+                title_at_adoption: "App".to_owned(),
+                origin_workspace: "3".to_owned(),
+                origin_at: [120, 80],
+                origin_size: [900, 600],
+                origin_floating: true,
+                teardown: Disposition::Close,
+            }],
         }
     }
 
@@ -539,12 +680,37 @@ mod tests {
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
         let loaded = load_from(&path)?;
-        assert_eq!(loaded.window_address, "0xabc");
+        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.primary_address, "0xabc");
+        assert_eq!(loaded.active_address, "0xabc");
         assert_eq!(loaded.size, [1600, 1000]);
         assert_eq!(loaded.spawned_pid, Some(42));
-        assert_eq!(loaded.origin_workspace.as_deref(), Some("3"));
+        assert_eq!(loaded.windows[0].origin_workspace, "3");
+        assert_eq!(loaded.windows[0].origin_at, [120, 80]);
+        assert_eq!(loaded.windows[0].origin_size, [900, 600]);
+        assert!(loaded.windows[0].origin_floating);
+        assert_eq!(loaded.windows[0].teardown, Disposition::Close);
         assert_eq!(loaded.initial_user_focus.as_deref(), Some("0xdef"));
         assert!(loaded.output_created);
+        Ok(())
+    }
+
+    #[test]
+    fn session_overwrite_replaces_atomically() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        save_new_to(&path, &sample_session())?;
+        let mut updated = sample_session();
+        updated.active_address = "0xdef".to_owned();
+
+        save_over(&path, &updated)?;
+
+        assert_eq!(load_from(&path)?.active_address, "0xdef");
+        assert!(
+            !dir.path()
+                .join(format!("session.json.{}.tmp", std::process::id()))
+                .exists()
+        );
         Ok(())
     }
 
@@ -555,6 +721,57 @@ mod tests {
         save_new_to(&path, &sample_session())?;
         let second = save_new_to(&path, &sample_session());
         assert!(matches!(second, Err(Error::SessionExists(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_session_is_only_accepted_for_teardown() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "window_address": "0xabc",
+                "window_title": "App",
+                "output": "hyprpilot",
+                "output_created": true,
+                "workspace": "hyprpilot",
+                "origin_workspace": "3",
+                "size": [1600, 1000],
+                "spawned_pid": null,
+                "initial_user_focus": "0xdef"
+            }))?,
+        )?;
+
+        assert!(matches!(load_from(&path), Err(Error::Json { .. })));
+        let legacy = load_for_teardown_from(&path)?;
+        assert_eq!(legacy.window_address, "0xabc");
+        assert_eq!(legacy.origin_workspace.as_deref(), Some("3"));
+        assert!(legacy.attached());
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_session_version_is_rejected_explicitly() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut value = serde_json::to_value(sample_session())?;
+        value["schema_version"] = serde_json::json!(3);
+        std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+
+        let Err(error) = load_from(&path) else {
+            return Err("unknown schema was accepted".into());
+        };
+        assert!(matches!(error, Error::UnsupportedSessionVersion(3)));
+        assert!(
+            error
+                .to_string()
+                .contains("use a compatible hyprpilot version")
+        );
+        assert!(matches!(
+            load_for_teardown_from(&path),
+            Err(Error::UnsupportedSessionVersion(3))
+        ));
         Ok(())
     }
 

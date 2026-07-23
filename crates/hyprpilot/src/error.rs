@@ -31,6 +31,7 @@ pub enum Error {
     Env(&'static str),
     NoSession,
     SessionExists(PathBuf),
+    UnsupportedSessionVersion(u32),
     WindowNotFound(String),
     WindowGone(String),
     UnmappedChar(char),
@@ -75,6 +76,11 @@ impl fmt::Display for Error {
                 f,
                 "a session is already active ({}) — run `hyprpilot teardown` first",
                 path.display()
+            ),
+            Self::UnsupportedSessionVersion(version) => write!(
+                f,
+                "session schema version {version} is unsupported (expected 2) — use a compatible \
+                 hyprpilot version to run teardown"
             ),
             Self::WindowNotFound(criteria) => write!(f, "no window matches {criteria}"),
             Self::WindowGone(address) => write!(

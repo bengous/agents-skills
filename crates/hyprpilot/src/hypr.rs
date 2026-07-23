@@ -17,6 +17,8 @@ pub struct Client {
     pub at: [i32; 2],
     pub size: [i32; 2],
     pub workspace: WorkspaceRef,
+    pub floating: bool,
+    pub monitor: i64,
     pub class: String,
     pub title: String,
     pub pid: i32,
@@ -25,6 +27,7 @@ pub struct Client {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Monitor {
+    pub id: i64,
     pub name: String,
     pub width: f64,
     pub height: f64,
@@ -33,6 +36,15 @@ pub struct Monitor {
     pub scale: f64,
     pub transform: u8,
     pub active_workspace: WorkspaceRef,
+    #[serde(deserialize_with = "deserialize_workspace_name")]
+    pub special_workspace: String,
+}
+
+fn deserialize_workspace_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    WorkspaceRef::deserialize(deserializer).map(|workspace| workspace.name)
 }
 
 impl Monitor {
@@ -246,6 +258,8 @@ mod tests {
         assert_eq!(proto.size, [1596, 970]);
         assert_eq!(proto.class, "");
         assert_eq!(proto.workspace.name, "proto");
+        assert!(!proto.floating);
+        assert_eq!(proto.monitor, 1);
         Ok(())
     }
 
@@ -253,8 +267,10 @@ mod tests {
     fn parses_real_monitors_fixture_and_layout_box() -> Result<(), Box<dyn Error>> {
         let monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
         assert_eq!(monitors.len(), 2, "fixture should hold two monitors");
+        assert_eq!(monitors[1].id, 1);
         assert_eq!(monitors[1].name, "headless-ci");
         assert_eq!(monitors[1].active_workspace.name, "proto");
+        assert_eq!(monitors[1].special_workspace, "");
 
         let layout = layout_box(&monitors)?;
         assert_eq!(
@@ -315,6 +331,8 @@ mod tests {
             "at": clients[0].at,
             "size": clients[0].size,
             "workspace": {"id": 1, "name": "1"},
+            "floating": clients[0].floating,
+            "monitor": clients[0].monitor,
             "class": clients[0].class,
             "title": clients[0].title,
             "pid": clients[0].pid,

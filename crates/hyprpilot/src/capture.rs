@@ -311,7 +311,8 @@ mod tests {
         let json = format!(
             r#"{{"id": 1, "name": "headless-ci", "width": {width}, "height": {height},
                 "x": {x}, "y": {y}, "scale": 1.0, "transform": 0, "focused": false,
-                "activeWorkspace": {{"id": -1, "name": "proto"}}, "disabled": false}}"#
+                "activeWorkspace": {{"id": -1, "name": "proto"}},
+                "specialWorkspace": {{"id": 0, "name": ""}}, "disabled": false}}"#
         );
         Ok(serde_json::from_str(&json)?)
     }
