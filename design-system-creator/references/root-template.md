@@ -19,25 +19,25 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      ---------------------------------------- */
 
   /* Main background (most present on the site) */
-  --color-bg:            /* FILL */;  /* e.g.: #1C1A17 (dark) or #F5F0E8 (light) */
+  --color-bg:              /* FILL */;  /* e.g.: #1C1A17 (dark) or #F5F0E8 (light) */
 
   /* Elevated surface (cards, modals, raised blocks) */
   --color-surface:         /* FILL */;  /* e.g.: #252320 */
 
   /* Borders and separators */
-  --color-border:         /* FILL */;  /* e.g.: #3A3835 */
+  --color-border:          /* FILL */;  /* e.g.: #3A3835 */
 
   /* Main text */
-  --color-text:           /* FILL */;  /* e.g.: #F0EBE3 (on dark bg) or #1C1A17 (on light bg) */
+  --color-text:            /* FILL */;  /* e.g.: #F0EBE3 (on dark bg) or #1C1A17 (on light bg) */
 
   /* Secondary / muted text */
   --color-text-muted:      /* FILL */;  /* e.g.: #8A8580 */
 
   /* Alternating background (sections alternating with main bg) */
-  --color-bg-alt:        /* FILL */;  /* e.g.: #F5F0E8 if main bg is dark */
+  --color-bg-alt:          /* FILL */;  /* e.g.: #F5F0E8 if main bg is dark */
 
   /* Text on alternating background (if different from main text) */
-  --color-text-alt:       /* FILL */;  /* e.g.: #1C1A17 if bg-alt is light */
+  --color-text-alt:        /* FILL */;  /* e.g.: #1C1A17 if bg-alt is light */
 
 
   /* ----------------------------------------
@@ -48,6 +48,13 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
   --color-action:          /* FILL */;  /* default state */
   --color-action-hover:    /* FILL */;  /* lighter / more luminous */
   --color-action-pressed:  /* FILL */;  /* darker / more saturated */
+
+  /* Optional RGB triplets — required by component-patterns.md focus rings,
+     which use rgba(var(--color-action-rgb), 0.2). Provide the bare R, G, B
+     values of the matching color. Modern alternative without these tokens:
+     see references/modern-css.md (relative color syntax / color-mix()). */
+  --color-action-rgb:      /* FILL if using component-patterns focus rings */;  /* e.g.: 184, 115, 64 */
+  --color-error-rgb:       /* FILL if using form error states */;  /* e.g.: 217, 64, 64 */
 
 
   /* ----------------------------------------
@@ -75,8 +82,8 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      COLORS — Semantic (feedback)
      ---------------------------------------- */
 
-  --color-error:          /* FILL */;  /* e.g.: #D94040 */
-  --color-success:          /* FILL */;  /* e.g.: #3A8A5C */
+  --color-error:           /* FILL */;  /* e.g.: #D94040 */
+  --color-success:         /* FILL */;  /* e.g.: #3A8A5C */
   --color-warning:         /* FILL */;  /* e.g.: #C4873A */
   --color-info:            /* FILL */;  /* e.g.: same as --color-action or dedicated */
 
@@ -94,33 +101,33 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      ---------------------------------------- */
 
   /* Display — large titles, hero */
-  --text-display:          /* FILL */;  /* e.g.: clamp(2.5rem, 5vw, 4rem) */
+  --text-display:          /* FILL */;  /* e.g.: clamp(2.25rem, 1.5rem + 3vw, 4rem) */
   --text-display-lh:       /* FILL */;  /* e.g.: 1.1 */
   --text-display-weight:   /* FILL */;  /* e.g.: 400 */
   --text-display-tracking: /* FILL */;  /* e.g.: -0.02em */
 
   /* H1 */
-  --text-h1:               /* FILL */;  /* e.g.: clamp(2rem, 4vw, 3rem) */
+  --text-h1:               /* FILL */;  /* e.g.: clamp(1.75rem, 1.25rem + 2vw, 3rem) */
   --text-h1-lh:            /* FILL */;  /* e.g.: 1.15 */
   --text-h1-weight:        /* FILL */;  /* e.g.: 400 */
 
   /* H2 */
-  --text-h2:               /* FILL */;  /* e.g.: clamp(1.5rem, 3vw, 2.25rem) */
+  --text-h2:               /* FILL */;  /* e.g.: clamp(1.375rem, 1rem + 1.5vw, 2.25rem) */
   --text-h2-lh:            /* FILL */;  /* e.g.: 1.2 */
   --text-h2-weight:        /* FILL */;  /* e.g.: 400 */
 
   /* H3 */
-  --text-h3:               /* FILL */;  /* e.g.: clamp(1.25rem, 2.5vw, 1.75rem) */
+  --text-h3:               /* FILL */;  /* e.g.: clamp(1.125rem, 0.9rem + 1vw, 1.75rem) */
   --text-h3-lh:            /* FILL */;  /* e.g.: 1.25 */
   --text-h3-weight:        /* FILL */;  /* e.g.: 500 */
 
   /* Body — running text */
-  --text-body:             /* FILL */;  /* e.g.: clamp(0.9375rem, 1.5vw, 1.0625rem) */
+  --text-body:             /* FILL */;  /* e.g.: clamp(0.9375rem, 0.875rem + 0.25vw, 1.0625rem) */
   --text-body-lh:          /* FILL */;  /* e.g.: 1.65 */
   --text-body-weight:      /* FILL */;  /* e.g.: 400 */
 
   /* Small — captions, footnotes, metadata */
-  --text-small:            /* FILL */;  /* e.g.: clamp(0.8125rem, 1vw, 0.875rem) */
+  --text-small:            /* FILL */;  /* e.g.: clamp(0.8125rem, 0.78rem + 0.15vw, 0.875rem) */
   --text-small-lh:         /* FILL */;  /* e.g.: 1.5 */
 
   /* Label — buttons, nav, form labels */
@@ -134,7 +141,6 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      SPACING — Scale (base 4px or 8px)
      ---------------------------------------- */
 
-  --space-unit:  /* FILL */;  /* e.g.: 4px or 8px */
   --space-xs:    /* FILL */;  /* e.g.: 4px   (1 unit) */
   --space-sm:    /* FILL */;  /* e.g.: 8px   (2 units) */
   --space-md:    /* FILL */;  /* e.g.: 16px  (4 units) */
@@ -183,7 +189,6 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      BREAKPOINTS (for reference — used in @media)
      ---------------------------------------- */
 
-  /* --bp-mobile:   480px;  */
   /* --bp-tablet:   768px;  */
   /* --bp-desktop:  1024px; */
   /* --bp-wide:     1440px; */
@@ -196,6 +201,16 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
   --container-max:     /* FILL */;  /* e.g.: 1200px */
   --container-padding: /* FILL */;  /* e.g.: clamp(1rem, 4vw, 2rem) */
   --grid-gap:          /* FILL */;  /* e.g.: var(--space-lg) */
+
+
+  /* ----------------------------------------
+     ICONS — Sizes (aligned to the spacing grid)
+     ---------------------------------------- */
+
+  --icon-sm:  16px;  /* inline with small text */
+  --icon-md:  20px;  /* inline with body text */
+  --icon-lg:  24px;  /* buttons, nav */
+  --icon-xl:  32px;  /* features, highlights */
 
 
   /* ----------------------------------------
@@ -218,7 +233,6 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
 /* Breakpoints cannot be CSS variables.
    Define them here as reference for media queries. */
 
-/* @media (min-width: 480px)  → mobile landscape / small tablet */
 /* @media (min-width: 768px)  → tablet */
 /* @media (min-width: 1024px) → desktop */
 /* @media (min-width: 1440px) → wide */
@@ -298,6 +312,7 @@ Verify that the delivered `:root` block contains:
 - [ ] **Radius**: at least 2 levels
 - [ ] **Transitions**: fast, medium, slow
 - [ ] **Layout**: container-max, container-padding, grid-gap
+- [ ] **Icons**: sm / md / lg / xl sizes
 - [ ] **Z-index**: complete scale
 
 If a token is intentionally absent, it must be justified in the absolute rules (e.g.: "No box-shadow → no --shadow-* tokens").
