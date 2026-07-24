@@ -258,7 +258,8 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   align-items: center;
   justify-content: space-between;
 
-  /* ADAPT — backdrop-blur if the nav should be semi-transparent
+  /* ADAPT — backdrop-blur if the nav should be semi-transparent.
+     The -webkit- prefix is only needed for Safari < 15.4.
   background: rgba(28, 26, 23, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -396,7 +397,9 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   border-color: var(--color-error);
 }
 .field--error .field__input:focus {
-  box-shadow: 0 0 0 2px rgba(217, 64, 64, 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--color-error-rgb, 217, 64, 64), 0.2);
+  /* ADAPT — error color at 20% opacity.
+     The rgb() fallback must match the project's --color-error. */
 }
 
 .field__error {
@@ -416,6 +419,9 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 .field__select {
   /* Inherits from field__input */
   appearance: none;
+  /* ADAPT — the stroke color is hardcoded inside the data URI.
+     Replace %238A8580 with the project's --color-text-muted hex, URL-encoded
+     (# becomes %23). */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238A8580' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right var(--space-md) center;
