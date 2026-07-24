@@ -39,11 +39,15 @@ Validate every text/background combination used by the system.
 ## Typography
 
 ### Fonts
-[Names, copy-pasteable import, and fallbacks.]
+[Names, copy-pasteable loading snippet, and fallbacks.]
+
+```html
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=...&display=swap">
+```
 
 ```css
-@import url('https://fonts.googleapis.com/css2?family=...');
-
 :root {
   --font-display: 'Name', category;
   --font-body: 'Name', category;
@@ -124,16 +128,18 @@ Validate every text/background combination used by the system.
 ## Theme Switching If Applicable
 
 ```css
+/* The anchoring decides the DEFAULT theme (dark or light) — do not assume dark.
+   Put the default theme's tokens on :root, the other theme in the override. */
 :root,
-[data-theme="dark"] {
-  /* dark tokens */
+[data-theme="<default>"] {
+  /* default-theme tokens */
 }
 
-[data-theme="light"] {
-  /* light overrides */
+[data-theme="<other>"] {
+  /* other-theme overrides */
 }
 
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: <other>) {
   :root:not([data-theme]) {
     /* auto-detect for users without explicit preference */
   }

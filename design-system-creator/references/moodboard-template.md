@@ -49,18 +49,12 @@ Create 2-3 variants of this moodboard for the user to choose from.
 ## HTML Template
 
 ```html
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="{{FONT_DISPLAY_IMPORT}}">
+<link rel="stylesheet" href="{{FONT_BODY_IMPORT}}">
 <style>
-  @import url('{{FONT_DISPLAY_IMPORT}}');
-  @import url('{{FONT_BODY_IMPORT}}');
-
   * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  .moodboard {
-    font-family: {{FONT_BODY}};
-    color: var(--color-text);
-    background: transparent;
-    max-width: 720px;
-  }
 
   .moodboard {
     --color-bg: {{COLOR_BG}};
@@ -74,6 +68,11 @@ Create 2-3 variants of this moodboard for the user to choose from.
     --color-distinction: {{COLOR_DISTINCTION}};
     --color-bg-alt: {{COLOR_BG_ALT}};
     --color-text-alt: {{COLOR_TEXT_ALT}};
+
+    font-family: {{FONT_BODY}};
+    color: var(--color-text);
+    background: transparent;
+    max-width: 720px;
   }
 
   /* --- Header --- */
@@ -386,7 +385,7 @@ Create 2-3 variants of this moodboard for the user to choose from.
 
 **Adapt the template, do not follow it blindly.** If the anchoring calls for a light-dominant design (e.g.: Japanese restaurant), invert the dark/light sections. If there is no structure or distinction family, remove the corresponding swatches.
 
-**Font @imports in the widget**: the Visualizer supports Google Fonts and Fontshare imports. Verify that the URLs are correct before rendering.
+**Font loading in the widget**: the Visualizer supports Google Fonts and Fontshare stylesheet URLs via the `<link>` tags. Verify that the URLs are correct before rendering.
 
 **Recommended size**: the template is designed for ~720px wide. The Visualizer adapts automatically.
 
