@@ -380,7 +380,7 @@ read_layout_right_bound() {
 		right=$((x + width + height))
 		((right > max_right)) && max_right=${right}
 		found=1
-		remaining=${remaining#*\"x\":${x},}
+		remaining=${remaining#*\"x\":"${x}",}
 	done
 	if ((found == 0)); then
 		fail "${label}: geometrie observe=illisible (${raw}); attendu=au moins un monitor"
@@ -1082,8 +1082,6 @@ scenario_guard_click() (
 	local cleanup_failed=0
 	local before_focus after_focus before_x before_y after_x after_y
 	local delta_x delta_y command_output cleanup_output
-	local status_json monitors_json clients_json window_address
-	local out_x out_y target_x target_y actual_x actual_y
 	local status_window_re monitor_re client_re
 	local active_json active_compact active_address active_x active_y
 	local active_width active_height center_x center_y centered_x centered_y
@@ -1247,7 +1245,9 @@ scenario_focus_type() (
 	local typed_text="focus-type-$$"
 	local stdout_file="" expected_output="" actual_output=""
 	local before_focus before_x before_y
+	# shellcheck disable=SC2034 # Sorties obligatoires de read_client_state (printf -v), lues seulement pour les axes geometriques.
 	local user_x user_y user_width user_height user_workspace user_floating user_monitor
+	# shellcheck disable=SC2030 # Portee locale a ce scenario : la variable homonyme des autres scenarios est independante.
 	local center_x center_y addresses_json="" command_output="" cleanup_output=""
 
 	assert_focus_type_user_state() {
@@ -1414,6 +1414,7 @@ scenario_resize() (
 	local origin_x origin_y origin_width origin_height origin_workspace
 	local origin_floating origin_monitor
 	local window_x window_y window_width window_height window_workspace
+	# shellcheck disable=SC2034 # Sortie obligatoire de read_stable_client_state (printf -v), non relue ici.
 	local window_floating window_monitor
 	local output_x output_y output_width output_height
 	local png_width png_height attempt stable_reads=0
@@ -1468,6 +1469,7 @@ scenario_resize() (
 	zenity --entry --title="${title}" >/dev/null 2>&1 &
 	zenity_pid=$!
 	wait_client_addresses_by_title addresses_json "${title}" 1 "settle spawn resize" || return 1
+	# shellcheck disable=SC2031 # addresses_json est locale a ce scenario, remplie juste au-dessus dans le meme sous-shell.
 	window_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
 
 	read_stable_client_state "${window_address}" origin_x origin_y origin_width origin_height \
