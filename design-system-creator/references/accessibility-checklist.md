@@ -21,16 +21,16 @@ Target level: **WCAG 2.1 AA** (the legal standard in the EU and most jurisdictio
 For each design system, validate these pairs:
 
 ```
-On dark background (--color-fond):
-  ✓ --color-texte        vs --color-fond         → must be ≥ 4.5:1
-  ✓ --color-texte-mute   vs --color-fond         → must be ≥ 4.5:1
-  ✓ --color-action       vs --color-fond         → must be ≥ 3:1 (if large text/UI) or 4.5:1 (if normal text)
-  ✓ --color-texte-mute   vs --color-surface      → must be ≥ 4.5:1
+On dark background (--color-bg):
+  ✓ --color-text        vs --color-bg         → must be ≥ 4.5:1
+  ✓ --color-text-muted   vs --color-bg         → must be ≥ 4.5:1
+  ✓ --color-action       vs --color-bg         → must be ≥ 3:1 (if large text/UI) or 4.5:1 (if normal text)
+  ✓ --color-text-muted   vs --color-surface      → must be ≥ 4.5:1
 
-On light background (--color-fond-alt):
-  ✓ --color-texte-alt    vs --color-fond-alt     → must be ≥ 4.5:1
-  ✓ --color-action       vs --color-fond-alt     → must be ≥ 4.5:1 for links
-  ✓ --color-texte-mute   vs --color-fond-alt     → must be ≥ 4.5:1 (caution, muted is often too light)
+On light background (--color-bg-alt):
+  ✓ --color-text-alt    vs --color-bg-alt     → must be ≥ 4.5:1
+  ✓ --color-action       vs --color-bg-alt     → must be ≥ 4.5:1 for links
+  ✓ --color-text-muted   vs --color-bg-alt     → must be ≥ 4.5:1 (caution, muted is often too light)
 
 Primary button:
   ✓ Button text          vs --color-action       → must be ≥ 4.5:1
@@ -45,7 +45,7 @@ Primary button:
 
 ### Common Trap: Muted Text
 
-`--color-texte-mute` is the token most often in violation. A gray #8A8580 on a #1C1A17 background gives 3.8:1 — below the 4.5:1 required for normal text.
+`--color-text-muted` is the token most often in violation. A gray #8A8580 on a #1C1A17 background gives 3.8:1 — below the 4.5:1 required for normal text.
 
 **Solutions**:
 - Increase the muted luminosity (e.g., #9A9590 instead of #8A8580)

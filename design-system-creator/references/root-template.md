@@ -19,25 +19,25 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      ---------------------------------------- */
 
   /* Main background (most present on the site) */
-  --color-fond:            /* FILL */;  /* e.g.: #1C1A17 (dark) or #F5F0E8 (light) */
+  --color-bg:            /* FILL */;  /* e.g.: #1C1A17 (dark) or #F5F0E8 (light) */
 
   /* Elevated surface (cards, modals, raised blocks) */
   --color-surface:         /* FILL */;  /* e.g.: #252320 */
 
   /* Borders and separators */
-  --color-bordure:         /* FILL */;  /* e.g.: #3A3835 */
+  --color-border:         /* FILL */;  /* e.g.: #3A3835 */
 
   /* Main text */
-  --color-texte:           /* FILL */;  /* e.g.: #F0EBE3 (on dark bg) or #1C1A17 (on light bg) */
+  --color-text:           /* FILL */;  /* e.g.: #F0EBE3 (on dark bg) or #1C1A17 (on light bg) */
 
   /* Secondary / muted text */
-  --color-texte-mute:      /* FILL */;  /* e.g.: #8A8580 */
+  --color-text-muted:      /* FILL */;  /* e.g.: #8A8580 */
 
   /* Alternating background (sections alternating with main bg) */
-  --color-fond-alt:        /* FILL */;  /* e.g.: #F5F0E8 if main bg is dark */
+  --color-bg-alt:        /* FILL */;  /* e.g.: #F5F0E8 if main bg is dark */
 
   /* Text on alternating background (if different from main text) */
-  --color-texte-alt:       /* FILL */;  /* e.g.: #1C1A17 if fond-alt is light */
+  --color-text-alt:       /* FILL */;  /* e.g.: #1C1A17 if bg-alt is light */
 
 
   /* ----------------------------------------
@@ -75,8 +75,8 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
      COLORS — Semantic (feedback)
      ---------------------------------------- */
 
-  --color-erreur:          /* FILL */;  /* e.g.: #D94040 */
-  --color-succes:          /* FILL */;  /* e.g.: #3A8A5C */
+  --color-error:          /* FILL */;  /* e.g.: #D94040 */
+  --color-success:          /* FILL */;  /* e.g.: #3A8A5C */
   --color-warning:         /* FILL */;  /* e.g.: #C4873A */
   --color-info:            /* FILL */;  /* e.g.: same as --color-action or dedicated */
 
@@ -157,7 +157,7 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
 
   --border-width:  /* FILL */;  /* e.g.: 1px */
   --border-style:  /* FILL */;  /* e.g.: solid */
-  --border:        var(--border-width) var(--border-style) var(--color-bordure);
+  --border:        var(--border-width) var(--border-style) var(--color-border);
 
 
   /* ----------------------------------------
@@ -288,10 +288,10 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
 
 Verify that the delivered `:root` block contains:
 
-- [ ] **Foundation**: at least fond, surface, bordure, texte, texte-mute (5 minimum)
+- [ ] **Foundation**: at least bg, surface, border, text, text-muted (5 minimum)
 - [ ] **Action**: 3 stops (default, hover, pressed)
 - [ ] **Structure or Distinction**: at least one additional family if the anchoring justifies it
-- [ ] **Semantic**: erreur, succes, warning (even if identical to an existing family)
+- [ ] **Semantic**: error, success, warning (even if identical to an existing family)
 - [ ] **Fonts**: display + body declared
 - [ ] **Type scale**: at minimum display, h1, h2, h3, body, small, label — with line-height and weight
 - [ ] **Spacing**: 7+ stops from xs to 4xl minimum

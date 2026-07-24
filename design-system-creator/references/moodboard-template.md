@@ -25,17 +25,17 @@ Create 2-3 variants of this moodboard for the user to choose from.
 | `{{FONT_BODY_IMPORT}}` | Google Fonts / Fontshare URL for the body font | `https://fonts.googleapis.com/css2?family=...` |
 | `{{FONT_DISPLAY}}` | CSS name of the display font | `'Instrument Serif', serif` |
 | `{{FONT_BODY}}` | CSS name of the body font | `'DM Sans', sans-serif` |
-| `{{COLOR_FOND}}` | Main background color | `#1C1A17` |
+| `{{COLOR_BG}}` | Main background color | `#1C1A17` |
 | `{{COLOR_SURFACE}}` | Surface color | `#252320` |
-| `{{COLOR_BORDURE}}` | Border color | `#3A3835` |
-| `{{COLOR_TEXTE}}` | Main text color | `#F0EBE3` |
-| `{{COLOR_TEXTE_MUTE}}` | Secondary text color | `#8A8580` |
+| `{{COLOR_BORDER}}` | Border color | `#3A3835` |
+| `{{COLOR_TEXT}}` | Main text color | `#F0EBE3` |
+| `{{COLOR_TEXT_MUTED}}` | Secondary text color | `#8A8580` |
 | `{{COLOR_ACTION}}` | Action accent color | `#B87340` |
 | `{{COLOR_ACTION_HOVER}}` | Action hover color | `#D4935A` |
 | `{{COLOR_STRUCTURE}}` | Structure color (or empty if not used) | `#6B7D80` |
 | `{{COLOR_DISTINCTION}}` | Distinction color (or empty if not used) | `#C9A84C` |
-| `{{COLOR_FOND_ALT}}` | Alternating background | `#F5F0E8` |
-| `{{COLOR_TEXTE_ALT}}` | Text on alternating background | `#1C1A17` |
+| `{{COLOR_BG_ALT}}` | Alternating background | `#F5F0E8` |
+| `{{COLOR_TEXT_ALT}}` | Text on alternating background | `#1C1A17` |
 | `{{HERO_TITLE}}` | Hero mockup title | `Metal artisan since 1987` |
 | `{{HERO_SUBTITLE}}` | Subtitle | `Zinc, copper, brass — furniture and decoration` |
 | `{{CTA_TEXT}}` | CTA button text | `Discover the workshop` |
@@ -57,31 +57,31 @@ Create 2-3 variants of this moodboard for the user to choose from.
 
   .moodboard {
     font-family: {{FONT_BODY}};
-    color: var(--text);
+    color: var(--color-text);
     background: transparent;
     max-width: 720px;
   }
 
   .moodboard {
-    --fond: {{COLOR_FOND}};
-    --surface: {{COLOR_SURFACE}};
-    --bordure: {{COLOR_BORDURE}};
-    --text: {{COLOR_TEXTE}};
-    --text-mute: {{COLOR_TEXTE_MUTE}};
-    --action: {{COLOR_ACTION}};
-    --action-hover: {{COLOR_ACTION_HOVER}};
-    --structure: {{COLOR_STRUCTURE}};
-    --distinction: {{COLOR_DISTINCTION}};
-    --fond-alt: {{COLOR_FOND_ALT}};
-    --text-alt: {{COLOR_TEXTE_ALT}};
+    --color-bg: {{COLOR_BG}};
+    --color-surface: {{COLOR_SURFACE}};
+    --color-border: {{COLOR_BORDER}};
+    --color-text: {{COLOR_TEXT}};
+    --color-text-muted: {{COLOR_TEXT_MUTED}};
+    --color-action: {{COLOR_ACTION}};
+    --color-action-hover: {{COLOR_ACTION_HOVER}};
+    --color-structure: {{COLOR_STRUCTURE}};
+    --color-distinction: {{COLOR_DISTINCTION}};
+    --color-bg-alt: {{COLOR_BG_ALT}};
+    --color-text-alt: {{COLOR_TEXT_ALT}};
   }
 
   /* --- Header --- */
   .mb-header {
     padding: 24px 32px;
-    background: var(--fond);
+    background: var(--color-bg);
     border-radius: 8px 8px 0 0;
-    border-bottom: 1px solid var(--bordure);
+    border-bottom: 1px solid var(--color-border);
   }
   .mb-direction-name {
     font-family: {{FONT_BODY}};
@@ -89,21 +89,21 @@ Create 2-3 variants of this moodboard for the user to choose from.
     font-weight: 500;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--action);
+    color: var(--color-action);
     margin-bottom: 8px;
   }
   .mb-anchor {
     font-family: {{FONT_DISPLAY}};
     font-size: 20px;
     line-height: 1.35;
-    color: var(--text);
+    color: var(--color-text);
   }
 
   /* --- Palette --- */
   .mb-palette {
     display: flex;
     gap: 0;
-    background: var(--fond);
+    background: var(--color-bg);
   }
   .mb-swatch-group {
     flex: 1;
@@ -114,7 +114,7 @@ Create 2-3 variants of this moodboard for the user to choose from.
     font-weight: 500;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     margin-bottom: 8px;
   }
   .mb-swatches {
@@ -125,7 +125,7 @@ Create 2-3 variants of this moodboard for the user to choose from.
     flex: 1;
     aspect-ratio: 1;
     border-radius: {{RADIUS}};
-    border: 1px solid var(--bordure);
+    border: 1px solid var(--color-border);
     position: relative;
   }
   .mb-swatch-label {
@@ -133,59 +133,59 @@ Create 2-3 variants of this moodboard for the user to choose from.
     bottom: -16px;
     left: 0;
     font-size: 8px;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     white-space: nowrap;
   }
 
   /* --- Typography --- */
   .mb-type-section {
     padding: 32px;
-    background: var(--fond);
-    border-top: 1px solid var(--bordure);
+    background: var(--color-bg);
+    border-top: 1px solid var(--color-border);
   }
   .mb-type-display {
     font-family: {{FONT_DISPLAY}};
     font-size: 36px;
     line-height: 1.1;
-    color: var(--text);
+    color: var(--color-text);
     margin-bottom: 4px;
   }
   .mb-type-display-meta {
     font-size: 10px;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     margin-bottom: 20px;
   }
   .mb-type-body-sample {
     font-family: {{FONT_BODY}};
     font-size: 15px;
     line-height: 1.65;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     max-width: 520px;
   }
   .mb-type-body-meta {
     font-size: 10px;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     margin-top: 4px;
   }
 
   /* --- Hero mockup --- */
   .mb-hero {
-    background: var(--fond);
+    background: var(--color-bg);
     padding: 48px 32px;
-    border-top: 1px solid var(--bordure);
+    border-top: 1px solid var(--color-border);
     text-align: center;
   }
   .mb-hero-title {
     font-family: {{FONT_DISPLAY}};
     font-size: 32px;
     line-height: 1.15;
-    color: var(--text);
+    color: var(--color-text);
     margin-bottom: 12px;
   }
   .mb-hero-subtitle {
     font-family: {{FONT_BODY}};
     font-size: 14px;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     margin-bottom: 24px;
   }
   .mb-hero-cta {
@@ -196,33 +196,33 @@ Create 2-3 variants of this moodboard for the user to choose from.
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 12px 28px;
-    background: var(--action);
-    color: var(--fond);
+    background: var(--color-action);
+    color: var(--color-bg);
     border-radius: {{RADIUS}};
     text-decoration: none;
     transition: background 0.2s ease;
   }
   .mb-hero-cta:hover {
-    background: var(--action-hover);
+    background: var(--color-action-hover);
   }
 
   /* --- Light section mockup --- */
   .mb-light-section {
-    background: var(--fond-alt);
+    background: var(--color-bg-alt);
     padding: 32px;
-    border-top: 1px solid var(--bordure);
+    border-top: 1px solid var(--color-border);
   }
   .mb-light-title {
     font-family: {{FONT_DISPLAY}};
     font-size: 22px;
-    color: var(--text-alt);
+    color: var(--color-text-alt);
     margin-bottom: 8px;
   }
   .mb-light-body {
     font-family: {{FONT_BODY}};
     font-size: 14px;
     line-height: 1.6;
-    color: var(--text-alt);
+    color: var(--color-text-alt);
     opacity: 0.7;
     max-width: 480px;
   }
@@ -232,64 +232,64 @@ Create 2-3 variants of this moodboard for the user to choose from.
     display: flex;
     gap: 12px;
     padding: 24px 32px;
-    background: var(--fond);
-    border-top: 1px solid var(--bordure);
+    background: var(--color-bg);
+    border-top: 1px solid var(--color-border);
   }
   .mb-card {
     flex: 1;
-    background: var(--surface);
-    border: 1px solid var(--bordure);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: {{RADIUS}};
     padding: 20px 16px;
   }
   .mb-card-title {
     font-family: {{FONT_DISPLAY}};
     font-size: 16px;
-    color: var(--text);
+    color: var(--color-text);
     margin-bottom: 6px;
   }
   .mb-card-body {
     font-family: {{FONT_BODY}};
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     margin-bottom: 12px;
   }
   .mb-card-link {
     font-family: {{FONT_BODY}};
     font-size: 12px;
     font-weight: 500;
-    color: var(--action);
+    color: var(--color-action);
     text-decoration: none;
   }
 
   /* --- Rules --- */
   .mb-rules {
     padding: 24px 32px;
-    background: var(--surface);
+    background: var(--color-surface);
     border-radius: 0 0 8px 8px;
-    border-top: 1px solid var(--bordure);
+    border-top: 1px solid var(--color-border);
   }
   .mb-rules-title {
     font-size: 9px;
     font-weight: 500;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--action);
+    color: var(--color-action);
     margin-bottom: 12px;
   }
   .mb-rule {
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-mute);
+    color: var(--color-text-muted);
     padding: 4px 0;
-    border-bottom: 1px solid var(--bordure);
+    border-bottom: 1px solid var(--color-border);
   }
   .mb-rule:last-child {
     border-bottom: none;
   }
   .mb-rule strong {
-    color: var(--text);
+    color: var(--color-text);
   }
 </style>
 
@@ -305,30 +305,30 @@ Create 2-3 variants of this moodboard for the user to choose from.
     <div class="mb-swatch-group">
       <div class="mb-swatch-group-label">Foundation</div>
       <div class="mb-swatches">
-        <div class="mb-swatch" style="background:var(--fond)"></div>
-        <div class="mb-swatch" style="background:var(--surface)"></div>
-        <div class="mb-swatch" style="background:var(--bordure)"></div>
-        <div class="mb-swatch" style="background:var(--text)"></div>
-        <div class="mb-swatch" style="background:var(--fond-alt)"></div>
+        <div class="mb-swatch" style="background:var(--color-bg)"></div>
+        <div class="mb-swatch" style="background:var(--color-surface)"></div>
+        <div class="mb-swatch" style="background:var(--color-border)"></div>
+        <div class="mb-swatch" style="background:var(--color-text)"></div>
+        <div class="mb-swatch" style="background:var(--color-bg-alt)"></div>
       </div>
     </div>
     <div class="mb-swatch-group">
       <div class="mb-swatch-group-label">Action</div>
       <div class="mb-swatches">
-        <div class="mb-swatch" style="background:var(--action)"></div>
-        <div class="mb-swatch" style="background:var(--action-hover)"></div>
+        <div class="mb-swatch" style="background:var(--color-action)"></div>
+        <div class="mb-swatch" style="background:var(--color-action-hover)"></div>
       </div>
     </div>
     <div class="mb-swatch-group">
       <div class="mb-swatch-group-label">Structure</div>
       <div class="mb-swatches">
-        <div class="mb-swatch" style="background:var(--structure)"></div>
+        <div class="mb-swatch" style="background:var(--color-structure)"></div>
       </div>
     </div>
     <div class="mb-swatch-group">
       <div class="mb-swatch-group-label">Distinction</div>
       <div class="mb-swatches">
-        <div class="mb-swatch" style="background:var(--distinction)"></div>
+        <div class="mb-swatch" style="background:var(--color-distinction)"></div>
       </div>
     </div>
   </div>

@@ -32,7 +32,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   text-decoration: none;
 
   /* Colors */
-  color: var(--color-fond);  /* text on action color = inverted main background */
+  color: var(--color-bg);  /* text on action color = inverted main background */
   background: var(--color-action);
   border: var(--border-width) solid var(--color-action);
 
@@ -112,12 +112,12 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 
 .btn-secondary:hover {
   background: var(--color-action);
-  color: var(--color-fond);
+  color: var(--color-bg);
 }
 
 .btn-secondary:active {
   background: var(--color-action-pressed);
-  color: var(--color-fond);
+  color: var(--color-bg);
 }
 
 .btn-secondary:focus-visible {
@@ -180,7 +180,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 ```css
 .card {
   background: var(--color-surface);
-  border: 1px solid var(--color-bordure);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);  /* ADAPT */
   padding: var(--space-lg);
   display: flex;
@@ -205,7 +205,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 
 /* Card on light background (alternating section) */
 .card--on-light {
-  background: var(--color-fond-alt);  /* use the light background token, never hardcoded white */
+  background: var(--color-bg-alt);  /* use the light background token, never hardcoded white */
   border-color: rgba(0, 0, 0, 0.08);
 }
 
@@ -222,14 +222,14 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   font-family: var(--font-display);
   font-size: var(--text-h3);
   line-height: var(--text-h3-lh);
-  color: var(--color-texte);
+  color: var(--color-text);
 }
 
 .card__body {
   font-family: var(--font-body);
   font-size: var(--text-body);
   line-height: var(--text-body-lh);
-  color: var(--color-texte-mute);
+  color: var(--color-text-muted);
 }
 
 .card__link {
@@ -251,8 +251,8 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   position: sticky;  /* ADAPT — sticky or fixed depending on scroll behavior */
   top: 0;
   z-index: var(--z-sticky);
-  background: var(--color-fond);
-  border-bottom: 1px solid var(--color-bordure);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
   padding: var(--space-md) var(--container-padding);
   display: flex;
   align-items: center;
@@ -268,7 +268,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 .nav__logo {
   font-family: var(--font-display);
   font-size: var(--text-h3);
-  color: var(--color-texte);
+  color: var(--color-text);
   text-decoration: none;
 }
 
@@ -282,7 +282,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   font-family: var(--font-body);
   font-size: var(--text-label);
   font-weight: var(--text-label-weight);
-  color: var(--color-texte-mute);
+  color: var(--color-text-muted);
   text-decoration: none;
   letter-spacing: var(--text-label-tracking);
   transition: color var(--transition-fast);
@@ -302,7 +302,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   letter-spacing: var(--text-label-tracking);
   padding: var(--space-xs) var(--space-md);
   background: var(--color-action);
-  color: var(--color-fond);
+  color: var(--color-bg);
   border-radius: var(--radius-md);
   text-decoration: none;
   transition: background var(--transition-fast);
@@ -322,7 +322,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
     position: fixed;
     inset: 0;
     z-index: var(--z-overlay);
-    background: var(--color-fond);
+    background: var(--color-bg);
     padding: var(--space-3xl) var(--container-padding);
     display: flex;
     flex-direction: column;
@@ -336,7 +336,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   .nav__mobile-menu .nav__link {
     font-size: var(--text-h2);
     font-family: var(--font-display);
-    color: var(--color-texte);
+    color: var(--color-text);
   }
 }
 ```
@@ -357,7 +357,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   font-family: var(--font-body);
   font-size: var(--text-small);
   font-weight: 500;
-  color: var(--color-texte);
+  color: var(--color-text);
   letter-spacing: 0.01em;
 }
 
@@ -365,9 +365,9 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   font-family: var(--font-body);
   font-size: var(--text-body);
   line-height: var(--text-body-lh);
-  color: var(--color-texte);
+  color: var(--color-text);
   background: var(--color-surface);
-  border: var(--border-width) solid var(--color-bordure);
+  border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
   transition: border-color var(--transition-fast),
@@ -376,12 +376,12 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 }
 
 .field__input::placeholder {
-  color: var(--color-texte-mute);
+  color: var(--color-text-muted);
   opacity: 0.6;
 }
 
 .field__input:hover {
-  border-color: var(--color-structure, var(--color-bordure));
+  border-color: var(--color-structure, var(--color-border));
 }
 
 .field__input:focus {
@@ -393,7 +393,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 
 /* Error state */
 .field--error .field__input {
-  border-color: var(--color-erreur);
+  border-color: var(--color-error);
 }
 .field--error .field__input:focus {
   box-shadow: 0 0 0 2px rgba(217, 64, 64, 0.2);
@@ -402,7 +402,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 .field__error {
   font-family: var(--font-body);
   font-size: var(--text-small);
-  color: var(--color-erreur);
+  color: var(--color-error);
 }
 
 /* Textarea */
@@ -496,7 +496,7 @@ The icon is part of the visual language. Mixing icon styles breaks consistency a
 2. **One single source.** Choose ONE library and stick with it.
 3. **Consistent stroke width.** If outline, define the stroke width (1.5px, 2px) and never vary.
 4. **Size on grid.** Icons align to the spacing scale: 16px, 20px, 24px, 32px.
-5. **Color = context.** Icon in a button = button color. Standalone icon = `--color-texte-mute`. Interactive icon = `--color-action`.
+5. **Color = context.** Icon in a button = button color. Standalone icon = `--color-text-muted`. Interactive icon = `--color-action`.
 
 ### Recommended Sources by Anchoring
 
