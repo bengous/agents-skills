@@ -177,6 +177,8 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 
 ## Cards
 
+<!-- Container-based sizing and :has() variants: see references/modern-css.md §4-5 -->
+
 ```css
 .card {
   background: var(--color-surface);
@@ -346,6 +348,8 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
 
 ## Forms
 
+<!-- Parent state styling with :has(): see references/modern-css.md §5 -->
+
 ```css
 /* Field container */
 .field {
@@ -389,7 +393,8 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   border-color: var(--color-action);
   box-shadow: 0 0 0 2px rgba(var(--color-action-rgb, 184, 115, 64), 0.2);
   /* ADAPT — use the action color at 20% opacity.
-     The rgb() fallback must match the project's --color-action. */
+     The rgb() fallback must match the project's --color-action.
+     Modern alternative without the -rgb token: see references/modern-css.md §2. */
 }
 
 /* Error state */

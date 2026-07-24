@@ -163,6 +163,8 @@ const observer = new IntersectionObserver((entries) => {
 document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 ```
 
+Declarative alternative (progressive enhancement): scroll-driven animations, see `references/modern-css.md` §6.
+
 ---
 
 ## Pattern 4 — Page Load (slow, once only)

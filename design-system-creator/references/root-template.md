@@ -48,11 +48,13 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
   --color-action:          /* FILL */;  /* default state */
   --color-action-hover:    /* FILL */;  /* lighter / more luminous */
   --color-action-pressed:  /* FILL */;  /* darker / more saturated */
+  /* Modern alternative — derive hover/pressed with color-mix(): see references/modern-css.md §1-2 */
 
-  /* Optional RGB triplets — required by component-patterns.md focus rings,
-     which use rgba(var(--color-action-rgb), 0.2). Provide the bare R, G, B
-     values of the matching color. Modern alternative without these tokens:
-     see references/modern-css.md (relative color syntax / color-mix()). */
+  /* Optional RGB triplets — used by component-patterns.md focus rings via
+     rgba(var(--color-action-rgb, R, G, B), 0.2). The patterns ship with a
+     hardcoded example fallback; define these tokens (bare R, G, B values of
+     the matching color) to override it. Modern alternative without these
+     tokens: see references/modern-css.md §2 (relative color syntax / color-mix()). */
   --color-action-rgb:      /* FILL if using component-patterns focus rings */;  /* e.g.: 184, 115, 64 */
   --color-error-rgb:       /* FILL if using form error states */;  /* e.g.: 217, 64, 64 */
 

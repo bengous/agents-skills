@@ -67,6 +67,8 @@ Responsive is not "shrinking". It is reorganizing the hierarchy for a different 
 
 ## Grid Patterns
 
+<!-- Component-level adaptation via container queries: see references/modern-css.md §4 -->
+
 ### Auto-responsive Grid (most common)
 
 ```css

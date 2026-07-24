@@ -127,6 +127,8 @@ Validate every text/background combination used by the system.
 
 ## Theme Switching If Applicable
 
+[For pure token swaps, light-dark() is lighter — see `references/modern-css.md` §3.]
+
 ```css
 /* The anchoring decides the DEFAULT theme (dark or light) — do not assume dark.
    Put the default theme's tokens on :root, the other theme in the override. */
