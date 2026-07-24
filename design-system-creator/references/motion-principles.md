@@ -233,18 +233,9 @@ It is NOT when:
 
 **Mandatory.** All animations must be disableable.
 
-```css
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-```
+The canonical CSS block lives in `references/accessibility-checklist.md`
+(section "Reduced Motion") — copy it from there. Single source: do not
+duplicate it here.
 
 This block is non-negotiable. It goes in the global CSS, before everything else.
 

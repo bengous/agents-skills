@@ -112,18 +112,8 @@ Validate every text/background combination used by the system.
 ### Reduced Motion
 [Mandatory reduced-motion CSS.]
 
-```css
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-```
+[Insert the canonical reduced-motion block from
+`references/accessibility-checklist.md`, section "Reduced Motion".]
 
 ### Touch Targets
 [Confirm min 44x44px for interactive elements and list project-specific risks.]

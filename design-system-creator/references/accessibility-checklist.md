@@ -2,7 +2,7 @@
 
 Accessibility is not a layer added after the fact. It is in every token, every component, every rule. This document lists the minimum requirements that the design system must meet.
 
-Target level: **WCAG 2.1 AA** (the legal standard in the EU and most jurisdictions).
+Target level: **WCAG 2.2 AA** (W3C Recommendation since October 2023; the EU Accessibility Act references EN 301 549, aligned on it).
 
 ---
 
@@ -22,19 +22,19 @@ For each design system, validate these pairs:
 
 ```
 On dark background (--color-bg):
-  ✓ --color-text        vs --color-bg         → must be ≥ 4.5:1
-  ✓ --color-text-muted   vs --color-bg         → must be ≥ 4.5:1
-  ✓ --color-action       vs --color-bg         → must be ≥ 3:1 (if large text/UI) or 4.5:1 (if normal text)
-  ✓ --color-text-muted   vs --color-surface      → must be ≥ 4.5:1
+  ✓ --color-text         vs --color-bg              → must be ≥ 4.5:1
+  ✓ --color-text-muted   vs --color-bg              → must be ≥ 4.5:1
+  ✓ --color-action       vs --color-bg              → must be ≥ 3:1 (if large text/UI) or 4.5:1 (if normal text)
+  ✓ --color-text-muted   vs --color-surface         → must be ≥ 4.5:1
 
 On light background (--color-bg-alt):
-  ✓ --color-text-alt    vs --color-bg-alt     → must be ≥ 4.5:1
-  ✓ --color-action       vs --color-bg-alt     → must be ≥ 4.5:1 for links
-  ✓ --color-text-muted   vs --color-bg-alt     → must be ≥ 4.5:1 (caution, muted is often too light)
+  ✓ --color-text-alt     vs --color-bg-alt          → must be ≥ 4.5:1
+  ✓ --color-action       vs --color-bg-alt          → must be ≥ 4.5:1 for links
+  ✓ --color-text-muted   vs --color-bg-alt          → must be ≥ 4.5:1 (caution, muted is often too light)
 
 Primary button:
-  ✓ Button text          vs --color-action       → must be ≥ 4.5:1
-  ✓ --color-action        vs surrounding background → must be ≥ 3:1 (button distinction)
+  ✓ Button text          vs --color-action          → must be ≥ 4.5:1
+  ✓ --color-action       vs surrounding background  → must be ≥ 3:1 (button distinction)
 ```
 
 ### Verification Tools
@@ -97,13 +97,29 @@ The focus ring must be visible on both. If `--color-action` is too close to the 
 }
 ```
 
+### Focus Not Obscured (SC 2.4.11, AA — new in WCAG 2.2)
+
+A focused element must not be entirely hidden by author-created sticky or fixed
+content (sticky nav, cookie banners, sticky footers). Directly relevant to the
+sticky `.nav` pattern in `component-patterns.md`.
+
+```css
+/* Keep keyboard-focused elements visible below a sticky header */
+html {
+  scroll-padding-top: calc(var(--nav-height, 64px) + var(--space-sm));
+}
+```
+
 ---
 
 ## 3. Touch Targets
 
 ### Minimum Size
 
-Every clickable/tappable element must have a tap area of at least **44×44px** (WCAG) or **48×48px** (Material Design, recommended).
+WCAG 2.2 AA minimum (SC 2.5.8 Target Size — Minimum): **24×24px**, with exceptions
+for inline links and sufficiently spaced targets. This is a floor, not a goal:
+design systems should target **44×44px** (SC 2.5.5 Target Size — Enhanced, AAA)
+or **48×48px** (Material Design). The rules below assume the 44px target.
 
 ### Elements to Verify
 
