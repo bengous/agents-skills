@@ -385,7 +385,7 @@ Create 2-3 variants of this moodboard for the user to choose from.
 
 **Adapt the template, do not follow it blindly.** If the anchoring calls for a light-dominant design (e.g.: Japanese restaurant), invert the dark/light sections. If there is no structure or distinction family, remove the corresponding swatches.
 
-**Font loading in the widget**: the Visualizer supports Google Fonts and Fontshare stylesheet URLs via the `<link>` tags. Verify that the URLs are correct before rendering.
+**Font loading in the widget**: the template loads fonts via `<link>` tags. If the rendering widget strips `<link>` stylesheets, fall back to `@import` inside `<style>`. For Fontshare URLs, preconnect to `https://api.fontshare.com` and `https://cdn.fontshare.com` instead of the Google hosts. Verify that the URLs are correct before rendering.
 
 **Recommended size**: the template is designed for ~720px wide. The Visualizer adapts automatically.
 

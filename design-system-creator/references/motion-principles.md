@@ -236,10 +236,8 @@ It is NOT when:
 **Mandatory.** All animations must be disableable.
 
 The canonical CSS block lives in `references/accessibility-checklist.md`
-(section "Reduced Motion") — copy it from there. Single source: do not
-duplicate it here.
-
-This block is non-negotiable. It goes in the global CSS, before everything else.
+(section "Reduced Motion") — copy it from there; do not duplicate it here.
+It is non-negotiable and goes in the global CSS, before everything else.
 
 ---
 

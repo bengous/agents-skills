@@ -197,7 +197,7 @@ For Fontshare pairs, preconnect to `https://api.fontshare.com` and
 ## Selection rules
 
 1. **Read the anchoring first.** The pair must follow from the anchoring, not the other way around.
-2. **Test visually** before validating — a Google Fonts import + 3 lines of CSS is enough.
+2. **Test visually** before validating — a Google Fonts `<link>` + 3 lines of CSS is enough.
 3. **Never mix sources** (Google Fonts + Fontshare) without verifying that vertical metrics are compatible (line-height, baseline).
 4. **If no pair fits**, search on [Fontshare](https://www.fontshare.com/), [Google Fonts](https://fonts.google.com/), or [fonts.bunny.net](https://fonts.bunny.net/) (GDPR-compliant).
 5. **Maximum 3 weights per font** in production. More = more network weight, less coherence.

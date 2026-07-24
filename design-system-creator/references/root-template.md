@@ -53,10 +53,13 @@ The `/* FILL */` comments indicate values to define. The `/* e.g.: ... */` comme
   /* Optional RGB triplets — used by component-patterns.md focus rings via
      rgba(var(--color-action-rgb, R, G, B), 0.2). The patterns ship with a
      hardcoded example fallback; define these tokens (bare R, G, B values of
-     the matching color) to override it. Modern alternative without these
-     tokens: see references/modern-css.md §2 (relative color syntax / color-mix()). */
-  --color-action-rgb:      /* FILL if using component-patterns focus rings */;  /* e.g.: 184, 115, 64 */
-  --color-error-rgb:       /* FILL if using form error states */;  /* e.g.: 217, 64, 64 */
+     the matching color) to override it. REMOVE both lines entirely if unused:
+     a declared-but-empty value is not "undefined" and would break the rgba()
+     fallback, silently dropping the focus ring. --color-error-rgb pairs with
+     --color-error from the Semantic block below. Modern alternative without
+     these tokens: see references/modern-css.md §2 (relative color / color-mix()). */
+  --color-action-rgb:      /* FILL or REMOVE if not used */;  /* e.g.: 184, 115, 64 */
+  --color-error-rgb:       /* FILL or REMOVE if not used */;  /* e.g.: 217, 64, 64 */
 
 
   /* ----------------------------------------

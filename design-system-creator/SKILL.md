@@ -90,7 +90,7 @@ For full design systems, include:
 - Philosophy and anchoring.
 - Color tokens with roles, semantics, and application rules.
 - Contrast table with computed ratios (from the self-check).
-- Typography imports, tokens, scale, and usage rules.
+- Typography loading, tokens, scale, and usage rules.
 - Spacing, radius, motion, layout, and icon tokens.
 - Component rules and CSS for common states.
 - Responsive, accessibility, and theme-switching guidance when applicable.
@@ -107,7 +107,7 @@ Read only the files needed for the current step.
 |---|---|---|
 | `references/design-system-template.md` | Full deliverable | Complete markdown structure for a finished design system |
 | `references/anchoring-examples.md` | Step 1 | Anchoring examples, red flags, validation checklist |
-| `references/font-pairings.md` | Step 5 | Font pairs by universe with import guidance |
+| `references/font-pairings.md` | Step 5 | Font pairs by universe with loading guidance |
 | `references/root-template.md` | Step 6 | Complete CSS `:root` skeleton and token checklist |
 | `references/moodboard-template.md` | Moodboard needed | HTML moodboard template with palette, typography, hero, cards, rules |
 | `references/spacing-guide.md` | Step 6 | Spacing token usage from micro to structural scale |

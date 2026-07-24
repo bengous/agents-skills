@@ -473,8 +473,9 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   flex-direction: column;
   justify-content: flex-end;
   padding: var(--space-lg);
-  /* ADAPT — choose ONE gradient type based on the anchoring:
-     Dark = artisan, luxury, editorial */
+  /* ADAPT — choose ONE gradient type based on the anchoring; the rgba()
+     colors are example values — swap in the project's --color-bg /
+     --color-bg-alt equivalents. Dark = artisan, luxury, editorial */
   background: linear-gradient(to top, rgba(28, 26, 23, 0.85) 0%, transparent 60%);
   /* Light = wellness, nature
   background: linear-gradient(to top, rgba(245, 240, 232, 0.9) 0%, transparent 60%); */

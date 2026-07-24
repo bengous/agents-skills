@@ -2,9 +2,9 @@
 
 The default references use hex colors, px values and viewport media queries on
 purpose: they work everywhere and are trivial to audit. Everything below is
-**opt-in**. Adopt it when the project's browser matrix allows — every feature
-here is Baseline "widely available" in 2026 **except scroll-driven animations**
-(progressive enhancement only). When in doubt, ship the defaults.
+**opt-in**. Adopt a feature only when the project's browser matrix allows it —
+each section carries its own Baseline status (checked 2026-07; re-verify before
+relying on it). When in doubt, ship the defaults.
 
 Rule of thumb: opt in per feature, not wholesale. Each section states what it
 replaces in the default references.
@@ -12,6 +12,8 @@ replaces in the default references.
 ---
 
 ## 1. OKLCH for palette construction
+
+Baseline: widely available (since 2025-11).
 
 Hex values are fine as delivery format, but OKLCH is a better *construction*
 space: equal lightness steps look equally spaced (unlike HSL), so ramps stay
@@ -29,6 +31,10 @@ Replaces: hand-picked hex stops for hover/pressed in `root-template.md`'s
 action family. Keep the hex fallback comment if the matrix is uncertain.
 
 ## 2. color-mix() and relative color syntax
+
+Baseline: `color-mix()` widely available (since 2025-11); relative color syntax
+(`rgb(from …)`) only newly available — widely expected 2027-03. Verify your
+matrix before using the `from` form; `color-mix()` covers most of the same needs.
 
 Derive alpha variants and state stops from one source token — this removes the
 need for the `--color-*-rgb` triplet hack entirely.
@@ -56,6 +62,8 @@ overlay pattern. If you opt in, drop the `*-rgb` tokens from the deliverable.
 
 ## 3. light-dark() + color-scheme
 
+Baseline: newly available — widely expected 2026-11. Verify your matrix.
+
 For 1:1 token swaps between themes, `light-dark()` removes the duplicated
 `[data-theme]` blocks and fixes native form-control rendering.
 
@@ -77,15 +85,18 @@ differ structurally (different shadows, different imagery).
 
 ## 4. Container queries
 
+Baseline: widely available (since 2025-08).
+
 Components that live in varying containers (cards in a 3-col grid, a sidebar,
 a modal) should adapt to their container, not the viewport.
 
 ```css
-.card-grid { container-type: inline-size; }
+/* Each card measures its own slot — putting container-type on the grid itself
+   would measure the whole grid, which is just a viewport breakpoint again. */
+.card-grid > * { container-type: inline-size; }
 
 @container (max-width: 480px) {
-  .card { flex-direction: column; }
-  .card__media { aspect-ratio: 16/9; }
+  .card__image { aspect-ratio: 16/9; }  /* landscape media when the card is narrow */
 }
 ```
 
@@ -94,6 +105,8 @@ Replaces: viewport-only grid breakpoints in `responsive-rules.md` for
 
 ## 5. :has() for state styling
 
+Baseline: widely available (since 2026-06).
+
 Style a parent from its children's state — no JS class toggling.
 
 ```css
@@ -101,7 +114,7 @@ Style a parent from its children's state — no JS class toggling.
 .field:has(:user-invalid) .field__label { color: var(--color-error); }
 
 /* Card layout adapts when it contains an image */
-.card:has(.card__media) { padding-top: 0; }
+.card:has(.card__image) { padding-top: 0; }
 ```
 
 Replaces: the `.field--error` JS-managed class in `component-patterns.md`
@@ -109,8 +122,10 @@ Replaces: the `.field--error` JS-managed class in `component-patterns.md`
 
 ## 6. Scroll-driven animations (progressive enhancement ONLY)
 
-Declarative alternative to the IntersectionObserver reveal pattern. Not yet
-Baseline widely available — always wrap in `@supports` and keep the JS path.
+Baseline: limited availability (no Firefox support) — always wrap in
+`@supports` and keep the JS path.
+
+Declarative alternative to the IntersectionObserver reveal pattern.
 
 ```css
 @supports (animation-timeline: view()) {
@@ -130,6 +145,8 @@ Replaces (when supported): the IntersectionObserver JS in
 `motion-principles.md` Pattern 3. Reduced-motion rules still apply.
 
 ## 7. @property for animatable tokens
+
+Baseline: newly available — widely expected 2027-01. Verify your matrix.
 
 Custom properties interpolate as strings by default — gradients and numeric
 tokens jump instead of animating. `@property` declares the type so they

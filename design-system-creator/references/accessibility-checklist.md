@@ -2,7 +2,7 @@
 
 Accessibility is not a layer added after the fact. It is in every token, every component, every rule. This document lists the minimum requirements that the design system must meet.
 
-Target level: **WCAG 2.2 AA** (W3C Recommendation since October 2023; the EU Accessibility Act references EN 301 549, aligned on it).
+Target level: **WCAG 2.2 AA** (W3C Recommendation since October 2023). The EU harmonised standard EN 301 549 v3.2.1 still maps to WCAG 2.1; v4.1.1, incorporating WCAG 2.2, is expected in the OJEU in late 2026. Targeting 2.2 AA satisfies both.
 
 ---
 
@@ -42,6 +42,14 @@ Primary button:
 - [WebAIM Contrast Checker](https://webaim.org/resources/contrastchecker/) — quick check for a pair
 - [Colour Contrast Analyser](https://www.tpgi.com/color-contrast-checker/) — desktop app, measures on any screen
 - Chrome DevTools: Inspect → Accessibility → Contrast ratio (displayed automatically)
+
+### Computing a Ratio by Hand
+
+When no tool is available (async/agent contexts), compute it from the hex values:
+
+1. For each sRGB channel scaled to 0-1: `c ≤ 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4`
+2. Relative luminance: `L = 0.2126 × R + 0.7152 × G + 0.0722 × B`
+3. Ratio: `(L_lighter + 0.05) / (L_darker + 0.05)` — report as N:1
 
 ### Common Trap: Muted Text
 
@@ -104,7 +112,8 @@ content (sticky nav, cookie banners, sticky footers). Directly relevant to the
 sticky `.nav` pattern in `component-patterns.md`.
 
 ```css
-/* Keep keyboard-focused elements visible below a sticky header */
+/* Keep keyboard-focused elements visible below a sticky header.
+   --nav-height is project-defined; the fallback covers a typical nav. */
 html {
   scroll-padding-top: calc(var(--nav-height, 64px) + var(--space-sm));
 }
