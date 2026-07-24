@@ -38,6 +38,17 @@ function hdr(stepId) { return `[${CONFIG.NAME} step:${stepId} retry:${rt(stepId)
 `HUMAN_ARBITRATION` and acknowledgment constants are read only by the JS (or
 by steps at/after the resume front), so editing them never breaks the cache.
 
+Corollary — classify every constant by visibility. `RETRY_TOKENS` is
+prompt-visible BY DESIGN (that is its invalidation mechanism). Everything
+else must stay driver-only: a constant that feeds both a prompt and a
+mutating command (a phase allowlist used by the review-scope listing AND
+the commit command, say) cannot be widened mid-run without invalidating the
+review cache — and the regenerated finding IDs orphan the
+`HUMAN_ARBITRATION` keys that were the whole point of the resume. If the
+commit needs a wider list than the prompt, give the commit its own constant
+(real fix: a separate `COMMIT_ALLOW_EXTRA`, consumed only by the commit
+step).
+
 Typed pause with mandatory retryStep — without it, the failure result would
 replay from cache on resume and the pause would loop forever:
 
@@ -84,7 +95,9 @@ live fingerprints → spurious mutation pauses.
 ## 2. Fingerprint sandwich (read-only enforcement)
 
 No permissionMode can be imposed on workflow agents. Prevention is by prompt;
-DETECTION is by fingerprint before/after every non-mechanical agent call.
+DETECTION is by fingerprint before/after every contiguous READ-ONLY BLOCK of
+non-mechanical calls — never per agent (skill rule 7: per-agent sandwiching
+made 16 of 29 agents of a real P0 pure bookkeeping).
 
 ```js
 async function fingerprint(stepId, phaseName) {
@@ -115,17 +128,29 @@ function assertUnchanged(before, after, reason, phaseNum, afterStepId) {
   if (!same) pause(reason, { phase: phaseNum, before, after }, afterStepId)
 }
 
-// Usage — the sandwich:
-const before = await fingerprint(`p${p}.review.before`, phaseName)
+// Usage — the sandwich, per contiguous READ-ONLY BLOCK. Chain: the block's
+// `before` is whatever probe you already hold (the post-validation one);
+// the block's `after` is ONE bare fingerprint at the end. The review,
+// fact-check and arbitration below share a single sandwich — never probe
+// between two read-only agents with nothing else between them.
+const before = valProbe /* fp from the validation step — already in hand */
 const review = await agent(reviewPrompt, { schema: FINDINGS_SCHEMA, ...CONFIG.REVIEW })
-const after = await fingerprint(`p${p}.review.after`, phaseName)
-assertUnchanged(before, after, 'review_mutated_repo', p, `p${p}.review`)
+const fc = await agent(factcheckPrompt, { schema: DISPOSITIONS_SCHEMA, ...CONFIG.REVIEW })
+const arb = await agent(arbitrationPrompt, { schema: ARBITRATION_SCHEMA, ...CONFIG.REVIEW })
+const after = await fingerprint(`p${p}.readonly.end`, phaseName)
+assertUnchanged(before, after, 'readonly_block_mutated_repo', p, `p${p}.readonly.end`)
 ```
+
+Block-level attribution is coarser than per-agent — accepted: the decision
+is "pause" either way, and the per-agent transcripts identify the culprit
+for free.
 
 Empirically validated: caught a `-shm` mutation produced by a gate script
 merely *opening* a WAL SQLite file for reading. Cost note: each probe pays
-the full ~27K-token agent floor — merge probes with an adjacent exec (one
-agent returns both structures) where cadence allows.
+the full ~27-54K-token agent floor — hence block-level sandwiching above,
+plus the merged probe (fingerprint + adjacent commands in ONE agent, see
+template.js `probe()`). Mechanical tier: the cheapest model that copies
+output verbatim, never the frontier model.
 
 ## 3. Anti-empty-gate exec (1:1 verbatim matching)
 
@@ -302,6 +327,37 @@ Findings schema requires: exact location, violated contract, concrete
 failure scenario, evidence, minimal required outcome. Admissibility is a
 schema property, not a reviewer mood.
 
+Three rules paid for by one real loop (P0 retro, 2026-07-25):
+
+- **The ledger carries EVERY human decision, DISMISSED included.** A ledger
+  carrying only the REQUIRED_FIX entries shows the verifier
+  `humanArbitration: []` — which it reads as "no decision was ever made" —
+  and the human-closed escalation gets reopened.
+- **Apply the human-arbitration filter BEFORE honoring any verdict
+  channel.** A PAUSE escape hatch checked first silently overrides a human
+  DISMISSED and the pause loops forever:
+
+```js
+if (verif.verdict === 'PAUSE') {
+  const stillOpen = verif.reopened.filter(r => {
+    const d = HUMAN_ARBITRATION[r.findingId]
+    return !(d && d.verdict === 'DISMISSED')
+  })
+  // PAUSE aimed only at human-closed findings: the question is answered —
+  // treat as PASS. Any other PAUSE (including one with no reopened list,
+  // which is a deliberate call for a human) pauses as before.
+  if (!verif.reopened.length || stillOpen.length) {
+    pause('compliance_requested_pause', { phase: p, verif, stillOpen }, `${tag}.verify.${round}`)
+  }
+}
+```
+
+- **Review scope ⊆ commit allowlist.** Findings on files the phase cannot
+  stage (scratchpad scripts, other repos, already-executed probes) are
+  operator notes, not phase blockers — say so in the review prompt, or
+  arbitration burns agents dismissing them one by one (measured: 6 of 10
+  findings in a doc-only slice).
+
 ## 6. Commits judged on observed state
 
 Exit codes are LLM-reported; git state is not. The driver commits, then
@@ -344,3 +400,25 @@ Empirically validated: saved a phase commit after the executor misreported
 the same commit twice. The baseline itself is captured at preflight AFTER an
 empty-index gate (a driver commit embarks the whole index, so the baseline
 must reflect the remediated tree).
+
+## 7. Preflight proves the gate green
+
+A tool inventory (`x --version`) is not a preflight. Run the FULL
+deterministic gate on the virgin tree before phase 1: a red gate here means
+some phase will have to write outside its allowlist to validate itself — a
+configuration dead-end that otherwise surfaces as an unfixable escalation
+at commit time (measured: one implementation attempt burned, three human
+round-trips).
+
+```js
+const g0 = await exec('preflight.gate', 'Preflight', CONFIG.GATE, 'gate green on the virgin tree?')
+const g0fail = g0.filter(r => r.exitCode !== 0)
+if (g0fail.length) {
+  pause('gate_red_on_virgin_tree', { failures: g0fail,
+    hint: 'HUMAN GATE: the gate fails BEFORE any phase — no slice can validate without out-of-mandate writes. Fix the tree (own commit), then bump RETRY_TOKENS["preflight.gate"].' },
+    'preflight.gate')
+}
+```
+
+In template.js this run is folded into the single preflight `probe()` agent
+(index check + toolchain + gate + baseline fingerprint — one boot).

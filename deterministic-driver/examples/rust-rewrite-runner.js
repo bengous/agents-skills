@@ -30,6 +30,22 @@ export const meta = {
 // sandwich, detached CLI wrapper, findings pipeline, observed-state commits,
 // browser-profile gate windows with MUTATION_ACK re-baseline.
 // Prompts are in French (operator's language); the mechanics are generic.
+//
+// ⚠ RETRO 2026-07-25 — a second driver instantiated from this file ran its
+// P0 and measured the cost: this snapshot PREDATES skill rules 7/12/13/14.
+// Known over-spend and defects if copied as-is:
+//   - per-agent fingerprint sandwiches (sandwich per READ-ONLY BLOCK and
+//     chain probes instead — 16 of 29 P0 agents were pure bookkeeping);
+//   - probes never merged with adjacent execs (template.js probe() = one
+//     boot for commands + fingerprint);
+//   - toolchain inventory without RUNNING the gate on the virgin tree
+//     (a pre-existing red gate cost one impl attempt + 3 human round-trips);
+//   - findings ledger drops human DISMISSED decisions, and the PAUSE
+//     verdict channel bypasses the human-arbitration filter (pause loop on
+//     an already-answered question);
+//   - one rigor level for all phases (declare a per-phase review policy).
+// Copy MECHANISMS from this file; take the agent ECONOMY from
+// references/template.js. This snapshot is kept as-is for provenance.
 // ============================================================================
 
 // ============================================================================

@@ -25,8 +25,10 @@ script that owns every orchestration decision, while LLM agents are reduced
 to schema-constrained executors, probes, and reviewers. The script judges
 exit codes, fingerprints, and verdicts; no agent ever decides control flow.
 
-Distilled from a real 10-phase rewrite run (bookmarker → Rust, 2026-07-15):
-every rule below was paid for by an incident or measured on transcripts.
+Distilled from real runs — a 10-phase rewrite (bookmarker → Rust,
+2026-07-15) and the P0 slice of a compositor-mode driver (hyprpilot
+--isolated, 2026-07-25): every rule below was paid for by an incident or
+measured on transcripts.
 
 ## When to use
 
@@ -56,7 +58,11 @@ Code for every mechanism: [references/patterns.md](references/patterns.md).
 Ready-to-instantiate skeleton: [references/template.js](references/template.js).
 Full real-world instance (every mechanism assembled — frozen snapshot of the
 driver that ran a 10-phase Rust rewrite):
-[examples/rust-rewrite-runner.js](examples/rust-rewrite-runner.js).
+[examples/rust-rewrite-runner.js](examples/rust-rewrite-runner.js). Copy
+MECHANISMS from the example, never its agent economy: it predates rule 7's
+batching mandate and spends roughly twice the agents the same guarantees
+need (measured on a derived driver, retro 2026-07-25). Instantiate from the
+template.
 
 ## Design rules
 
@@ -112,13 +118,28 @@ driver that ran a 10-phase Rust rewrite):
    EARLY — the further the resume front advances, the more a global prompt
    change equals a cold restart.
 
-7. **The fixed per-agent overhead dominates cost — design around it.**
-   ~27K tokens of system prompt, instruction files, skills, and MCP schemas
-   per agent, paid on every 15-second probe. Merge fingerprint probes with
-   the adjacent exec where possible (one agent returns both structures);
-   use a lightweight agentType for mechanical executors. And probe every
-   external wrapper mechanism BEFORE launch — the one unprobed path
-   (a CLI run exceeding the Bash timeout) killed the run in phase 1.
+7. **The fixed per-agent overhead dominates cost — batch, don't multiply.**
+   ~27-54K tokens of boot (system prompt, instruction files, skills, MCP
+   schemas) per agent, whether it runs 2 commands or 20. Measured on a real
+   P0: 16 of 29 agents were bookkeeping probes producing 6% of output
+   tokens. The operative rules, none optional:
+   - ONE mechanical agent per contiguous mechanical sequence. A probe, a
+     gate run, and a file listing with no non-mechanical step between them
+     are one agent, not three.
+   - Fingerprint-sandwich per contiguous READ-ONLY BLOCK, not per agent.
+     Chain: the after of one block is the before of the next; never two
+     probes back-to-back with nothing between them. Per-agent attribution
+     is not worth a probe — the decision is "pause" either way and the
+     transcripts identify the culprit.
+   - Mechanical tier = the cheapest model that reliably copies command
+     output verbatim, never the frontier model.
+   - Write the agent budget per phase in the mapping-decisions block before
+     the driver may run, and log() the actual count per phase. A cost
+     nobody sees is a cost nobody debates. Nominal target: ~6 agents per
+     phase, ~3 more per correction round.
+   And probe every external wrapper mechanism BEFORE launch — the one
+   unprobed path (a CLI run exceeding the Bash timeout) killed a run in
+   phase 1.
 
 8. **Know your platform traps.**
    - `pgrep -x` matches the kernel comm, truncated to 15 chars: a pattern
@@ -150,6 +171,44 @@ driver that ran a 10-phase Rust rewrite):
     any mutation-suspected pause, establish which one it was (diff against
     backup, integrity checks), then acknowledge explicitly through the
     resume channel so the driver re-baselines on purpose, not by accident.
+    Corollary: fingerprint only what the run OWNS. A protected-path set
+    covering a parent directory other sessions legitimately write to
+    (a shared specs/ dir, `.claude/` which the harness itself touches)
+    pauses every phase on unrelated writes — protect the frozen files
+    themselves, not their directory (real pause: an unrelated spec landing
+    in the watched dir mid-verification).
+
+12. **Preflight must prove the gate GREEN on the virgin tree — run it,
+    don't inventory it.** Checking that tools exist (`shellcheck
+    --version`) while never running them on the tree lets a pre-existing
+    red gate masquerade as the first slice's failure. Measured cost of
+    missing this: one full implementation attempt burned on an
+    out-of-mandate fix, an escalation neither mechanical verdict could
+    unblock (keep the fix → commit-allowlist pollution; revert → red
+    gate), three human round-trips. Corollary: a phase that must write
+    outside its allowlist to green the gate is a configuration dead-end —
+    detect it at preflight, not at commit time.
+
+13. **A human decision is terminal — carry it everywhere, let no channel
+    override it.** Two halves, both violated in one real loop: (a) every
+    downstream agent that could reopen a question must receive ALL human
+    decisions — a ledger carrying only the REQUIRED_FIX entries showed the
+    verifier `humanArbitration: []`, which it read as "no decision was
+    ever made" and reopened a closed escalation; (b) no verdict channel,
+    including an escape hatch like PAUSE, may bypass the control flow that
+    honors human decisions — otherwise the pause loops forever on a
+    question the human already answered.
+
+14. **Scale the ceremony to the phase's stakes; bound review scope by the
+    commit allowlist.** One rigor level for all phases overpays the
+    low-stakes ones: a doc-only slice got the full review→fact-check→
+    arbitration→verification chain — 6 agents, 204 turns — for 2 minor
+    fixes and 7 findings that were structurally unfixable (scratchpad
+    scripts outside the repo, already executed). Declare a per-phase
+    review policy (full chain for code slices, single light review for doc
+    slices), and tell the review its scope IS the phase allowlist: what
+    cannot be committed cannot be fixed — findings there are operator
+    notes, not phase blockers.
 
 ## Operating a paused run — checklist
 
@@ -157,8 +216,11 @@ driver that ran a 10-phase Rust rewrite):
    It must be self-sufficient; if it is not, that is a driver bug to fix.
 2. Treat the cause (close browsers, restore state, decide arbitration…).
 3. Edit the script's top constants — the only resume channel:
-   - `RETRY_TOKENS[retryStep] += 1` — ALWAYS, rule 5. No exceptions for
-     "the prompt change will break the cache anyway".
+   - `RETRY_TOKENS[retryStep] += 1` — ALWAYS when the pause carries a
+     retryStep, rule 5. No exceptions for "the prompt change will break
+     the cache anyway". When `retryStep` is null (pure JS gate:
+     arbitration, acknowledgment constants), there is no observation to
+     replay — the edited constant is the entire channel; bump nothing.
    - `HUMAN_ARBITRATION[findingId] = {verdict, requiredOutcome?}` for
      escalated findings.
    - mutation-suspected pauses: record the verification you performed in
@@ -181,7 +243,23 @@ driver that ran a 10-phase Rust rewrite):
       constants) empty/null at the top, above CONFIG.
 - [ ] Every pause has a `retryStep` pointing at the observation to replay,
       and a hint saying exactly what to edit.
-- [ ] Fingerprint sandwich around every non-mechanical agent call.
+- [ ] Fingerprint sandwich around every contiguous READ-ONLY BLOCK of
+      non-mechanical calls; consecutive probes chained, never doubled
+      (rule 7).
+- [ ] Preflight RUNS the full deterministic gate on the virgin tree
+      (rule 12) — a tool inventory alone is not a preflight.
+- [ ] Agent budget per phase written in the mapping-decisions block;
+      actual count logged per phase (rule 7).
+- [ ] Per-phase review policy declared (full chain / light / none) and
+      review scope bounded to the phase allowlist (rule 14).
+- [ ] Human decisions travel whole: the ledger carries every verdict
+      including DISMISSED, and no verdict channel bypasses the
+      human-arbitration filter (rule 13).
+- [ ] Resume constants classified prompt-visible (`RETRY_TOKENS` — by
+      design) or driver-only (everything else); no driver-only constant
+      feeds a value that appears in any prompt — widening one mid-run
+      would invalidate the cache and regenerate the finding IDs your
+      resume keys reference.
 - [ ] Commits judged on observed state (head moved + worktree clean), never
       on reported exit codes; committed-check at every phase start.
 - [ ] External CLI wrappers probed for: >600 s runs, effective model/effort
@@ -205,3 +283,7 @@ driver that ran a 10-phase Rust rewrite):
 | Letting a schema-enforced agent wait by ending its turn | Agent killed by StructuredOutput enforcement; whole run dies |
 | Resume channel via `args` | Silently ignored on resume; run replays original args |
 | Live guard at the top of the script | Invalidates the entire prefix cache; re-verify where it matters (start of destructive phases) instead |
+| One constant feeds both a prompt and the commit command | Widening it mid-run invalidates the review cache; regenerated finding IDs orphan the resume keys |
+| PROTECTED covers a parent directory other sessions write to | Every concurrent legitimate write pauses the run; protect the frozen files, not their directory |
+| Verdict escape hatch (PAUSE) checked before the human-arbitration filter | A human DISMISSED is silently overridden; the pause loops on an answered question |
+| Ownership inferred from "absent from the start snapshot" | Anything created during the window also matches — including windows/resources of concurrent users; prove ownership by lineage (a PID you spawned), never by set subtraction |
