@@ -259,7 +259,7 @@ Each template is a skeleton to fill with the design system tokens. Comments mark
   justify-content: space-between;
 
   /* ADAPT — backdrop-blur if the nav should be semi-transparent.
-     The -webkit- prefix is only needed for Safari < 15.4.
+     The -webkit- prefix is only needed for Safari < 18.
   background: rgba(28, 26, 23, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
