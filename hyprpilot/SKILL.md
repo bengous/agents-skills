@@ -95,7 +95,10 @@ What differs from shared mode:
 
 - No focus or cursor to steal, so `--focus` is accepted and does nothing.
 - No parking and no teardown dispositions: `target` just focuses the match
-  inside the desktop, and `--untracked` / `--on-teardown` are refused.
+  inside the desktop, and `--untracked` / `--on-teardown` are refused. It proves
+  the focus, not that a frame showing it has been painted — toplevels often stack
+  at the same geometry, so a `shot` fired immediately after can still return the
+  previous window. Put `wait --changed-from <last.png>` between the two.
 - `windows` and `status` report the desktop's own clients and geometry, never
   the host's.
 - `teardown` destroys the desktop whole, so there is no window to restore and

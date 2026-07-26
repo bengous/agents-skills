@@ -4428,6 +4428,17 @@ scenario_isolated_target() (
 		return 1
 	fi
 	assert_nested_no_parking "${signature}" "target B isolated_target" || return 1
+	# `target` prouve le focus dans l'instance, pas qu'une frame l'ait presente :
+	# les deux toplevels sont empiles a la meme geometrie, donc une capture prise
+	# entre le focuswindow et le repaint rend encore A. C'est exactement ce que
+	# `wait --changed-from` borne, et un repaint qui n'arrive jamais rougit ici.
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" wait --changed-from "${scenario_tmp}/iso-target-a.png" \
+			--timeout 5s 2>&1
+	); then
+		fail "repaint apres target B isolated_target observe=${command_output}; attendu=frame differente de A"
+		return 1
+	fi
 	if ! shot_output=$(
 		"${HYPRPILOT}" --session "${session}" shot iso-target-b --out "${scenario_tmp}" 2>&1
 	) || [[ ! -s ${scenario_tmp}/iso-target-b.png ]]; then

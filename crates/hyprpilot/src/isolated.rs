@@ -817,6 +817,21 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
     let mut notes = Vec::new();
     let mut failures = Vec::new();
 
+    // A console reaped on one of the user's workspaces (where `session show` put
+    // it) makes the host refocus, and Hyprland's refocus re-warps the cursor —
+    // the fact `guard` is built around. The output removal that follows reads the
+    // cursor as it finds it, so that warp would outlive the teardown as if the
+    // user had moved the mouse themselves. Sending the console back to the agent
+    // workspace first is the whole fix: it then dies where nothing of the user's
+    // looks, which is the path a hidden desktop already took.
+    if let Some(instance) = plan.instance {
+        notes.extend(park_console_before_death(
+            session,
+            isolated,
+            instance.console,
+        ));
+    }
+
     match plan.instance {
         None => notes.push("nested compositor was never spawned".to_owned()),
         Some(instance) => {
@@ -864,6 +879,38 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
     )?);
 
     Ok(Teardown { notes, failures })
+}
+
+/// Best effort by construction: everything this protects is cosmetic next to a
+/// teardown that must destroy the desktop whatever the host answers, so a failure
+/// is a note and never a refusal. `shown` is the state's memory of where the
+/// console was put, so the question is asked of the host instead.
+fn park_console_before_death(session: &str, isolated: &Isolated, console: &str) -> Vec<String> {
+    let Ok(current) = host_console(console, session) else {
+        return vec![format!(
+            "console window {console} could not be read before the kill; left where it is"
+        )];
+    };
+    if visibility(&current.workspace.name, &isolated.workspace) == Visibility::Hidden {
+        return Vec::new();
+    }
+    match hypr::dispatch(&[
+        "movetoworkspacesilent",
+        &format!(
+            "{},address:{console}",
+            session::workspace_selector(&isolated.workspace)
+        ),
+    ]) {
+        Ok(()) => vec![format!(
+            "shown console window {console} put back on {} before its compositor died",
+            isolated.workspace
+        )],
+        Err(error) => vec![format!(
+            "shown console window {console} could not be put back on {} ({error}); the user's \
+             cursor may end up where the host refocused",
+            isolated.workspace
+        )],
+    }
 }
 
 /// A console window as the state knows it. The pid is part of the identity
