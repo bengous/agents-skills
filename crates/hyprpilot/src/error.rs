@@ -64,6 +64,32 @@ pub enum Error {
     NestedRefused {
         session: String,
     },
+    /// A process of the agent desktop survived its teardown, so the headless
+    /// output must stay: removing it would drop the console on the user.
+    AgentDesktopAlive {
+        session: String,
+        detail: String,
+    },
+    /// The state describes an agent desktop no command can act on: no nested
+    /// compositor, or no window recorded yet.
+    AgentDesktopUnready {
+        session: String,
+        reason: String,
+    },
+    /// Teardown removed everything it owns but one restoration step failed; the
+    /// summary still says what was cleaned, so the session is known to be gone.
+    TeardownIncomplete {
+        summary: String,
+        failures: Vec<RestoreFailure>,
+    },
+    /// A capture outlived its bounded deadline and was killed. In an agent
+    /// desktop this has one documented cause, named by `diagnosis`.
+    CaptureTimeout {
+        command: String,
+        after_ms: u128,
+        signal: &'static str,
+        diagnosis: String,
+    },
     /// An output named after this session already exists: a leftover, never a
     /// resource to reuse.
     AgentOutputExists {
@@ -130,21 +156,8 @@ impl fmt::Display for Error {
                  `hyprpilot --session {name} teardown` first",
                 path.display()
             ),
-            Self::SharedSessionExists { name } => write!(
-                f,
-                "shared session `{name}` is already active and the shared output \
-                 `{}` is a singleton — run `hyprpilot --session {name} teardown` first, or start \
-                 an agent desktop with `--isolated`",
-                crate::session::OUTPUT_NAME
-            ),
-            Self::CorruptSession { path, message } => {
-                write!(
-                    f,
-                    "session file {} is corrupt ({message}); no output was removed. ",
-                    path.display()
-                )?;
-                write_session_recovery(f)
-            }
+            Self::SharedSessionExists { name } => write_shared_session_exists(f, name),
+            Self::CorruptSession { path, message } => write_corrupt_session(f, path, message),
             Self::UnsupportedSessionVersion { path, found } => {
                 write_unsupported_version(f, path, *found)
             }
@@ -158,6 +171,22 @@ impl fmt::Display for Error {
                 "`{command}` is not supported for isolated sessions — {hint}"
             ),
             Self::NestedRefused { session } => write_nested_refused(f, session),
+            Self::AgentDesktopAlive { session, detail } => {
+                write_agent_desktop_alive(f, session, detail)
+            }
+            Self::AgentDesktopUnready { session, reason } => {
+                write!(f, "agent desktop `{session}` is not ready: {reason}")
+            }
+            Self::TeardownIncomplete { summary, failures } => {
+                write!(f, "{summary}")?;
+                write_restore_failures(f, "but the desktop was not fully restored:", failures)
+            }
+            Self::CaptureTimeout {
+                command,
+                after_ms,
+                signal,
+                diagnosis,
+            } => write_capture_timeout(f, command, *after_ms, signal, diagnosis),
             Self::AgentOutputExists { output, session } => {
                 write_agent_output_exists(f, output, session)
             }
@@ -228,6 +257,55 @@ fn write_agent_output_exists(
     )
 }
 
+fn write_shared_session_exists(f: &mut fmt::Formatter<'_>, name: &str) -> fmt::Result {
+    write!(
+        f,
+        "shared session `{name}` is already active and the shared output `{}` is a singleton — run \
+         `hyprpilot --session {name} teardown` first, or start an agent desktop with `--isolated`",
+        crate::session::OUTPUT_NAME
+    )
+}
+
+fn write_corrupt_session(
+    f: &mut fmt::Formatter<'_>,
+    path: &std::path::Path,
+    message: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "session file {} is corrupt ({message}); no output was removed. ",
+        path.display()
+    )?;
+    write_session_recovery(f)
+}
+
+fn write_agent_desktop_alive(
+    f: &mut fmt::Formatter<'_>,
+    session: &str,
+    detail: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "agent desktop `{session}` still has live processes ({detail}) — refusing to remove its \
+         headless output, since its console window would land on the user's desktop; run \
+         `hyprpilot --session {session} teardown` again"
+    )
+}
+
+fn write_capture_timeout(
+    f: &mut fmt::Formatter<'_>,
+    command: &str,
+    after_ms: u128,
+    signal: &str,
+    diagnosis: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "`{command}` produced no frame within {after_ms}ms and was killed (SIG{signal}) — \
+         {diagnosis}"
+    )
+}
+
 fn write_host_deviation(
     f: &mut fmt::Formatter<'_>,
     what: &str,
@@ -250,11 +328,19 @@ fn write_guarded(
         Some(action) => write!(f, "action failed: {action}")?,
         None => write!(f, "action executed but desktop invariant violated")?,
     }
-    if restore.is_empty() {
+    write_restore_failures(f, "restoration failed:", restore)
+}
+
+fn write_restore_failures(
+    f: &mut fmt::Formatter<'_>,
+    header: &str,
+    failures: &[RestoreFailure],
+) -> fmt::Result {
+    if failures.is_empty() {
         return Ok(());
     }
-    write!(f, "\nrestoration failed:")?;
-    for failure in restore {
+    write!(f, "\n{header}")?;
+    for failure in failures {
         write!(
             f,
             "\n- {}: expected {}, actual {}",

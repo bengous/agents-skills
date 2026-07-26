@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::error::{Error, RestoreFailure};
+use crate::guard;
 use crate::hypr;
 
 /// Shared mode drives the user's windows on this single output; it is a
@@ -33,6 +34,40 @@ const WINDOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const WINDOW_PLACE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const VERIFIED_PLACEMENT_READS: u8 = 2;
+
+/// Bounded escalation for anything this crate has to bring down: the polite
+/// request gets `polite`, then `SIGTERM`, then `SIGKILL`, then the caller gives
+/// up. Shared by the agent desktop's exit (§6) and by a blocked capture (§5);
+/// the timings are parameters so the ladder is testable without a live process.
+#[derive(Debug, Clone, Copy)]
+pub struct Escalation {
+    pub polite: Duration,
+    pub term: Duration,
+    pub kill: Duration,
+    pub poll: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Wait,
+    /// Signal name as `kill -s` spells it.
+    Signal(&'static str),
+    GiveUp,
+}
+
+impl Escalation {
+    pub fn step(self, elapsed: Duration) -> Step {
+        if elapsed < self.polite {
+            Step::Wait
+        } else if elapsed < self.polite + self.term {
+            Step::Signal("TERM")
+        } else if elapsed < self.polite + self.term + self.kill {
+            Step::Signal("KILL")
+        } else {
+            Step::GiveUp
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -123,13 +158,10 @@ pub struct Pending {
 }
 
 impl Pending {
-    pub const TEARDOWN: Self = Self::new("teardown", "S5");
     pub const KEY: Self = Self::new("key", "S7");
     pub const TYPE: Self = Self::new("type", "S7");
     pub const CLICK: Self = Self::new("click", "S7");
     pub const SCROLL: Self = Self::new("scroll", "S7");
-    pub const SHOT: Self = Self::new("shot", "S8");
-    pub const WAIT: Self = Self::new("wait", "S8");
     pub const TARGET: Self = Self::new("target", "S9");
     pub const WINDOWS: Self = Self::new("windows", "S9");
     pub const STATUS: Self = Self::new("status", "S11");
@@ -639,7 +671,11 @@ pub fn current_window(
     pending: Pending,
 ) -> Result<(CurrentSession, hypr::Client), Error> {
     let session = load(name)?;
-    let shared = session.shared(pending)?;
+    shared_window(session.shared(pending)?)
+}
+
+/// Same, for a caller that already routed by mode and holds the payload.
+pub fn shared_window(shared: &Shared) -> Result<(CurrentSession, hypr::Client), Error> {
     let clients = hypr::clients()?;
     let window = clients
         .into_iter()
@@ -1582,6 +1618,94 @@ pub fn start(
     ))
 }
 
+/// What removing an output we own left behind: the notes for the teardown
+/// message, and the cursor failure when the warp back could not be verified.
+pub struct OutputRemoval {
+    pub notes: Vec<String>,
+    pub failure: Option<RestoreFailure>,
+}
+
+/// Removes an output this crate created and puts the user's cursor back where
+/// it was: `hyprctl output remove` re-centres it (fact §2.8 of the isolated
+/// design), and reading `cursorpos` immediately before the removal restores it
+/// to the pixel. This is the one mechanism both modes' teardown use — it is
+/// what lifts the v2 limitation "teardown does not restore the cursor".
+///
+/// An output already gone is an idempotent success (§6), and needs no warp:
+/// nothing moved the cursor. `fallback` is the position to warp back to when
+/// `cursorpos` cannot be read at the last moment; the isolated start passes the
+/// snapshot it took before its first mutation.
+pub fn remove_output_restoring_cursor(
+    output: &str,
+    fallback: Option<(i32, i32)>,
+) -> Result<OutputRemoval, Error> {
+    if find_output(output)?.is_none() {
+        return Ok(OutputRemoval {
+            notes: vec![format!("output {output} already absent")],
+            failure: None,
+        });
+    }
+    let saved = match hypr::cursor_pos() {
+        Ok(cursor) => Ok(cursor),
+        Err(error) => fallback.ok_or(error),
+    };
+    hypr::output_remove(output)?;
+    let mut notes = vec![format!("removed output {output}")];
+    let failure = match saved {
+        Ok(cursor) => match restore_cursor(cursor) {
+            Ok(()) => {
+                notes.push(format!("cursor restored to {cursor:?}"));
+                None
+            }
+            Err(failure) => Some(failure),
+        },
+        Err(error) => Some(RestoreFailure {
+            what: "cursor",
+            expected: "the position held before `output remove`".to_owned(),
+            actual: format!("reading it failed: {error}"),
+        }),
+    };
+    Ok(OutputRemoval { notes, failure })
+}
+
+/// Warps the cursor back and verifies it landed, within the existing warp
+/// tolerance — never an exact compare.
+fn restore_cursor(cursor: (i32, i32)) -> Result<(), RestoreFailure> {
+    let restored = guard::restore_cursor(cursor);
+    let actual = hypr::cursor_pos();
+    if restored.is_ok() && matches!(&actual, Ok(actual) if guard::cursor_near(*actual, cursor)) {
+        return Ok(());
+    }
+    Err(RestoreFailure {
+        what: "cursor",
+        expected: format!("{cursor:?}"),
+        actual: match (restored, actual) {
+            (Err(error), _) => format!("restore failed: {error}"),
+            (Ok(()), Ok(actual)) => format!("{actual:?}"),
+            (Ok(()), Err(error)) => format!("verification failed: {error}"),
+        },
+    })
+}
+
+/// Signals one pid by number. The caller is responsible for having established
+/// that the pid is still the process it recorded.
+pub fn signal_process(pid: u32, signal: &str) -> Result<(), Error> {
+    let output = Command::new("kill")
+        .args(["-s", signal, "--", &pid.to_string()])
+        .output()
+        .map_err(|source| Error::Io {
+            context: format!("running `kill -s {signal} {pid}`"),
+            source,
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(Error::Tool {
+        command: format!("kill -s {signal} {pid}"),
+        message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
 fn kill_process_group(pid: u32) -> Result<(), Error> {
     let output = Command::new("kill")
         .args(["--", &format!("-{pid}")])
@@ -1824,10 +1948,22 @@ fn sweep_orphan_output() -> Result<String, Error> {
     };
     let clients = hypr::clients()?;
     ensure_output_empty_for_sweep(output, &monitors, &clients)?;
-    hypr::output_remove(OUTPUT_NAME)?;
-    Ok(format!(
-        "no active session, removed empty orphan output {OUTPUT_NAME}"
-    ))
+    // The orphan sweep removes an output too, so it owes the user the same
+    // cursor (fact §2.8).
+    let removal = remove_output_restoring_cursor(OUTPUT_NAME, None)?;
+    let summary = format!(
+        "no active session, removed empty orphan output {OUTPUT_NAME} — {}",
+        removal.notes.join(", ")
+    );
+    report_teardown(summary, removal.failure.into_iter().collect())
+}
+
+fn report_teardown(summary: String, failures: Vec<RestoreFailure>) -> Result<String, Error> {
+    if failures.is_empty() {
+        Ok(summary)
+    } else {
+        Err(Error::TeardownIncomplete { summary, failures })
+    }
 }
 
 enum StateLocation {
@@ -1837,48 +1973,93 @@ enum StateLocation {
     PreV3(PathBuf),
 }
 
+/// State already gone is an idempotent success (§6).
 fn clear_state(location: &StateLocation) -> Result<(), Error> {
     let (path, result) = match location {
         StateLocation::Session(dir) => (dir, fs::remove_dir_all(dir)),
         StateLocation::PreV3(file) => (file, fs::remove_file(file)),
     };
-    result.map_err(|source| Error::Io {
-        context: format!("removing session state {}", path.display()),
-        source,
-    })
+    match result {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            context: format!("removing session state {}", path.display()),
+            source,
+        }),
+    }
 }
 
+/// The last two steps both modes share (§6.4 and §6.5): the output goes with
+/// the cursor put back, then the state. `failures` carries what earlier steps
+/// could not undo, so the message reports every one of them at once.
 fn finish_teardown(
     location: &StateLocation,
     output_name: &str,
     output_created: bool,
     mut notes: Vec<String>,
+    mut failures: Vec<RestoreFailure>,
 ) -> Result<String, Error> {
-    if !output_created {
-        notes.push(format!("output {output_name} pre-existed — left in place"));
-    } else if find_output(output_name)?.is_some() {
-        hypr::output_remove(output_name)?;
-        notes.push(format!("removed output {output_name}"));
+    if output_created {
+        let removal = remove_output_restoring_cursor(output_name, None)?;
+        notes.extend(removal.notes);
+        failures.extend(removal.failure);
     } else {
-        notes.push(format!("output {output_name} already absent"));
+        notes.push(format!("output {output_name} pre-existed — left in place"));
     }
 
     clear_state(location)?;
     notes.push("session state cleared".to_owned());
-    Ok(format!("teardown done — {}", notes.join(", ")))
+    report_teardown(format!("teardown done — {}", notes.join(", ")), failures)
+}
+
+/// An agent desktop has no window dispositions to choose from, so the shared
+/// flags are refused rather than silently ignored (§6.1).
+fn refuse_teardown_flags(kill: bool, close: bool) -> Result<(), Error> {
+    let flag = if kill {
+        "--kill"
+    } else if close {
+        "--close"
+    } else {
+        return Ok(());
+    };
+    Err(Error::Invalid {
+        what: "teardown flag",
+        value: flag.to_owned(),
+        hint: "an agent desktop has no window dispositions: `dispatch exit` takes the whole \
+               desktop down anyway — run `teardown` without flags"
+            .to_owned(),
+    })
 }
 
 pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
     match load_from(&session_path(name)?) {
         Ok(session) => {
-            let shared = session.shared(Pending::TEARDOWN)?;
-            let notes = teardown_shared(shared, kill, close)?;
-            finish_teardown(
-                &StateLocation::Session(session_dir(name)?),
-                &shared.output,
-                shared.output_created,
-                notes,
-            )
+            let location = StateLocation::Session(session_dir(name)?);
+            match &session.state {
+                ModeState::Shared(shared) => {
+                    let notes = teardown_shared(shared, kill, close)?;
+                    finish_teardown(
+                        &location,
+                        &shared.output,
+                        shared.output_created,
+                        notes,
+                        Vec::new(),
+                    )
+                }
+                // The whole desktop goes: the instance dies first, then the
+                // output it rendered into, in that order only (§6).
+                ModeState::Isolated(isolated) => {
+                    refuse_teardown_flags(kill, close)?;
+                    let brought_down = crate::isolated::teardown(name, isolated)?;
+                    finish_teardown(
+                        &location,
+                        &isolated.output,
+                        true,
+                        brought_down.notes,
+                        brought_down.failures,
+                    )
+                }
+            }
         }
         // The v3 layout moved, so teardown stays the one command that can still
         // clean up what an older build left at the old location.
@@ -1900,12 +2081,24 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
         PreV3Session::V2(shared) => {
             let mut notes = vec![migrated];
             notes.extend(teardown_shared(&shared, kill, close)?);
-            finish_teardown(&location, &shared.output, shared.output_created, notes)
+            finish_teardown(
+                &location,
+                &shared.output,
+                shared.output_created,
+                notes,
+                Vec::new(),
+            )
         }
         PreV3Session::Legacy(legacy) => {
             let mut notes = vec![migrated];
             notes.extend(teardown_legacy(&legacy, kill, close)?);
-            finish_teardown(&location, &legacy.output, legacy.output_created, notes)
+            finish_teardown(
+                &location,
+                &legacy.output,
+                legacy.output_created,
+                notes,
+                Vec::new(),
+            )
         }
     }
 }
@@ -1913,18 +2106,22 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Criteria, DEFAULT_SESSION_NAME, Disposition, Instance, Isolated, Mode, ModeState, Pending,
-        Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session, Shared, TargetLookup,
-        TargetMode, TrackedWindow, WindowAction, ambiguous_error, effective_output_size,
-        ensure_output_empty_for_sweep, find_shared_session_in, load_from, load_pre_v3_from,
-        monitor_rule, parse_size, persist_target_before_activation, place, refuse_pre_v3_state_at,
-        resize_has_applied, resize_unsupported, resolve, resolve_name_from, save_new_to, save_over,
-        target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
-        workspace_selector,
+        Criteria, DEFAULT_SESSION_NAME, Disposition, Escalation, Instance, Isolated, Mode,
+        ModeState, Pending, Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session,
+        Shared, StateLocation, Step, TargetLookup, TargetMode, TrackedWindow, WindowAction,
+        ambiguous_error, clear_state, effective_output_size, ensure_output_empty_for_sweep,
+        find_shared_session_in, load_from, load_pre_v3_from, monitor_rule, parse_size,
+        persist_target_before_activation, place, refuse_pre_v3_state_at, refuse_teardown_flags,
+        report_teardown, resize_has_applied, resize_unsupported, resolve, resolve_name_from,
+        save_new_to, save_over, target_disposition, target_layout_is_verified, target_lookup,
+        teardown_plan, workspace_selector,
     };
-    use crate::error::Error;
-    use crate::hypr::{Client, Monitor};
+    use crate::error::{Error, RestoreFailure};
+    use crate::guard;
     use std::error::Error as StdError;
+    use std::time::Duration;
+
+    use crate::hypr::{Client, Monitor};
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
     const AMBIGUOUS_CLIENTS_JSON: &str = include_str!("../fixtures/clients-ambiguous.json");
@@ -2416,6 +2613,110 @@ mod tests {
     }
 
     #[test]
+    fn escalation_orders_the_polite_request_then_sigterm_then_sigkill() {
+        let ladder = Escalation {
+            polite: Duration::from_millis(100),
+            term: Duration::from_millis(50),
+            kill: Duration::from_millis(25),
+            poll: Duration::from_millis(5),
+        };
+
+        assert_eq!(ladder.step(Duration::ZERO), Step::Wait);
+        assert_eq!(ladder.step(Duration::from_millis(99)), Step::Wait);
+        assert_eq!(
+            ladder.step(Duration::from_millis(100)),
+            Step::Signal("TERM")
+        );
+        assert_eq!(
+            ladder.step(Duration::from_millis(149)),
+            Step::Signal("TERM")
+        );
+        assert_eq!(
+            ladder.step(Duration::from_millis(150)),
+            Step::Signal("KILL")
+        );
+        assert_eq!(
+            ladder.step(Duration::from_millis(174)),
+            Step::Signal("KILL")
+        );
+        assert_eq!(ladder.step(Duration::from_millis(175)), Step::GiveUp);
+    }
+
+    #[test]
+    fn the_cursor_check_of_teardown_keeps_the_warp_tolerance() {
+        // §6.4 verifies the restored cursor with the tolerance the warps already
+        // use, never with an exact compare.
+        assert_eq!(guard::WARP_TOLERANCE, 1);
+        assert!(guard::cursor_near((4652, 1066), (4652, 1066)));
+        assert!(guard::cursor_near((4653, 1067), (4652, 1066)));
+        assert!(!guard::cursor_near((4654, 1066), (4652, 1066)));
+        assert!(!guard::cursor_near((4652, 1064), (4652, 1066)));
+    }
+
+    #[test]
+    fn isolated_teardown_refuses_the_shared_window_flags() -> Result<(), Box<dyn StdError>> {
+        refuse_teardown_flags(false, false)?;
+
+        for (kill, close, flag) in [(true, false, "--kill"), (false, true, "--close")] {
+            let error = refuse_teardown_flags(kill, close)
+                .err()
+                .ok_or_else(|| format!("{flag} was accepted for an agent desktop"))?
+                .to_string();
+            assert!(error.contains(flag), "{error}");
+            assert!(error.contains("no window dispositions"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_state_already_gone_is_an_idempotent_success() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let session = dir.path().join("sessions").join("alpha");
+        std::fs::create_dir_all(&session)?;
+        std::fs::write(session.join("session.json"), b"{}")?;
+
+        clear_state(&StateLocation::Session(session.clone()))?;
+        assert!(!session.exists());
+        clear_state(&StateLocation::Session(session))?;
+
+        let legacy = dir.path().join("session.json");
+        std::fs::write(&legacy, b"{}")?;
+        clear_state(&StateLocation::PreV3(legacy.clone()))?;
+        clear_state(&StateLocation::PreV3(legacy))?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_teardown_that_could_not_restore_reports_both() -> Result<(), Box<dyn StdError>> {
+        let summary =
+            "teardown done — removed output hyprpilot-alpha, session state cleared".to_owned();
+        assert_eq!(report_teardown(summary.clone(), Vec::new())?, summary);
+
+        let error = report_teardown(
+            summary,
+            vec![RestoreFailure {
+                what: "cursor",
+                expected: "(4652, 1066)".to_owned(),
+                actual: "(960, 540)".to_owned(),
+            }],
+        )
+        .err()
+        .ok_or("an unrestored cursor was reported as a clean teardown")?;
+
+        assert!(matches!(&error, Error::TeardownIncomplete { .. }));
+        let message = error.to_string();
+        // The session is gone either way, and the message still says so.
+        assert!(message.contains("teardown done"), "{message}");
+        assert!(message.contains("session state cleared"), "{message}");
+        assert!(message.contains("not fully restored"), "{message}");
+        assert!(
+            message.contains("cursor: expected (4652, 1066), actual (960, 540)"),
+            "{message}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn teardown_plan_processes_windows_in_reverse_order() -> Result<(), Box<dyn StdError>> {
         let mut session = sample_shared();
         session.windows.push(TrackedWindow {
@@ -2734,16 +3035,14 @@ mod tests {
     #[test]
     fn isolated_sessions_route_every_pending_command_to_its_slice() -> Result<(), Box<dyn StdError>>
     {
-        // `session start --isolated` is no longer in this list: it is
-        // implemented, and `crate::isolated` owns it.
+        // `session start --isolated`, `teardown`, `shot` and `wait` are no
+        // longer in this list: they are implemented, and `crate::isolated` owns
+        // their isolated half.
         let pending = [
-            Pending::TEARDOWN,
             Pending::KEY,
             Pending::TYPE,
             Pending::CLICK,
             Pending::SCROLL,
-            Pending::SHOT,
-            Pending::WAIT,
             Pending::TARGET,
             Pending::WINDOWS,
             Pending::STATUS,

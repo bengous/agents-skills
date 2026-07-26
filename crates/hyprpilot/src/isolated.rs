@@ -15,12 +15,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, RestoreFailure};
-use crate::guard;
 use crate::hypr::{self, Ctl};
 use crate::session::{self, Instance, Isolated, ModeState, Session};
 
@@ -39,12 +37,26 @@ const CONSOLE_TITLE_PREFIX: &str = "aquamarine - WAYLAND-";
 const NESTED_BINARY: &str = "Hyprland";
 const NESTED_CONFIG_FILE: &str = "hyprland.conf";
 const NESTED_LOG_FILE: &str = "hyprland.log";
+/// Where teardown keeps the nested compositor's own log, next to the session's
+/// (the redirected stdout of the spawn), before the instance directory goes.
+const INSTANCE_LOG_FILE: &str = "instance.log";
 const INSTANCE_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a rolled-back agent desktop gets to exit on `dispatch exit` and
 /// `SIGTERM` before `SIGKILL`.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// §6.2, on the registered pid: `dispatch exit` first, then `SIGTERM`, then
+/// `SIGKILL`, then the teardown refuses to remove the output.
+const EXIT_ESCALATION: session::Escalation = session::Escalation {
+    polite: EXIT_GRACE,
+    term: EXIT_GRACE,
+    kill: Duration::from_secs(1),
+    poll: session::POLL_INTERVAL,
+};
+/// §6.1 is a courtesy, not a wait: an app that wants longer than this to unmap
+/// is taken down by `dispatch exit`.
+const POLITE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Session-independent half of the generated nested config (§4.4).
 const LAYOUT_BLOCKS: &str = "general {
@@ -578,13 +590,18 @@ impl Start<'_> {
         }
         let mut failures = Vec::new();
         if acquired.output {
-            // `output remove` re-centres the user's cursor (fact §2.8).
-            let cursor = hypr::cursor_pos().unwrap_or(host.cursor);
-            if let Err(failure) = remove_output(&self.output) {
-                return vec![failure];
-            }
-            if let Err(failure) = restore_cursor(cursor) {
-                failures.push(failure);
+            // Same cursor-preserving removal as either mode's teardown
+            // (fact §2.8); the snapshot is the fallback if `cursorpos` cannot be
+            // read at the last moment.
+            match session::remove_output_restoring_cursor(&self.output, Some(host.cursor)) {
+                Ok(removal) => failures.extend(removal.failure),
+                Err(error) => {
+                    return vec![RestoreFailure {
+                        what: "agent output",
+                        expected: format!("{} removed", self.output),
+                        actual: error.to_string(),
+                    }];
+                }
             }
         }
         if let Err(source) = fs::remove_dir_all(&self.dir) {
@@ -605,6 +622,321 @@ impl Start<'_> {
             let _ = hypr::dispatch_on(Ctl::Instance(&live.signature), &["exit"]);
         }
         terminate_marked(self.name)
+    }
+}
+
+/// What a teardown of an agent desktop brought down, and what it could not.
+pub struct Teardown {
+    pub notes: Vec<String>,
+    pub failures: Vec<RestoreFailure>,
+}
+
+/// The registered identity of a nested compositor: the only pid teardown ever
+/// signals, the runtime directory it leaves behind (fact §2.9), and the host
+/// window it maps, whose disappearance gates the output removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Registered<'a> {
+    signature: &'a str,
+    pid: u32,
+    console: &'a str,
+}
+
+/// What §6 has to undo, decided from the state alone so it can be asserted
+/// without a compositor. Steps 4 (output and cursor) and 5 (state) are
+/// unconditional and belong to `session::finish_teardown`.
+#[derive(Debug, PartialEq, Eq)]
+struct TeardownPlan<'a> {
+    /// Window to close politely, inside the instance (step 1).
+    close: Option<&'a str>,
+    /// Compositor to exit, then whose runtime directory to clear (steps 2, 3).
+    instance: Option<Registered<'a>>,
+}
+
+fn teardown_plan(isolated: &Isolated) -> TeardownPlan<'_> {
+    let instance = match &isolated.instance {
+        Instance::Pending => None,
+        Instance::Live {
+            signature,
+            pid,
+            console_address,
+            ..
+        } => Some(Registered {
+            signature,
+            pid: *pid,
+            console: console_address,
+        }),
+    };
+    TeardownPlan {
+        // A recorded window with no compositor to close it in is nothing to do.
+        close: match (&instance, isolated.active_address.as_deref()) {
+            (Some(_), Some(address)) => Some(address),
+            _ => None,
+        },
+        instance,
+    }
+}
+
+/// Steps 1 to 3 of §6, in the one order that is safe: the console window dies
+/// before the output it renders into is removed, otherwise `hyprctl output
+/// remove` drops it onto the user's desktop. Every step is idempotent — a window
+/// already gone, a pid already dead, a directory already absent are successes —
+/// so an `Instance::Pending` state cleans up as well as a live one.
+pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
+    let plan = teardown_plan(isolated);
+    let mut notes = Vec::new();
+    let mut failures = Vec::new();
+
+    match plan.instance {
+        None => notes.push("nested compositor was never spawned".to_owned()),
+        Some(instance) => {
+            if let Some(address) = plan.close {
+                notes.push(close_app(instance.signature, address));
+            }
+            notes.extend(stop_registered(&instance, session)?);
+            let (cleared, failure) =
+                clear_instance_runtime(instance.signature, &session::session_dir(session)?);
+            notes.extend(cleared);
+            failures.extend(failure);
+        }
+    }
+
+    // Whatever stage the state described, no process of this desktop may outlive
+    // the teardown: the environment marker is the authority, so a compositor
+    // spawned but never recorded is caught here too. Its output is removed right
+    // after this, hence the refusal rather than a note.
+    if let Err(failure) = terminate_marked(session) {
+        return Err(Error::AgentDesktopAlive {
+            session: session.to_owned(),
+            detail: failure.actual,
+        });
+    }
+    notes.push("no process of the agent desktop left".to_owned());
+
+    // The console is a *host* window, and the host reaps it when the compositor
+    // that owns it dies. Removing the output before that would hand the window to
+    // one of the user's outputs for as long as it survives.
+    if let Some(instance) = plan.instance {
+        notes.push(wait_console_reaped(instance.console)?);
+    }
+
+    Ok(Teardown { notes, failures })
+}
+
+/// Bounded, and a timeout aborts the teardown rather than removing an output a
+/// window still sits on — the same rule the shared teardown follows before it
+/// removes its own output. A window already gone is an immediate success (§6.5).
+fn wait_console_reaped(address: &str) -> Result<String, Error> {
+    poll_until(
+        session::WINDOW_PLACE_TIMEOUT,
+        || {
+            Ok(find_client(&hypr::clients()?, address).map_or_else(
+                || Ok(format!("console window {address} is gone from the host")),
+                |console| Err(format!("still on workspace {}", console.workspace.name)),
+            ))
+        },
+        |observed| {
+            format!(
+                "the host to reap console window {address} now that its compositor is dead (last \
+                 observed: {observed}); its output stays until then"
+            )
+        },
+    )
+}
+
+/// Step 1 of §6: politeness only, addressed to the instance and never to the
+/// host. `dispatch exit` takes the desktop down anyway, so nothing here fails
+/// the teardown; the outcome is reported as a note.
+fn close_app(signature: &str, address: &str) -> String {
+    let ctl = Ctl::Instance(signature);
+    let clients = match hypr::clients_on(ctl) {
+        Ok(clients) => clients,
+        Err(error) => return format!("could not list the agent desktop's windows ({error})"),
+    };
+    if find_client(&clients, address).is_none() {
+        return format!("window {address} was already gone from the agent desktop");
+    }
+    match hypr::dispatch_on(ctl, &["closewindow", &format!("address:{address}")]) {
+        Ok(()) => close_settled(ctl, address),
+        Err(error) => format!("window {address} refused to close ({error})"),
+    }
+}
+
+/// A well-behaved app unmaps within a few frames; one that wants longer (a
+/// modal, a prompt) gets taken down by `dispatch exit` instead of blocking here.
+fn close_settled(ctl: Ctl<'_>, address: &str) -> String {
+    let deadline = Instant::now() + POLITE_CLOSE_TIMEOUT;
+    loop {
+        match hypr::clients_on(ctl) {
+            Ok(clients) if find_client(&clients, address).is_none() => {
+                return format!("closed window {address} in the agent desktop");
+            }
+            Ok(_) => {}
+            Err(error) => return format!("closed window {address}, then listing failed ({error})"),
+        }
+        if Instant::now() >= deadline {
+            return format!(
+                "asked window {address} to close, still mapped after {}ms",
+                POLITE_CLOSE_TIMEOUT.as_millis()
+            );
+        }
+        thread::sleep(session::POLL_INTERVAL);
+    }
+}
+
+/// The effects of step 2, injected so the escalation ladder is testable without
+/// a compositor or a real process.
+struct Exit<'a> {
+    session: &'a str,
+    label: String,
+    request: &'a dyn Fn() -> Result<(), Error>,
+    alive: &'a dyn Fn() -> bool,
+    signal: &'a dyn Fn(&'static str) -> Result<(), Error>,
+}
+
+fn stop_registered(instance: &Registered<'_>, session: &str) -> Result<Vec<String>, Error> {
+    let ctl = Ctl::Instance(instance.signature);
+    let pid = instance.pid;
+    stop_instance(
+        &Exit {
+            session,
+            label: format!("nested compositor {} (pid {pid})", instance.signature),
+            request: &|| hypr::dispatch_on(ctl, &["exit"]),
+            // The marker is both liveness and identity: a recycled pid no longer
+            // carries it, so it is never signalled.
+            alive: &|| pid_carries_marker(pid, session),
+            signal: &|signal| session::signal_process(pid, signal),
+        },
+        EXIT_ESCALATION,
+    )
+}
+
+/// Step 2 of §6: `dispatch exit`, bounded wait for the pid to die, then
+/// `SIGTERM`, then `SIGKILL`. Each escalation lands in the notes.
+fn stop_instance(steps: &Exit<'_>, ladder: session::Escalation) -> Result<Vec<String>, Error> {
+    let label = &steps.label;
+    let mut notes = Vec::new();
+    if !(steps.alive)() {
+        notes.push(format!("{label} was already dead"));
+        return Ok(notes);
+    }
+    if let Err(error) = (steps.request)() {
+        notes.push(format!("{label} refused `dispatch exit` ({error})"));
+    }
+
+    let started = Instant::now();
+    let mut sent: Option<&'static str> = None;
+    loop {
+        if !(steps.alive)() {
+            notes.push(sent.map_or_else(
+                || format!("{label} exited on `dispatch exit`"),
+                |signal| format!("{label} died after SIG{signal}"),
+            ));
+            return Ok(notes);
+        }
+        match ladder.step(started.elapsed()) {
+            session::Step::Signal(signal) if sent != Some(signal) => {
+                notes.push(match (steps.signal)(signal) {
+                    Ok(()) => format!("{label}: SIG{signal} sent"),
+                    Err(error) => format!("{label}: SIG{signal} failed ({error})"),
+                });
+                sent = Some(signal);
+            }
+            session::Step::Wait | session::Step::Signal(_) => {}
+            session::Step::GiveUp => {
+                return Err(Error::AgentDesktopAlive {
+                    session: steps.session.to_owned(),
+                    detail: format!("{label} survived `dispatch exit`, SIGTERM and SIGKILL"),
+                });
+            }
+        }
+        thread::sleep(ladder.poll);
+    }
+}
+
+/// Fact §2.9: the nested compositor leaves `$XDG_RUNTIME_DIR/hypr/<sig>/` behind
+/// after `dispatch exit`, so step 3 removes it explicitly. The signature comes
+/// from a state file, and it ends up in a recursive removal: it has to be a
+/// single directory name.
+fn instance_dir(signature: &str) -> Result<PathBuf, Error> {
+    Ok(instances_dir()?.join(plain_signature(signature)?))
+}
+
+/// The signature is read back from a state file and ends up in a recursive
+/// removal, so it has to be a single directory name.
+fn plain_signature(signature: &str) -> Result<&str, Error> {
+    if signature.is_empty()
+        || signature == "."
+        || signature == ".."
+        || signature.contains('/')
+        || signature.contains('\0')
+    {
+        return Err(Error::Invalid {
+            what: "instance signature",
+            value: signature.to_owned(),
+            hint: "expected a single directory name under $XDG_RUNTIME_DIR/hypr".to_owned(),
+        });
+    }
+    Ok(signature)
+}
+
+/// Step 3 of §6: keep the compositor's own log, then remove the runtime
+/// directory it left behind (fact §2.9). A directory that cannot go is reported
+/// rather than propagated: holding up the output removal over it would leave the
+/// user with a compositing headless output instead of an empty directory.
+fn clear_instance_runtime(
+    signature: &str,
+    session_dir: &Path,
+) -> (Vec<String>, Option<RestoreFailure>) {
+    let dir = match instance_dir(signature) {
+        Ok(dir) => dir,
+        Err(error) => {
+            return (
+                Vec::new(),
+                Some(RestoreFailure {
+                    what: "nested runtime directory",
+                    expected: format!("$XDG_RUNTIME_DIR/hypr/{signature} removed"),
+                    actual: error.to_string(),
+                }),
+            );
+        }
+    };
+    let mut notes = vec![keep_instance_log(&dir, session_dir)];
+    match remove_instance_dir(&dir) {
+        Ok(note) => {
+            notes.push(note);
+            (notes, None)
+        }
+        Err(failure) => (notes, Some(failure)),
+    }
+}
+
+/// The compositor's own log is the only diagnostic of a nested crash and it
+/// lives in the directory step 3 removes, so it is copied next to the session's
+/// own log first: that copy is what a teardown failing after this point leaves
+/// behind.
+fn keep_instance_log(instance_dir: &Path, session_dir: &Path) -> String {
+    let source = instance_dir.join(NESTED_LOG_FILE);
+    if !source.is_file() {
+        return format!("no nested log at {}", source.display());
+    }
+    let destination = session_dir.join(INSTANCE_LOG_FILE);
+    match fs::copy(&source, &destination) {
+        Ok(_) => format!("kept the nested log as {}", destination.display()),
+        Err(error) => format!("could not keep {} ({error})", source.display()),
+    }
+}
+
+fn remove_instance_dir(dir: &Path) -> Result<String, RestoreFailure> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(format!("removed {}", dir.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(format!("{} already absent", dir.display()))
+        }
+        Err(error) => Err(RestoreFailure {
+            what: "nested runtime directory",
+            expected: format!("{} removed", dir.display()),
+            actual: error.to_string(),
+        }),
     }
 }
 
@@ -966,6 +1298,15 @@ fn capturable(
     workspace: &str,
     address: &str,
 ) -> Result<(), String> {
+    host_frames(host, output, workspace)?;
+    window_frame(outputs, clients, address).map(|_| ())
+}
+
+/// Host side of capturability, and the §2.2 invariant of the whole design: the
+/// nested compositor only keeps receiving frame callbacks while the host
+/// composites its console window, which is what an active agent workspace on the
+/// headless output guarantees.
+fn host_frames(host: &[hypr::Monitor], output: &str, workspace: &str) -> Result<(), String> {
     let Some(headless) = host.iter().find(|monitor| monitor.name == output) else {
         return Err(format!("host output {output} is absent"));
     };
@@ -982,7 +1323,16 @@ fn capturable(
             headless.special_workspace
         ));
     }
+    Ok(())
+}
 
+/// Instance side: the window is mapped and the nested compositor is showing the
+/// workspace it sits on. Returns what a capture needs to frame it.
+fn window_frame<'a>(
+    outputs: &'a [hypr::Monitor],
+    clients: &'a [hypr::Client],
+    address: &str,
+) -> Result<(&'a hypr::Client, &'a hypr::Monitor), String> {
     let Some(window) = find_client(clients, address) else {
         return Err(format!("window {address} is gone from the agent desktop"));
     };
@@ -1010,7 +1360,94 @@ fn capturable(
             monitor.special_workspace
         ));
     }
-    Ok(())
+    Ok((window, monitor))
+}
+
+/// What a capture of an agent desktop acts on (§5): the socket grim has to talk
+/// to, the window inside the nested layout, and the output that frames it.
+pub struct AgentCapture {
+    pub wayland_display: String,
+    pub window: hypr::Client,
+    pub monitor: hypr::Monitor,
+}
+
+/// Resolves a capture inside an agent desktop, refusing a desktop that cannot
+/// produce a frame instead of letting grim block on screencopy.
+pub fn capture_target(session: &str, isolated: &Isolated) -> Result<AgentCapture, Error> {
+    let unready = |reason: String| Error::AgentDesktopUnready {
+        session: session.to_owned(),
+        reason,
+    };
+    let Instance::Live {
+        signature,
+        wayland_display,
+        ..
+    } = &isolated.instance
+    else {
+        return Err(unready(format!(
+            "its nested compositor was never spawned — run `hyprpilot --session {session} \
+             teardown` and start it again"
+        )));
+    };
+    let address = isolated.active_address.as_deref().ok_or_else(|| {
+        unready(format!(
+            "no window is recorded for it — run `hyprpilot --session {session} teardown` and start \
+             it again"
+        ))
+    })?;
+    // Fact §2.2: a console window the host stopped compositing freezes the
+    // nested compositor, and screencopy then blocks for ever. `session show`
+    // moves the console to a workspace of the user's own, where the same
+    // guarantee comes from the host showing that workspace (§5).
+    if !isolated.shown
+        && let Err(observed) =
+            host_frames(&hypr::monitors()?, &isolated.output, &isolated.workspace)
+    {
+        return Err(unready(frozen_reason(
+            session,
+            &isolated.output,
+            &isolated.workspace,
+            &observed,
+        )));
+    }
+
+    let ctl = Ctl::Instance(signature);
+    let outputs = hypr::monitors_on(ctl)?;
+    let clients = hypr::clients_on(ctl)?;
+    let (window, monitor) = window_frame(&outputs, &clients, address).map_err(unready)?;
+    Ok(AgentCapture {
+        wayland_display: wayland_display.clone(),
+        window: window.clone(),
+        monitor: monitor.clone(),
+    })
+}
+
+/// Fact §2.2, spelled out for the user: the one documented cause of a frozen
+/// agent desktop, with the documented host-side fallback.
+pub fn frozen_reason(session: &str, host_output: &str, workspace: &str, observed: &str) -> String {
+    format!(
+        "the nested compositor only receives frame callbacks while workspace {workspace} is the \
+         active one on host output {host_output}, and every capture blocks once it stops \
+         ({observed}) — capture the host side with `grim -o {host_output}` as a documented \
+         fallback, or run `hyprpilot --session {session} teardown` and start the agent desktop \
+         again"
+    )
+}
+
+/// Reads the host side of the §2.2 invariant, so a blocked capture reports what
+/// was observed rather than what is likely.
+pub fn frozen_observation(host_output: &str, workspace: &str) -> String {
+    match hypr::monitors() {
+        Ok(monitors) => host_frames(&monitors, host_output, workspace)
+            .err()
+            .unwrap_or_else(|| {
+                format!(
+                    "workspace {workspace} is still active on {host_output}, so the block is \
+                     elsewhere"
+                )
+            }),
+        Err(error) => format!("reading `hyprctl monitors` failed: {error}"),
+    }
 }
 
 /// Every process of an agent desktop inherits the marker, including the app the
@@ -1059,10 +1496,13 @@ fn process_carries_marker(pid: i32, session: &str) -> Result<bool, Error> {
         command: "hyprctl clients".to_owned(),
         message: format!("client reports invalid pid {pid}"),
     })?;
-    Ok(environ_carries_marker(
-        &Path::new("/proc").join(pid.to_string()),
-        session,
-    ))
+    Ok(pid_carries_marker(pid, session))
+}
+
+/// Liveness *and* identity of a recorded pid: a dead pid has no readable
+/// environment, and a recycled one no longer carries this session's marker.
+fn pid_carries_marker(pid: u32, session: &str) -> bool {
+    environ_carries_marker(&Path::new("/proc").join(pid.to_string()), session)
 }
 
 /// `SIGTERM` while the grace period lasts, then `SIGKILL`; bounded either way.
@@ -1088,59 +1528,10 @@ fn terminate_marked(session: &str) -> Result<(), RestoreFailure> {
             "TERM"
         };
         for pid in pids {
-            let _ = signal_process(pid, signal);
+            let _ = session::signal_process(pid, signal);
         }
         thread::sleep(session::POLL_INTERVAL);
     }
-}
-
-fn signal_process(pid: u32, signal: &str) -> Result<(), Error> {
-    let output = Command::new("kill")
-        .args(["-s", signal, "--", &pid.to_string()])
-        .output()
-        .map_err(|source| Error::Io {
-            context: format!("running `kill -s {signal} {pid}`"),
-            source,
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(Error::Tool {
-        command: format!("kill -s {signal} {pid}"),
-        message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-    })
-}
-
-fn remove_output(output: &str) -> Result<(), RestoreFailure> {
-    let failure = |actual: String| RestoreFailure {
-        what: "agent output",
-        expected: format!("{output} removed"),
-        actual,
-    };
-    // An output already gone is a success, like every teardown step (§6).
-    match session::find_output(output) {
-        Ok(None) => return Ok(()),
-        Ok(Some(_)) => {}
-        Err(error) => return Err(failure(format!("looking it up failed: {error}"))),
-    }
-    hypr::output_remove(output).map_err(|error| failure(error.to_string()))
-}
-
-fn restore_cursor(cursor: (i32, i32)) -> Result<(), RestoreFailure> {
-    let restored = guard::restore_cursor(cursor);
-    let actual = hypr::cursor_pos();
-    if restored.is_ok() && matches!(&actual, Ok(actual) if guard::cursor_near(*actual, cursor)) {
-        return Ok(());
-    }
-    Err(RestoreFailure {
-        what: "cursor",
-        expected: format!("{cursor:?}"),
-        actual: match (restored, actual) {
-            (Err(error), _) => format!("restore failed: {error}"),
-            (Ok(()), Ok(actual)) => format!("{actual:?}"),
-            (Ok(()), Err(error)) => format!("verification failed: {error}"),
-        },
-    })
 }
 
 /// Bounded settle loop: never a blind sleep, and a timeout reports the last
@@ -1173,14 +1564,20 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
+
     use super::{
-        AGENT_SESSION_ENV, HostSnapshot, Keymap, active_workspaces, capturable, deviation,
-        dir_entries, ensure_output_absent, is_wayland_socket, keymap_of, marked_pids_in,
-        nested_config, new_entries, output_is_configured, refuse_nested_marker, renameable,
-        select_console, shell_path, spawn_command, wayland_sockets, workspace_occupants,
+        AGENT_SESSION_ENV, Exit, HostSnapshot, Keymap, Registered, TeardownPlan, active_workspaces,
+        capturable, capture_target, deviation, dir_entries, ensure_output_absent, frozen_reason,
+        is_wayland_socket, keep_instance_log, keymap_of, marked_pids_in, nested_config,
+        new_entries, output_is_configured, plain_signature, refuse_nested_marker,
+        remove_instance_dir, renameable, select_console, shell_path, spawn_command, stop_instance,
+        teardown_plan, wayland_sockets, workspace_occupants,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Devices, Monitor};
+    use crate::session::{Escalation, Instance, Isolated};
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
     const DEVICES_JSON: &str = include_str!("../fixtures/devices.json");
@@ -1655,6 +2052,321 @@ mod tests {
         assert_eq!(marked_pids_in(root.path(), "alpha2")?, vec![14]);
         assert!(marked_pids_in(root.path(), "gamma")?.is_empty());
         Ok(())
+    }
+
+    /// Fast enough to keep the escalation tests well under a second, and still
+    /// ordered `dispatch exit` → `SIGTERM` → `SIGKILL` → give up.
+    const TEST_LADDER: Escalation = Escalation {
+        polite: Duration::from_millis(20),
+        term: Duration::from_millis(20),
+        kill: Duration::from_millis(20),
+        poll: Duration::from_millis(2),
+    };
+
+    /// A nested compositor that dies when it is asked politely, unless `deaf`,
+    /// and when signalled, unless the signal is in `ignores`.
+    struct Fake {
+        /// `dispatch exit` itself fails: the instance socket is already gone.
+        refuses: bool,
+        deaf: bool,
+        ignores: &'static [&'static str],
+        /// `kill` fails, as it does when the pid vanishes between two probes.
+        kill_fails: bool,
+        alive: Cell<bool>,
+        requests: Cell<u32>,
+        signals: RefCell<Vec<&'static str>>,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Self {
+                refuses: false,
+                deaf: false,
+                ignores: &[],
+                kill_fails: false,
+                alive: Cell::new(true),
+                requests: Cell::new(0),
+                signals: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Fake {
+        fn request(&self) -> Result<(), Error> {
+            self.requests.set(self.requests.get() + 1);
+            if self.refuses {
+                return Err(Error::Tool {
+                    command: "hyprctl -i beef_1700000000 dispatch exit".to_owned(),
+                    message: "no such instance".to_owned(),
+                });
+            }
+            if !self.deaf {
+                self.alive.set(false);
+            }
+            Ok(())
+        }
+
+        fn signal(&self, signal: &'static str) -> Result<(), Error> {
+            self.signals.borrow_mut().push(signal);
+            if self.kill_fails {
+                return Err(Error::Tool {
+                    command: format!("kill -s {signal} 4242"),
+                    message: "no such process".to_owned(),
+                });
+            }
+            if !self.ignores.contains(&signal) {
+                self.alive.set(false);
+            }
+            Ok(())
+        }
+
+        fn stopped(&self) -> Result<Vec<String>, Error> {
+            stop_instance(
+                &Exit {
+                    session: "alpha",
+                    label: "nested compositor beef_1700000000 (pid 4242)".to_owned(),
+                    request: &|| self.request(),
+                    alive: &|| self.alive.get(),
+                    signal: &|signal| self.signal(signal),
+                },
+                TEST_LADDER,
+            )
+        }
+    }
+
+    fn live_instance() -> Instance {
+        Instance::Live {
+            signature: "beef_1700000000".to_owned(),
+            wayland_display: "wayland-3".to_owned(),
+            pid: 4242,
+            console_address: "0xc0ff33".to_owned(),
+        }
+    }
+
+    fn agent_state(instance: Instance, active: Option<&str>) -> Isolated {
+        Isolated {
+            output: "hyprpilot-alpha".to_owned(),
+            workspace: "agent-alpha".to_owned(),
+            size: [1920, 1080],
+            shown: false,
+            active_address: active.map(str::to_owned),
+            instance,
+        }
+    }
+
+    #[test]
+    fn teardown_plan_follows_the_instance_stage() {
+        let pending = agent_state(Instance::Pending, Some("0xapp"));
+        assert_eq!(
+            teardown_plan(&pending),
+            TeardownPlan {
+                close: None,
+                instance: None
+            },
+            "an output-only session has nothing to exit and nothing to close"
+        );
+
+        let live = agent_state(live_instance(), Some("0xapp"));
+        assert_eq!(
+            teardown_plan(&live),
+            TeardownPlan {
+                close: Some("0xapp"),
+                instance: Some(Registered {
+                    signature: "beef_1700000000",
+                    pid: 4242,
+                    console: "0xc0ff33",
+                }),
+            }
+        );
+
+        let launched_nothing = agent_state(live_instance(), None);
+        let plan = teardown_plan(&launched_nothing);
+        assert_eq!(plan.close, None, "no window recorded, nothing to close");
+        assert!(plan.instance.is_some());
+    }
+
+    #[test]
+    fn a_pid_already_dead_is_an_idempotent_success() -> Result<(), Box<dyn StdError>> {
+        let fake = Fake {
+            alive: Cell::new(false),
+            ..Fake::default()
+        };
+
+        let notes = fake.stopped()?;
+
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("was already dead"), "{notes:?}");
+        assert_eq!(fake.requests.get(), 0, "a dead pid is never asked to exit");
+        assert!(
+            fake.signals.borrow().is_empty(),
+            "a dead pid is never signalled"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn instance_exit_escalates_from_dispatch_exit_to_sigterm_then_sigkill()
+    -> Result<(), Box<dyn StdError>> {
+        let polite = Fake::default();
+        let notes = polite.stopped()?;
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("exited on `dispatch exit`")),
+            "{notes:?}"
+        );
+        assert!(polite.signals.borrow().is_empty(), "no signal was needed");
+
+        let deaf = Fake {
+            deaf: true,
+            ..Fake::default()
+        };
+        let notes = deaf.stopped()?;
+        assert_eq!(*deaf.signals.borrow(), vec!["TERM"]);
+        assert!(
+            notes.iter().any(|note| note.contains("SIGTERM sent")),
+            "each escalation is reported: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("died after SIGTERM")),
+            "{notes:?}"
+        );
+
+        let stubborn = Fake {
+            deaf: true,
+            ignores: &["TERM"],
+            ..Fake::default()
+        };
+        let notes = stubborn.stopped()?;
+        assert_eq!(*stubborn.signals.borrow(), vec!["TERM", "KILL"]);
+        assert!(
+            notes.iter().any(|note| note.contains("died after SIGKILL")),
+            "{notes:?}"
+        );
+
+        // An instance whose socket is already gone still gets signalled.
+        let socketless = Fake {
+            refuses: true,
+            ..Fake::default()
+        };
+        let notes = socketless.stopped()?;
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("refused `dispatch exit`")),
+            "{notes:?}"
+        );
+        assert_eq!(*socketless.signals.borrow(), vec!["TERM"]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_surviving_sigkill_keeps_its_output() -> Result<(), Box<dyn StdError>> {
+        let immortal = Fake {
+            deaf: true,
+            ignores: &["TERM", "KILL"],
+            kill_fails: true,
+            ..Fake::default()
+        };
+
+        let error = immortal
+            .stopped()
+            .err()
+            .ok_or("an immortal instance was reported as gone")?;
+
+        assert!(matches!(&error, Error::AgentDesktopAlive { .. }));
+        let message = error.to_string();
+        assert!(message.contains("survived"), "{message}");
+        assert!(message.contains("pid 4242"), "{message}");
+        // Removing the output while the console lives would drop it on the user.
+        assert!(
+            message.contains("would land on the user's desktop"),
+            "{message}"
+        );
+        assert!(message.contains("--session alpha teardown"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn instance_signature_must_be_a_plain_directory_name() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(plain_signature("beef_1700000000")?, "beef_1700000000");
+
+        for signature in ["", ".", "..", "../..", "a/b", "hypr/beef"] {
+            let error = plain_signature(signature)
+                .err()
+                .ok_or_else(|| format!("signature {signature:?} was accepted"))?
+                .to_string();
+            assert!(error.contains("instance signature"), "{error}");
+            assert!(error.contains("single directory name"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn instance_log_is_kept_and_its_directory_removal_is_idempotent()
+    -> Result<(), Box<dyn StdError>> {
+        let root = tempfile::tempdir()?;
+        let instance = root.path().join("beef_1700000000");
+        let session_dir = root.path().join("sessions").join("alpha");
+        fs::create_dir_all(&instance)?;
+        fs::create_dir_all(&session_dir)?;
+        fs::write(instance.join("hyprland.log"), b"nested log")?;
+
+        let kept = keep_instance_log(&instance, &session_dir);
+        assert!(kept.contains("instance.log"), "{kept}");
+        assert_eq!(fs::read(session_dir.join("instance.log"))?, b"nested log");
+
+        let removed = remove_instance_dir(&instance).map_err(|failure| failure.actual)?;
+        assert!(removed.contains("removed"), "{removed}");
+        assert!(!instance.exists());
+
+        // Fact §2.9 is a leftover to clean, so a directory already gone and a log
+        // that never existed are both successes (§6.5).
+        let again = remove_instance_dir(&instance).map_err(|failure| failure.actual)?;
+        assert!(again.contains("already absent"), "{again}");
+        let missing = keep_instance_log(&instance, &session_dir);
+        assert!(missing.contains("no nested log"), "{missing}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_capture_needs_a_live_instance_and_a_recorded_window() -> Result<(), Box<dyn StdError>> {
+        // Both refusals happen before any compositor call, which is what makes
+        // them assertable here.
+        let pending = agent_state(Instance::Pending, None);
+        let error = capture_target("alpha", &pending)
+            .err()
+            .ok_or("a capture of a pending instance was accepted")?
+            .to_string();
+        assert!(error.contains("agent desktop `alpha`"), "{error}");
+        assert!(error.contains("never spawned"), "{error}");
+        assert!(error.contains("--session alpha teardown"), "{error}");
+
+        let launched_nothing = agent_state(live_instance(), None);
+        let error = capture_target("alpha", &launched_nothing)
+            .err()
+            .ok_or("a capture without a recorded window was accepted")?
+            .to_string();
+        assert!(error.contains("no window is recorded"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_frozen_agent_desktop_names_the_invariant_and_the_host_fallback() {
+        let reason = frozen_reason(
+            "alpha",
+            "hyprpilot-alpha",
+            "agent-alpha",
+            "workspace 3 is active on hyprpilot-alpha, not agent-alpha",
+        );
+
+        // Fact §2.2 in the message, not a guess about what went wrong.
+        assert!(reason.contains("frame callbacks"), "{reason}");
+        assert!(reason.contains("agent-alpha"), "{reason}");
+        assert!(reason.contains("workspace 3 is active"), "{reason}");
+        // The documented fallback of §5.
+        assert!(reason.contains("grim -o hyprpilot-alpha"), "{reason}");
+        assert!(reason.contains("--session alpha teardown"), "{reason}");
     }
 
     #[test]
