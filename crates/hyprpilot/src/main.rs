@@ -6,6 +6,7 @@ mod cli;
 mod error;
 mod guard;
 mod hypr;
+mod isolated;
 mod keys;
 mod pointer;
 mod session;

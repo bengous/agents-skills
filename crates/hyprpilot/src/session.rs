@@ -28,10 +28,10 @@ pub const SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_SESSION_NAME: &str = "default";
 const SESSION_ENV: &str = "HYPRPILOT_SESSION";
 const SESSION_NAME_MAX: usize = 32;
-const WINDOW_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
+pub const WINDOW_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 const WINDOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
-const WINDOW_PLACE_TIMEOUT: Duration = Duration::from_secs(3);
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
+pub const WINDOW_PLACE_TIMEOUT: Duration = Duration::from_secs(3);
+pub const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const VERIFIED_PLACEMENT_READS: u8 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,6 +89,9 @@ pub struct Isolated {
     /// True while the console window sits on the user's workspace
     /// (`session show`).
     pub shown: bool,
+    /// Address, inside the instance, of the window commands act on. `None`
+    /// until the app is launched (§4.7).
+    pub active_address: Option<String>,
     pub instance: Instance,
 }
 
@@ -120,7 +123,6 @@ pub struct Pending {
 }
 
 impl Pending {
-    pub const START: Self = Self::new("session start --isolated", "S3–S6");
     pub const TEARDOWN: Self = Self::new("teardown", "S5");
     pub const KEY: Self = Self::new("key", "S7");
     pub const TYPE: Self = Self::new("type", "S7");
@@ -544,7 +546,7 @@ fn serialize(session: &Session) -> Result<String, Error> {
 
 /// Atomically claims the session lock: fails with `SessionExists` if another
 /// session file is already present, without a check-then-write race.
-fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
+pub fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::Io {
             context: format!("creating {}", parent.display()),
@@ -673,15 +675,15 @@ pub fn parse_size(raw: &str) -> Result<(u32, u32), Error> {
 
 /// Selector accepted by workspace dispatchers: numeric names and special
 /// workspaces pass through; ordinary named workspaces need `name:`.
-pub fn workspace_selector(workspace: &hypr::WorkspaceRef) -> String {
-    if workspace.name.parse::<i64>().is_ok() || workspace.name.starts_with("special:") {
-        workspace.name.clone()
+pub fn workspace_selector(workspace: &str) -> String {
+    if workspace.parse::<i64>().is_ok() || workspace.starts_with("special:") {
+        workspace.to_owned()
     } else {
-        format!("name:{}", workspace.name)
+        format!("name:{workspace}")
     }
 }
 
-fn criteria_label(criteria: &Criteria<'_>) -> String {
+pub fn criteria_label(criteria: &Criteria<'_>) -> String {
     let mut parts = Vec::new();
     if let Some(address) = criteria.address {
         parts.push(format!("address `{address}`"));
@@ -732,7 +734,7 @@ fn ambiguous_error_with_label(criteria: String, candidates: Vec<&hypr::Client>) 
     }
 }
 
-fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> Error {
+pub fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> Error {
     ambiguous_error_with_label(criteria_label(criteria), candidates)
 }
 
@@ -1126,7 +1128,7 @@ fn evacuate_stray_workspace(output_name: &str, workspace_name: &str) -> Result<(
         })?;
     hypr::dispatch(&[
         "moveworkspacetomonitor",
-        &workspace_selector(&ours.active_workspace),
+        &workspace_selector(&ours.active_workspace.name),
         &refuge.name,
     ])
 }
@@ -1429,10 +1431,10 @@ pub fn resize(name: &str, size: &str) -> Result<String, Error> {
     ))
 }
 
-/// Everything that must be refused before an app is spawned: state left by an
-/// older build, a claim already held under this name, and a second shared
-/// session. The atomic `save_new_to` below stays the authoritative lock.
-fn claim_preflight(name: &str, path: &Path) -> Result<(), Error> {
+/// Everything that must be refused before an app is spawned, in both modes:
+/// state left by an older build and a claim already held under this name. The
+/// atomic `save_new_to` below stays the authoritative lock.
+pub fn claim_preflight(name: &str, path: &Path) -> Result<(), Error> {
     refuse_pre_v3_state()?;
     if path.exists() {
         return Err(Error::SessionExists {
@@ -1440,10 +1442,48 @@ fn claim_preflight(name: &str, path: &Path) -> Result<(), Error> {
             path: path.to_path_buf(),
         });
     }
+    Ok(())
+}
+
+/// The shared output is a singleton (§3), so only isolated sessions may run
+/// alongside another session.
+fn refuse_second_shared_session(name: &str) -> Result<(), Error> {
     if let Some(other) = find_shared_session_in(&sessions_dir()?, name)? {
         return Err(Error::SharedSessionExists { name: other });
     }
     Ok(())
+}
+
+/// Attaches to the one matching window, or launches the app and waits for it;
+/// a launch that never shows a window leaves no process behind.
+fn acquire_window(
+    app: Option<&str>,
+    criteria: &Criteria<'_>,
+) -> Result<(hypr::Client, Option<u32>), Error> {
+    if let Some(window) = find_window(criteria)? {
+        return Ok((window, None));
+    }
+    let description = criteria_label(criteria);
+    let Some(command) = app else {
+        return Err(Error::WindowNotFound(format!(
+            "{description} — pass --app to launch it"
+        )));
+    };
+    let pid = spawn_app(command)?;
+    match wait_for_window(criteria) {
+        Ok(Some(window)) => Ok((window, Some(pid))),
+        Ok(None) => {
+            let _ = kill_process_group(pid);
+            Err(Error::WindowNotFound(format!(
+                "{description} after launching `{command}` ({}s timeout) — process killed",
+                WINDOW_APPEAR_TIMEOUT.as_secs()
+            )))
+        }
+        Err(error) => {
+            let _ = kill_process_group(pid);
+            Err(error)
+        }
+    }
 }
 
 pub fn start(
@@ -1454,10 +1494,10 @@ pub fn start(
     match_class: Option<&str>,
     size: &str,
 ) -> Result<String, Error> {
-    // Refused before the session is claimed and before any compositor call, so
-    // no agent desktop is half-created while the slices land.
+    // Routed before any compositor call: an agent desktop shares no resource
+    // with the shared path below, which drives the user's own windows.
     if isolated {
-        return Err(Pending::START.error());
+        return crate::isolated::start(name, app, match_title, match_class, size);
     }
     if match_title.is_none() && match_class.is_none() {
         return Err(Error::Invalid {
@@ -1469,6 +1509,7 @@ pub fn start(
     let (width, height) = parse_size(size)?;
     let path = session_path(name)?;
     claim_preflight(name, &path)?;
+    refuse_second_shared_session(name)?;
 
     // Captured before any side effect, so status/teardown can reason about
     // what the user had.
@@ -1480,34 +1521,7 @@ pub fn start(
         class: match_class,
         pid: None,
     };
-    let criteria_description = criteria_label(&criteria);
-    let mut spawned_pid = None;
-    let window = if let Some(window) = find_window(&criteria)? {
-        window
-    } else {
-        let Some(command) = app else {
-            return Err(Error::WindowNotFound(format!(
-                "{criteria_description} — pass --app to launch it"
-            )));
-        };
-        let pid = spawn_app(command)?;
-        spawned_pid = Some(pid);
-        match wait_for_window(&criteria) {
-            Ok(Some(window)) => window,
-            Ok(None) => {
-                let _ = kill_process_group(pid);
-                return Err(Error::WindowNotFound(format!(
-                    "{criteria_description} after launching `{command}` ({}s timeout) — process \
-                     killed",
-                    WINDOW_APPEAR_TIMEOUT.as_secs()
-                )));
-            }
-            Err(error) => {
-                let _ = kill_process_group(pid);
-                return Err(error);
-            }
-        }
-    };
+    let (window, spawned_pid) = acquire_window(app, &criteria)?;
 
     let output_created = find_output(OUTPUT_NAME)?.is_none();
     let teardown = spawned_pid.map_or(Disposition::Restore, |_| Disposition::Close);
@@ -1679,9 +1693,7 @@ fn close_window(address: &str, hint: &str) -> Result<(), Error> {
 }
 
 fn restore_window(window: &TrackedWindow) -> Result<(), Error> {
-    let selector = workspace_selector(&hypr::WorkspaceRef {
-        name: window.origin_workspace.clone(),
-    });
+    let selector = workspace_selector(&window.origin_workspace);
     hypr::dispatch(&[
         "movetoworkspacesilent",
         &format!("{selector},address:{}", window.address),
@@ -1760,9 +1772,7 @@ fn teardown_legacy(session: &LegacySession, kill: bool, close: bool) -> Result<V
     }
 
     let origin = session.origin_workspace.as_deref().unwrap_or("1");
-    let selector = workspace_selector(&hypr::WorkspaceRef {
-        name: origin.to_owned(),
-    });
+    let selector = workspace_selector(origin);
     hypr::dispatch(&[
         "movetoworkspacesilent",
         &format!("{selector},address:{}", session.window_address),
@@ -1913,7 +1923,7 @@ mod tests {
         workspace_selector,
     };
     use crate::error::Error;
-    use crate::hypr::{Client, Monitor, WorkspaceRef};
+    use crate::hypr::{Client, Monitor};
     use std::error::Error as StdError;
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
@@ -1959,7 +1969,7 @@ mod tests {
         named_session(DEFAULT_SESSION_NAME)
     }
 
-    fn sample_isolated(name: &str, instance: Instance) -> Session {
+    fn sample_isolated_with(name: &str, instance: Instance, active: Option<&str>) -> Session {
         Session {
             schema_version: SCHEMA_VERSION,
             name: name.to_owned(),
@@ -1968,9 +1978,14 @@ mod tests {
                 workspace: format!("agent-{name}"),
                 size: [1920, 1080],
                 shown: false,
+                active_address: active.map(str::to_owned),
                 instance,
             }),
         }
+    }
+
+    fn sample_isolated(name: &str, instance: Instance) -> Session {
+        sample_isolated_with(name, instance, None)
     }
 
     fn live_instance() -> Instance {
@@ -2347,18 +2362,13 @@ mod tests {
 
     #[test]
     fn workspace_selector_prefixes_named_workspaces() {
-        let named = WorkspaceRef {
-            name: "proto".to_owned(),
-        };
-        let numeric = WorkspaceRef {
-            name: "5".to_owned(),
-        };
-        let special = WorkspaceRef {
-            name: "special:hyprpilot-parked".to_owned(),
-        };
-        assert_eq!(workspace_selector(&named), "name:proto");
-        assert_eq!(workspace_selector(&numeric), "5");
-        assert_eq!(workspace_selector(&special), "special:hyprpilot-parked");
+        assert_eq!(workspace_selector("proto"), "name:proto");
+        assert_eq!(workspace_selector("agent-alpha"), "name:agent-alpha");
+        assert_eq!(workspace_selector("5"), "5");
+        assert_eq!(
+            workspace_selector("special:hyprpilot-parked"),
+            "special:hyprpilot-parked"
+        );
     }
 
     #[test]
@@ -2453,9 +2463,12 @@ mod tests {
     #[test]
     fn isolated_session_round_trips_at_both_instance_stages() -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
-        for (label, instance) in [("pending", Instance::Pending), ("live", live_instance())] {
+        for (label, instance, active) in [
+            ("pending", Instance::Pending, None),
+            ("live", live_instance(), Some("0xapp")),
+        ] {
             let path = dir.path().join(label).join("session.json");
-            save_new_to(&path, &sample_isolated("alpha", instance))?;
+            save_new_to(&path, &sample_isolated_with("alpha", instance, active))?;
 
             let loaded = load_from(&path)?;
             assert_eq!(loaded.schema_version, SCHEMA_VERSION, "{label}");
@@ -2468,6 +2481,7 @@ mod tests {
             assert_eq!(isolated.workspace, "agent-alpha", "{label}");
             assert_eq!(isolated.size, [1920, 1080], "{label}");
             assert!(!isolated.shown, "{label}");
+            assert_eq!(isolated.active_address.as_deref(), active, "{label}");
             match (&isolated.instance, label) {
                 (Instance::Pending, "pending") => {}
                 (
@@ -2720,8 +2734,9 @@ mod tests {
     #[test]
     fn isolated_sessions_route_every_pending_command_to_its_slice() -> Result<(), Box<dyn StdError>>
     {
+        // `session start --isolated` is no longer in this list: it is
+        // implemented, and `crate::isolated` owns it.
         let pending = [
-            Pending::START,
             Pending::TEARDOWN,
             Pending::KEY,
             Pending::TYPE,

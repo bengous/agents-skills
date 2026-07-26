@@ -11,6 +11,13 @@ pub struct WorkspaceRef {
     pub name: String,
 }
 
+/// A monitor's active workspace, whose id `renameworkspace` needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActiveWorkspace {
+    pub id: i64,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Client {
@@ -38,7 +45,7 @@ pub struct Monitor {
     pub y: f64,
     pub scale: f64,
     pub transform: u8,
-    pub active_workspace: WorkspaceRef,
+    pub active_workspace: ActiveWorkspace,
     #[serde(deserialize_with = "deserialize_workspace_name")]
     pub special_workspace: String,
 }
@@ -105,19 +112,52 @@ pub struct Devices {
     pub keyboards: Vec<Keyboard>,
 }
 
+/// The XKB fields are what an agent desktop inherits from the host, so its
+/// nested compositor types like the user's own keyboard.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Keyboard {
+    pub rules: String,
+    pub model: String,
     pub layout: String,
+    pub variant: String,
+    pub options: String,
     pub active_keymap: String,
     pub main: bool,
 }
 
-fn run(args: &[&str]) -> Result<String, Error> {
+/// Which compositor a command is addressed to: the host, or a nested instance
+/// identified by its signature. Every `hyprctl` invocation in the crate goes
+/// through here, so no code path can silently talk to the wrong compositor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ctl<'a> {
+    Host,
+    Instance(&'a str),
+}
+
+impl Ctl<'_> {
+    fn prefix(self) -> Vec<String> {
+        match self {
+            Self::Host => Vec::new(),
+            Self::Instance(signature) => vec!["-i".to_owned(), signature.to_owned()],
+        }
+    }
+
+    fn label(self, args: &[&str]) -> String {
+        match self {
+            Self::Host => format!("hyprctl {}", args.join(" ")),
+            Self::Instance(signature) => format!("hyprctl -i {signature} {}", args.join(" ")),
+        }
+    }
+}
+
+fn run_on(ctl: Ctl<'_>, args: &[&str]) -> Result<String, Error> {
+    let label = ctl.label(args);
     let output = Command::new("hyprctl")
+        .args(ctl.prefix())
         .args(args)
         .output()
         .map_err(|source| Error::Io {
-            context: format!("running `hyprctl {}`", args.join(" ")),
+            context: format!("running `{label}`"),
             source,
         })?;
 
@@ -127,36 +167,44 @@ fn run(args: &[&str]) -> Result<String, Error> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         Err(Error::Tool {
-            command: format!("hyprctl {}", args.join(" ")),
+            command: label,
             message: if stderr.is_empty() { stdout } else { stderr },
         })
     }
 }
 
-fn run_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, Error> {
+fn run(args: &[&str]) -> Result<String, Error> {
+    run_on(Ctl::Host, args)
+}
+
+fn run_json_on<T: serde::de::DeserializeOwned>(ctl: Ctl<'_>, args: &[&str]) -> Result<T, Error> {
     let mut full = args.to_vec();
     full.push("-j");
-    let raw = run(&full)?;
+    let raw = run_on(ctl, &full)?;
     serde_json::from_str(&raw).map_err(|source| Error::Json {
-        context: format!("parsing `hyprctl {} -j` output", args.join(" ")),
+        context: format!("parsing `{}` output", ctl.label(&full)),
         source,
     })
 }
 
 /// Runs a dispatcher; Hyprland answers `ok` on success and an error text
 /// (sometimes with exit code 0) otherwise.
-pub fn dispatch(args: &[&str]) -> Result<(), Error> {
+pub fn dispatch_on(ctl: Ctl<'_>, args: &[&str]) -> Result<(), Error> {
     let mut full = vec!["dispatch"];
     full.extend_from_slice(args);
-    let out = run(&full)?;
+    let out = run_on(ctl, &full)?;
     if out == "ok" {
         Ok(())
     } else {
         Err(Error::Tool {
-            command: format!("hyprctl dispatch {}", args.join(" ")),
+            command: ctl.label(&full),
             message: out,
         })
     }
+}
+
+pub fn dispatch(args: &[&str]) -> Result<(), Error> {
+    dispatch_on(Ctl::Host, args)
 }
 
 fn expect_ok(args: &[&str]) -> Result<(), Error> {
@@ -171,22 +219,34 @@ fn expect_ok(args: &[&str]) -> Result<(), Error> {
     }
 }
 
+pub fn clients_on(ctl: Ctl<'_>) -> Result<Vec<Client>, Error> {
+    run_json_on(ctl, &["clients"])
+}
+
 pub fn clients() -> Result<Vec<Client>, Error> {
-    run_json(&["clients"])
+    clients_on(Ctl::Host)
+}
+
+pub fn monitors_on(ctl: Ctl<'_>) -> Result<Vec<Monitor>, Error> {
+    run_json_on(ctl, &["monitors"])
 }
 
 pub fn monitors() -> Result<Vec<Monitor>, Error> {
-    run_json(&["monitors"])
+    monitors_on(Ctl::Host)
 }
 
 pub fn devices() -> Result<Devices, Error> {
-    run_json(&["devices"])
+    run_json_on(Ctl::Host, &["devices"])
 }
 
 /// The currently focused window, or `None`.
-pub fn active_window() -> Result<Option<Client>, Error> {
-    let raw = run(&["activewindow", "-j"])?;
+pub fn active_window_on(ctl: Ctl<'_>) -> Result<Option<Client>, Error> {
+    let raw = run_on(ctl, &["activewindow", "-j"])?;
     parse_active_window(&raw)
+}
+
+pub fn active_window() -> Result<Option<Client>, Error> {
+    active_window_on(Ctl::Host)
 }
 
 /// Hyprland prints `Invalid` or an empty object when nothing is focused;
@@ -205,12 +265,16 @@ fn parse_active_window(raw: &str) -> Result<Option<Client>, Error> {
         })
 }
 
-pub fn cursor_pos() -> Result<(i32, i32), Error> {
-    let raw = run(&["cursorpos"])?;
+pub fn cursor_pos_on(ctl: Ctl<'_>) -> Result<(i32, i32), Error> {
+    let raw = run_on(ctl, &["cursorpos"])?;
     parse_cursor_pos(&raw).ok_or_else(|| Error::Tool {
-        command: "hyprctl cursorpos".to_owned(),
+        command: ctl.label(&["cursorpos"]),
         message: format!("unparseable output `{raw}`"),
     })
+}
+
+pub fn cursor_pos() -> Result<(i32, i32), Error> {
+    cursor_pos_on(Ctl::Host)
 }
 
 fn parse_cursor_pos(raw: &str) -> Option<(i32, i32)> {
@@ -226,11 +290,18 @@ pub fn output_remove(name: &str) -> Result<(), Error> {
     expect_ok(&["output", "remove", name])
 }
 
+/// Mode-set rule for a headless output. The trailing `1` forces scale 1: a
+/// headless output otherwise inherits a non-trivial scale from the layout
+/// (fact §2.10 of the isolated design), which would skew every coordinate.
+pub fn headless_monitor_rule(name: &str, width: u32, height: u32) -> String {
+    format!("{name},{width}x{height}@60,auto,1")
+}
+
 pub fn keyword_monitor(name: &str, width: u32, height: u32) -> Result<(), Error> {
     expect_ok(&[
         "keyword",
         "monitor",
-        &format!("{name},{width}x{height}@60,auto,1"),
+        &headless_monitor_rule(name, width, height),
     ])
 }
 
@@ -242,13 +313,20 @@ pub fn keyword_workspace(workspace: &str, monitor: &str) -> Result<(), Error> {
     ])
 }
 
+pub fn version_on(ctl: Ctl<'_>) -> Result<String, Error> {
+    run_on(ctl, &["version"])
+}
+
 pub fn version() -> Result<String, Error> {
-    run(&["version"])
+    version_on(Ctl::Host)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, Devices, Monitor, layout_box, parse_active_window, parse_cursor_pos};
+    use super::{
+        Client, Devices, Monitor, headless_monitor_rule, layout_box, parse_active_window,
+        parse_cursor_pos,
+    };
     use std::error::Error;
 
     const CLIENTS_JSON: &str = include_str!("../fixtures/clients.json");
@@ -321,7 +399,23 @@ mod tests {
             .find(|k| k.main)
             .ok_or("no main keyboard in fixture")?;
         assert_eq!(main.layout, "us");
+        assert_eq!(main.variant, "");
+        assert_eq!(main.options, "compose:caps");
+        assert_eq!(main.rules, "");
+        assert_eq!(main.model, "");
         Ok(())
+    }
+
+    #[test]
+    fn headless_monitor_rule_forces_scale_one() {
+        assert_eq!(
+            headless_monitor_rule("hyprpilot-alpha", 1920, 1080),
+            "hyprpilot-alpha,1920x1080@60,auto,1"
+        );
+        assert_eq!(
+            headless_monitor_rule("hyprpilot", 1600, 1000),
+            "hyprpilot,1600x1000@60,auto,1"
+        );
     }
 
     #[test]

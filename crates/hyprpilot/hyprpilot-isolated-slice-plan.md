@@ -414,5 +414,13 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
   `libgtk-4.so.1`. Non systématique, rien ne le rattache à un défaut de la
   recette. CP-A et CP-D asserteront la liste des adresses hôte avant/après ;
   une récidive devient une slice d'enquête, pas un correctif improvisé.
-- **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 · S2 · S3 · CP-A ·
-  S4 · S5 · CP-B · S6 · S7 · S8 · CP-C · S9 · S10 · S11 · CP-D · S12
+- **Exécution réelle du run** : l'orchestrateur est un agent Opus 5 ; les
+  slices sont déléguées à des sous-agents Opus (décision Augustin du
+  2026-07-24 : plus de wrapper CLI Codex, Opus 5 partout), l'orchestrateur
+  garde les gates et les commits. La plomberie `hypr::Ctl::{Host, Instance}`
+  (un seul `Command::new("hyprctl")` dans la crate, préfixe `-i <sig>` pour
+  une instance) a été posée par l'orchestrateur avant S2, puisque toutes les
+  slices isolées en dépendent.
+- **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 ✅ (`f2b6f7d` +
+  `12bbf53`, G1 81 tests) · S2 · S3 · CP-A · S4 · S5 · CP-B · S6 · S7 · S8 ·
+  CP-C · S9 · S10 · S11 · CP-D · S12

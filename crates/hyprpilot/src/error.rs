@@ -59,6 +59,23 @@ pub enum Error {
         command: &'static str,
         hint: &'static str,
     },
+    /// The agent-desktop marker is set, so this process runs inside a nested
+    /// Hyprland where the headless machinery cannot work.
+    NestedRefused {
+        session: String,
+    },
+    /// An output named after this session already exists: a leftover, never a
+    /// resource to reuse.
+    AgentOutputExists {
+        output: String,
+        session: String,
+    },
+    /// The user's desktop moved while an agent desktop was being built.
+    HostDeviation {
+        what: &'static str,
+        expected: String,
+        actual: String,
+    },
     SweepRefused {
         output: String,
         reason: String,
@@ -140,6 +157,15 @@ impl fmt::Display for Error {
                 f,
                 "`{command}` is not supported for isolated sessions — {hint}"
             ),
+            Self::NestedRefused { session } => write_nested_refused(f, session),
+            Self::AgentOutputExists { output, session } => {
+                write_agent_output_exists(f, output, session)
+            }
+            Self::HostDeviation {
+                what,
+                expected,
+                actual,
+            } => write_host_deviation(f, what, expected, actual),
             Self::SweepRefused { output, reason } => write!(
                 f,
                 "refusing to remove orphan output {output}: {reason}; no output was removed"
@@ -168,24 +194,7 @@ impl fmt::Display for Error {
                 write!(f, "invalid {what} `{value}` — {hint}")
             }
             Self::Pointer(message) => write!(f, "virtual pointer: {message}"),
-            Self::Guarded { action, restore } => {
-                if let Some(action) = action {
-                    write!(f, "action failed: {action}")?;
-                } else {
-                    write!(f, "action executed but desktop invariant violated")?;
-                }
-                if !restore.is_empty() {
-                    write!(f, "\nrestoration failed:")?;
-                    for failure in restore {
-                        write!(
-                            f,
-                            "\n- {}: expected {}, actual {}",
-                            failure.what, failure.expected, failure.actual
-                        )?;
-                    }
-                }
-                Ok(())
-            }
+            Self::Guarded { action, restore } => write_guarded(f, action.as_deref(), restore),
             Self::Timeout { what, after_ms } => {
                 write!(f, "timed out waiting for {what} after {after_ms}ms")
             }
@@ -194,6 +203,65 @@ impl fmt::Display for Error {
             }
         }
     }
+}
+
+fn write_nested_refused(f: &mut fmt::Formatter<'_>, session: &str) -> fmt::Result {
+    write!(
+        f,
+        "{} is set (agent desktop `{session}`): a headless output created inside a nested Hyprland \
+         stays 0x0, so an agent desktop cannot be built from inside another one — run this from \
+         the user's session",
+        crate::isolated::AGENT_SESSION_ENV
+    )
+}
+
+fn write_agent_output_exists(
+    f: &mut fmt::Formatter<'_>,
+    output: &str,
+    session: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "output {output} already exists — it is left over from an earlier agent desktop, not a \
+         resource to reuse; run `hyprpilot --session {session} teardown` (or `hyprctl output \
+         remove {output}` if no session state is left)"
+    )
+}
+
+fn write_host_deviation(
+    f: &mut fmt::Formatter<'_>,
+    what: &str,
+    expected: &str,
+    actual: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "the user's desktop changed while the agent desktop was starting ({what}: expected \
+         {expected}, observed {actual}) — the start was rolled back"
+    )
+}
+
+fn write_guarded(
+    f: &mut fmt::Formatter<'_>,
+    action: Option<&Error>,
+    restore: &[RestoreFailure],
+) -> fmt::Result {
+    match action {
+        Some(action) => write!(f, "action failed: {action}")?,
+        None => write!(f, "action executed but desktop invariant violated")?,
+    }
+    if restore.is_empty() {
+        return Ok(());
+    }
+    write!(f, "\nrestoration failed:")?;
+    for failure in restore {
+        write!(
+            f,
+            "\n- {}: expected {}, actual {}",
+            failure.what, failure.expected, failure.actual
+        )?;
+    }
+    Ok(())
 }
 
 fn write_unsupported_version(

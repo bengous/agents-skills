@@ -184,8 +184,12 @@ enum SessionCommand {
         /// Exact window class to attach to
         #[arg(long, value_name = "CLASS")]
         match_class: Option<String>,
-        /// Headless output resolution
-        #[arg(long, default_value = "1600x1000")]
+        /// Headless output resolution (agent desktops default to 1920x1080)
+        #[arg(
+            long,
+            default_value = "1600x1000",
+            default_value_if("isolated", "true", "1920x1080")
+        )]
         size: String,
     },
     /// Resize the session output without recreating the session
@@ -678,6 +682,20 @@ mod tests {
         Ok(())
     }
 
+    fn started_size(flags: &[&str]) -> Result<(u32, u32), Box<dyn StdError>> {
+        let argv = ["hyprpilot", "session", "start"]
+            .into_iter()
+            .chain(flags.iter().copied());
+        let Cli {
+            command: Command::Session(SessionCommand::Start { size, .. }),
+            ..
+        } = Cli::try_parse_from(argv)?
+        else {
+            return Err("session start did not parse".into());
+        };
+        Ok(session::parse_size(&size)?)
+    }
+
     #[test]
     fn session_start_parses_isolated_flag() -> Result<(), Box<dyn StdError>> {
         let Cli {
@@ -701,7 +719,14 @@ mod tests {
 
         assert!(isolated);
         assert_eq!(session.as_deref(), Some("agent-1"));
-        assert_eq!(session::parse_size(&size)?, (1600, 1000));
+        // An agent desktop defaults to 1920x1080 (spec §4.2), the shared output
+        // to 1600x1000, and an explicit `--size` wins over both.
+        assert_eq!(session::parse_size(&size)?, (1920, 1080));
+        assert_eq!(started_size(&["--match-title", "T"])?, (1600, 1000));
+        assert_eq!(
+            started_size(&["--isolated", "--match-title", "T", "--size", "800x600"])?,
+            (800, 600)
+        );
         assert!(
             !matches!(
                 Cli::try_parse_from(["hyprpilot", "session", "start", "--match-title", "T"]),
