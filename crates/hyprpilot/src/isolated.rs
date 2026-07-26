@@ -14,6 +14,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write as _;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -745,6 +746,7 @@ struct Registered<'a> {
     signature: &'a str,
     pid: u32,
     console: &'a str,
+    display: &'a str,
 }
 
 /// What §6 has to undo, decided from the state alone so it can be asserted
@@ -765,11 +767,12 @@ fn teardown_plan(isolated: &Isolated) -> TeardownPlan<'_> {
             signature,
             pid,
             console_address,
-            ..
+            wayland_display,
         } => Some(Registered {
             signature,
             pid: *pid,
             console: console_address,
+            display: wayland_display,
         }),
     };
     TeardownPlan {
@@ -806,6 +809,10 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
             let (cleared, failure) =
                 clear_instance_runtime(instance.signature, Some(&session::session_dir(session)?));
             notes.extend(cleared);
+            failures.extend(failure);
+            let (unlinked, failure) =
+                clear_stale_socket(&session::runtime_root()?, instance.display);
+            notes.extend(unlinked);
             failures.extend(failure);
         }
     }
@@ -1075,6 +1082,47 @@ fn clear_instance_runtime(
         }
     };
     clear_runtime_dir(&dir, keep_log_in)
+}
+
+/// libwayland only unlinks its socket on a clean exit, so a nested compositor
+/// killed with `SIGKILL` leaves `wayland-<n>` and its lock behind (§2.9 applies
+/// to the socket as much as to the instance directory).
+///
+/// Refuses to unlink a socket something still listens on: the recorded name is
+/// ours, but a stale name could have been taken over by another compositor
+/// between the kill and this call, and unlinking that one would cut its clients
+/// off.
+fn clear_stale_socket(runtime: &Path, display: &str) -> (Vec<String>, Option<RestoreFailure>) {
+    let socket = runtime.join(display);
+    if !socket.exists() {
+        return (vec![format!("socket {display} already gone")], None);
+    }
+    if UnixStream::connect(&socket).is_ok() {
+        return (
+            Vec::new(),
+            Some(RestoreFailure {
+                what: "nested Wayland socket",
+                expected: format!("{display} unlinked"),
+                actual: "something still accepts connections on it".to_owned(),
+            }),
+        );
+    }
+    let mut notes = Vec::new();
+    let mut failure = None;
+    for path in [socket, runtime.join(format!("{display}.lock"))] {
+        match fs::remove_file(&path) {
+            Ok(()) => notes.push(format!("removed {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                failure = Some(RestoreFailure {
+                    what: "nested Wayland socket",
+                    expected: format!("{} removed", path.display()),
+                    actual: error.to_string(),
+                });
+            }
+        }
+    }
+    (notes, failure)
 }
 
 fn clear_runtime_dir(
@@ -2537,14 +2585,15 @@ mod tests {
     use super::{
         AGENT_SESSION_ENV, Console, ConsoleWant, Exit, FrameSite, HostSnapshot, Keymap,
         LiveInstance, Marker, Registered, Sweep, TeardownPlan, Visibility, active_workspaces,
-        capturable, capture_target, clear_runtime_dir, console_reaped, console_settled, deviation,
-        dir_entries, ensure_output_absent, frame_site, frames_reason, frozen_reason, instance_dir,
-        instance_match, instance_nonce, is_wayland_socket, keep_instance_log, keymap_of,
-        live_instance_in, marked_pids_in, nested_config, new_entries, output_is_configured,
-        output_vacated, persist_visibility, plain_signature, recorded_window, refuse_disposition,
-        refuse_nested_marker, refuse_untracked, remove_instance_dir, renameable, select_console,
-        shell_path, shown_where_the_user_looks, spawn_command, stop_instance, teardown_plan,
-        terminate_marked_in, user_workspace, visibility, wayland_sockets, workspace_occupants,
+        capturable, capture_target, clear_runtime_dir, clear_stale_socket, console_reaped,
+        console_settled, deviation, dir_entries, ensure_output_absent, frame_site, frames_reason,
+        frozen_reason, instance_dir, instance_match, instance_nonce, is_wayland_socket,
+        keep_instance_log, keymap_of, live_instance_in, marked_pids_in, nested_config, new_entries,
+        output_is_configured, output_vacated, persist_visibility, plain_signature, recorded_window,
+        refuse_disposition, refuse_nested_marker, refuse_untracked, remove_instance_dir,
+        renameable, select_console, shell_path, shown_where_the_user_looks, spawn_command,
+        stop_instance, teardown_plan, terminate_marked_in, user_workspace, visibility,
+        wayland_sockets, workspace_occupants,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Devices, FocusedWorkspace, Monitor};
@@ -2720,6 +2769,39 @@ mod tests {
             new_entries(&before, &dir_entries(dir.path())?),
             vec!["beef_1700000001".to_owned(), "dead_1700000002".to_owned()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_socket_is_unlinked_but_a_live_one_is_never_touched() -> Result<(), Box<dyn StdError>>
+    {
+        let dir = tempfile::tempdir()?;
+
+        // Nothing recorded left behind: an idempotent success.
+        let (notes, failure) = clear_stale_socket(dir.path(), "wayland-9");
+        assert!(failure.is_none());
+        assert_eq!(notes, vec!["socket wayland-9 already gone".to_owned()]);
+
+        // A dead compositor's leftovers: socket and lock both go (libwayland
+        // only unlinks them on a clean exit).
+        fs::write(dir.path().join("wayland-7"), b"")?;
+        fs::write(dir.path().join("wayland-7.lock"), b"")?;
+        let (notes, failure) = clear_stale_socket(dir.path(), "wayland-7");
+        assert!(failure.is_none(), "{failure:?}");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(!dir.path().join("wayland-7").exists());
+        assert!(!dir.path().join("wayland-7.lock").exists());
+
+        // A socket someone still accepts on is refused: the recorded name could
+        // have been taken over by another compositor after the kill.
+        let live = dir.path().join("wayland-8");
+        let listener = std::os::unix::net::UnixListener::bind(&live)?;
+        let (notes, failure) = clear_stale_socket(dir.path(), "wayland-8");
+        assert!(notes.is_empty(), "{notes:?}");
+        let failure = failure.ok_or("a live socket was unlinked")?;
+        assert!(failure.actual.contains("still accepts"), "{failure:?}");
+        assert!(live.exists(), "a live socket must survive");
+        drop(listener);
         Ok(())
     }
 
@@ -3386,6 +3468,7 @@ mod tests {
                     signature: "beef_1700000000",
                     pid: 4242,
                     console: "0xc0ff33",
+                    display: "wayland-3",
                 }),
             }
         );

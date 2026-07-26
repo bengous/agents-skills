@@ -409,6 +409,41 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
   nom de binaire). Contrainte pratique relevée : `sun_path` est limité à 108
   octets et `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/bus.sock` passe. À
   proposer comme cycle suivant, pas à glisser dans celui-ci.
+- **Triage du premier passage du gate** (écrit par l'auteur des scénarios, qui
+  n'a pas pu les exécuter). À lire AVANT de conclure qu'un rouge est un défaut
+  du crate :
+  1. `isolated_start_match_failure` est le rouge le plus probable. Sa preuve
+     d'ordre lit le socket d'évènements de Hyprland, dont les noms exacts
+     (`monitorremoved`, `closewindow>>ADDR`, adresses sans `0x`) n'ont pas pu
+     être vérifiés à froid. Discriminant : un FAIL « monitorremoved sans
+     closewindow » accuse d'abord le format d'évènement ; un FAIL qui cite deux
+     numéros de ligne accuse le rollback, et c'est alors le vrai défaut.
+     La trace vit dans `$XDG_RUNTIME_DIR/hyprpilot-e2e-iso-nomatch.*/events.log`,
+     que le trap supprime : jouer le scénario seul pour la garder.
+  2. `isolated_show_occluded` : sensible à `input:follow_mouse=1` (la console
+     flottante peut couvrir le point où le curseur a été posé, donc voler le
+     focus hôte) et au GC des workspaces nommés vides. FAIL sur `elapsed` =
+     crate ; FAIL sur le message ou le focus = scénario ou config.
+  3. `isolated_start_concurrent` : compare strictement les listes de fenêtres et
+     de workspaces hôte sur ~40 s, donc exposé à toute fenêtre qui s'ouvre
+     seule pendant le run. FAIL « fenêtres hôte apparues » = parasite, rejouer.
+  4. `isolated_start_bad_size` suppose que Hyprland refuse `99999x99999` au
+     mode-set. S'il l'accepte, le scénario ne teste plus le défaut visé et il
+     faut un autre déclencheur.
+  5. Fragilité transverse la plus probable de toutes : la comparaison stricte
+     des snapshots hôte, sur les runs longs.
+  Enfin, six scénarios isolés (`spawn`, `app`, `shot`, `show_hide`,
+  `host_intact`, `parallel`) n'avaient jamais pu atteindre leurs assertions
+  avant le durcissement (`read_host_snapshot` et `assert_png_dimensions`
+  avortaient le sous-shell sur `unbound variable`) : un rouge chez eux est
+  probablement un défaut du crate observé pour la première fois.
+- **Trou trouvé par ce triage et corrigé** : libwayland ne délie son socket
+  qu'à une sortie propre, donc un nested tué par SIGKILL laissait `wayland-<n>`
+  et son `.lock` derrière lui, là où le nettoyage ne traitait que
+  `hypr/<sig>/`. Le teardown les délie désormais, en refusant de délier un
+  socket sur lequel quelque chose écoute encore : le nom enregistré est le
+  nôtre, mais il a pu être repris entre le kill et le nettoyage, et délier
+  celui-là couperait ses clients.
 - **Résidu connu, documenté plutôt que corrigé** : si le process hyprpilot est
   tué brutalement entre le spawn du nested et la persistance de son stade
   `Live`, l'état reste `Pending` sans signature. Le nested lui-même est
