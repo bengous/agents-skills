@@ -4,11 +4,12 @@ CLI to drive and visually inspect native GUI apps (Iced, egui, GTK, winit…)
 on Hyprland without touching the user's desktop. Companion binary of the
 `hyprpilot` skill (`../../hyprpilot/SKILL.md`).
 
-The app's window is parked on a dedicated headless output; keys go through
-the `sendshortcut` dispatcher (by window address, no focus), clicks through a
-native `zwlr_virtual_pointer_v1` with cursor and focus restored, captures
-through grim framed to the window, and `wait` replaces sleeps with a native
-PNG pixel diff.
+In shared mode the app's window is parked on a dedicated headless output; keys
+go through the `sendshortcut` dispatcher (by window address, no focus), clicks
+through a native `zwlr_virtual_pointer_v1` with cursor and focus restored,
+captures through grim framed to the window, and `wait` replaces sleeps with a
+native PNG pixel diff. In isolated mode the same commands drive a nested
+compositor the agent owns instead of the user's desktop.
 
 ## Install
 
@@ -22,50 +23,136 @@ install -m755 target/release/hyprpilot ~/.local/bin/
 Every command takes a global `--session NAME` (default: `$HYPRPILOT_SESSION`,
 else `default`, alphabet `[a-z0-9-]{1,32}`).
 
-- **shared** — the mode documented in this file: the user's own windows are
-  parked on the output `hyprpilot`. That output is a singleton, so a second
-  shared session is refused whatever its name.
+- **shared** — the user's own windows are parked on the output `hyprpilot`.
+  That output is a singleton, so a second shared session is refused whatever
+  its name.
 - **isolated** (`session start --isolated`) — an agent desktop: a nested
-  Hyprland per session, its console window living on the active workspace of a
-  per-session headless output. Under construction; every command in isolated
-  mode currently fails naming the slice that implements it
-  (`hyprpilot-isolated-slice-plan.md`), without touching the compositor.
-  `session resize` will stay unsupported there for this cycle.
+  Hyprland per session, with its own seat, cursor and keyboard, its console
+  window living on the active workspace of a per-session headless output. One
+  desktop per session, any number in parallel. `--app` is required (a desktop
+  starts empty, there is nothing to attach to) and `--size` defaults to
+  1920x1080.
+
+Every command reads the mode from its session's state and routes before the
+first compositor read: an isolated command queries the clients, monitors,
+cursor and focus of *its own* instance, never the host's.
 
 ## Commands
 
 | Command | Role |
 |---|---|
-| `session start [--isolated] --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window |
-| `session resize WxH` | resize the headless output in place, re-place the active window (no teardown needed) |
-| `windows` | JSON array of every Hyprland client, annotated `tracked`/`active`/`focused` — discovery without `hyprctl`+`jq` |
-| `target [--address A] [--match-title T] [--match-class C] [--pid P] [--untracked] [--wait 10s] [--on-teardown restore\|close]` | adopt another window into the session (or switch back to a tracked one); the previous target is parked, invisible |
+| `session start [--isolated] --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window — or build a whole agent desktop |
+| `session resize WxH` | shared only: resize the headless output in place, re-place the active window (no teardown needed) |
+| `session show` / `session hide` | agent desktops only: bring the console window in front of the user, or send it back to `agent-<session>` |
+| `windows` | JSON array of every client, annotated `tracked`/`active`/`focused` — discovery without `hyprctl`+`jq` |
+| `target [--address A] [--match-title T] [--match-class C] [--pid P] [--untracked] [--wait 10s] [--on-teardown restore\|close]` | adopt another window into the session (or switch back to a tracked one); the previous target is parked, invisible. In an agent desktop it focuses the match instead, and refuses `--untracked` and `--on-teardown` |
 | `key <CHORDS…> [--focus]` | send key chords (`Down`, `Ctrl+c`) without focus |
 | `type "text" [--focus]` | type character by character (US shift pairs, common French accents) |
 | `click X Y [--button b] [--double] [--absolute] [--focus]` | virtual-pointer click (`--double`: two clicks 80 ms apart); cursor + focus restored |
 | `scroll X Y --dy N [--dx N] [--absolute] [--focus]` | wheel detents at that point (positive = down/right); cursor + focus restored |
 | `shot [NAME] [--full] [--out DIR]` | window-framed PNG (prints the absolute path) |
 | `wait [--stable\|--changed-from PNG] [--timeout 5s]` | poll captures until stable / changed |
-| `status` | session JSON: schema, tracked windows + dispositions, active target, parked windows, configured vs effective output size |
-| `doctor` | environment checks (hyprctl, grim, protocols, layout) |
-| `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), then remove the output and state |
+| `status` | session JSON: schema, mode, tracked windows + dispositions, active target, parked windows, configured vs effective output size. In an agent desktop: instance signature, `WAYLAND_DISPLAY`, pid, console address, `shown`, and the geometry read inside the instance |
+| `doctor` | environment checks (hyprctl, grim, protocols, layout) plus the agent-desktop ones (`Hyprland` on PATH, version against the validated 0.56, sessions directory writable) |
+| `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), then remove the output and state. An agent desktop is destroyed whole and refuses both flags |
 
 State lives in `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/session.json`
-(`schema_version: 3`, one claim per name, multi-window, written atomically).
-Requires Hyprland (tested on 0.55), grim and zenity+jq for the E2E gate.
+(`schema_version: 3`, one claim per name, multi-window, written atomically);
+captures, `wait` scratch files, the generated nested config and its log sit in
+the same directory, so parallel sessions never share a file. Requires Hyprland
+(shared mode tested on 0.55, agent desktops on 0.56 — `doctor` warns on any
+other version), grim, and zenity+jq for the E2E gate.
 
 **Reserved namespace**: outputs `hyprpilot` (shared) and `hyprpilot-<session>`
 (isolated); workspaces `hyprpilot` and `special:hyprpilot-parked` (shared) and
 `agent-<session>` (isolated). Named `agent-*` workspaces show up in
 `hyprctl workspaces -j` as soon as they exist, so waybar may display them
 depending on its `all-outputs` setting; they are a presence indicator, not a
-button (clicking one moves focus to an invisible headless output).
+button. Clicking one moves the focus to an invisible headless output, and
+`session show` then refuses to move the console onto the workspace it came
+from: looking at an agent desktop is `session show`/`session hide`, never a
+waybar click.
 
 **No state compatibility**: a `schema_version: 2` or unversioned state file
 makes every command fail with the version found, the version expected and the
 way out. Only `teardown` still reads the pre-v3 location
 `$XDG_RUNTIME_DIR/hyprpilot/session.json`, so a session left by an older build
 can be cleaned up.
+
+## Agent desktops (`--isolated`)
+
+A nested Hyprland cannot run headless (no DRM master), and a nested compositor
+whose window the host stops compositing stops receiving frame callbacks: its
+rendering freezes and every screencopy capture blocks for ever. Hence the whole
+shape of this mode — the nested compositor's console window lives on the
+**active** workspace of a headless output the host keeps compositing, invisible
+to the user.
+
+`session start --isolated --app CMD --match-title T` builds one in this order,
+rewriting the state after each acquired resource so an interrupted start stays
+recoverable with `teardown`:
+
+1. claim `sessions/<name>/`; snapshot the host (workspace active on every
+   output, focused window, cursor position);
+2. `output create headless hyprpilot-<name>`, then mode-set `WxH@60` with
+   `scale 1` imposed and read back — a headless output otherwise inherits a
+   non-trivial scale;
+3. rename that output's *active* workspace to `agent-<name>`
+   (`moveworkspacetomonitor` would leave it inactive and freeze captures). A
+   workspace holding windows, or one the snapshot saw in front of the user, is
+   refused;
+4. generate `sessions/<name>/hyprland.conf`: host keymap read from
+   `hyprctl devices`, no animations, no gaps or borders, flat background, no
+   `exec-once`;
+5. spawn `Hyprland -c <conf>` behind one-shot rules `[workspace
+   name:agent-<name> silent; noinitialfocus; fullscreen]`. The instance is
+   identified by diffing `$XDG_RUNTIME_DIR/hypr/` and the Wayland sockets, the
+   console window by `HYPRPILOT_AGENT_SESSION=<name>` in `/proc/<pid>/environ`
+   plus class `aquamarine` — never by title;
+6. re-read the host snapshot: any drift (an output gone, a workspace switched,
+   the focus moved) fails the start and rolls back everything acquired;
+7. `hyprctl -i <sig> dispatch exec CMD`, then wait for the exact match among
+   the *instance's* clients and for that window to be capturable.
+
+Then, inside the desktop:
+
+- `key`/`type` — `sendshortcut` dispatched by the instance to the recorded
+  window; `click`/`scroll` — a virtual pointer opened on the nested
+  compositor's own socket, in the nested layout's coordinates, with the landing
+  position verified against the instance's `cursorpos`. No cursor or focus
+  envelope: that seat has no human on it, and `--focus` is accepted as a no-op.
+- `shot` — grim against the nested `WAYLAND_DISPLAY`, framed on the recorded
+  window; `--full` is the whole agent desktop. `wait` is unchanged on top.
+- `target` — the same exact, never-ambiguous matcher, run against the
+  instance's clients, then `focuswindow` inside it. No parking and no
+  dispositions.
+- `session show` moves the console window to the workspace the user is looking
+  at, floating and pinned to the size it had (the agent desktop renders at the
+  size of that window); `session hide` sends it back to `agent-<name>` at the
+  configured size and the headless output's origin, then re-checks that
+  `agent-<name>` is active there. Both are idempotent and leave the user's
+  focus alone.
+- Every command but `teardown` first checks that the recorded pid still carries
+  the session marker. A crashed nested compositor therefore fails fast, naming
+  `teardown`, instead of timing out or falling back to the user's desktop.
+
+`teardown` closes the app politely inside the instance, then `dispatch exit`,
+then SIGTERM, then SIGKILL, each escalation reported. Every process still
+carrying `HYPRPILOT_AGENT_SESSION=<name>` is swept afterwards, which also
+catches a compositor spawned but never recorded; the nested log is kept as
+`sessions/<name>/instance.log` before `$XDG_RUNTIME_DIR/hypr/<sig>/` is
+removed. The output goes only once the host has reaped the console window,
+since removing it earlier would drop that window onto the user's desktop, and
+the session directory goes last. Every step on an object already gone is an
+idempotent success.
+
+## Validation
+
+Unit tests cover the state, the mode routing, the generated nested config, the
+teardown plan and the escalation ladders; `scripts/hyprland-gate.sh all` plays
+the end-to-end scenarios against a live session (opt-in, never automatic).
+**Isolated mode has never been run against a live compositor**: the twelve
+scenarios added for it in that script have not been played yet.
 
 ## Contracts
 
@@ -99,15 +186,16 @@ can be cleaned up.
 ## Limits
 
 - Concurrent hyprpilot commands on the same session are out of contract:
-  the state file is not a lock.
+  the state file is not a lock. Concurrency *between* sessions is fine —
+  separate state directories, separate instances.
 - Parked windows live on `special:hyprpilot-parked`, pinned to the session
   output by a `workspace` rule set at parking time; the rule is inert
   after teardown and disappears at the next Hyprland config reload. Never
   toggle that special workspace; `shot`/`wait` refuse to capture while it
   is visible on the session output.
-- Removing the output on teardown makes Hyprland re-center the user's
-  cursor on the remaining monitor: teardown currently does not restore the
-  cursor position afterwards.
+- `session resize` is unsupported in isolated mode: an agent desktop keeps the
+  size it was started with, so resizing means `teardown` then
+  `session start --isolated --size WxH`.
 - **Portals inside an agent desktop**: an app launched in a nested Hyprland
   inherits the host's `DBUS_SESSION_BUS_ADDRESS`, so any `FileChooser` portal
   call hangs with no dialog anywhere — including every GTK4 file picker, whose
@@ -115,6 +203,21 @@ can be cleaned up.
   the D-Bus traces and a validated private-bus workaround that is out of scope
   for this cycle, in [`references/portal-probe.md`](references/portal-probe.md).
   Shared mode is unaffected: it drives the user's real portal dialogs.
+- Out of scope for this cycle: audio inside an agent desktop, and a waybar
+  module for agent desktops.
+
+Two limits of the shared mode are now lifted, in both modes:
+
+- **The cursor comes back.** `hyprctl output remove` re-centres the user's
+  cursor, so every output removal — either mode's teardown, the orphan sweep, a
+  rolled-back isolated start — reads `cursorpos` immediately before and warps
+  back to it afterwards, verified.
+- **No capture can hang.** grim blocks for ever on a compositor that stopped
+  answering screencopy, so every capture runs under a bounded deadline (5 s,
+  then SIGTERM, then SIGKILL one second later). In an agent desktop a timeout
+  names the one documented cause, the agent workspace no longer being active on
+  its headless output, and the `grim -o hyprpilot-<session>` host-side
+  fallback.
 
 ## Design notes
 
@@ -126,10 +229,15 @@ can be cleaned up.
   bounding box of the whole monitor layout (`CPointerManager::warpAbsolute`);
   `pointer.rs` warps in those coordinates and verifies the landing position
   via `hyprctl cursorpos` before clicking.
-- When the headless output is created, its initial empty workspace is
-  evacuated to a physical monitor, otherwise grim captures the wallpaper.
+- When the shared headless output is created, its initial empty workspace is
+  evacuated to a physical monitor, otherwise grim captures the wallpaper. An
+  agent desktop needs the opposite: that workspace is renamed in place so it
+  stays the active one.
 - The session file is claimed atomically (`create_new`) and written before
   any compositor side effect: a start that fails midway stays recoverable
   with `teardown`, which aborts rather than remove the output while the
-  window is still open. `wait --timeout` bounds the polling loop; it cannot
-  preempt a single hung grim invocation.
+  window is still open.
+- Which compositor a command talks to is a value, `hypr::Ctl::{Host,
+  Instance(signature)}`, resolved from the session's mode and turned into an
+  `hyprctl -i <signature>` prefix: an isolated command has no path to the
+  user's compositor, and the routing is unit-tested without one.
