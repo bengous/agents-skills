@@ -464,10 +464,45 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
   (un seul `Command::new("hyprctl")` dans la crate, préfixe `-i <sig>` pour
   une instance) a été posée par l'orchestrateur avant S2, puisque toutes les
   slices isolées en dépendent.
+- **Premier run du gate G2, 2026-07-26** : 22 PASS, 6 FAIL sur 29. Joué par
+  Augustin, le classifieur du mode auto refusant le script à l'agent. Les dix
+  scénarios v2 passent sauf `teardown_corrupt`. Ce que le run a appris :
+  - `isolated_show_hide` et `isolated_show_occluded` : `setfloating` **ne** fait
+    **pas** tomber le plein écran posé par la règle one-shot du start, et
+    Hyprland refuse alors `resizewindowpixel` (« Window is fullscreen »). Le
+    commentaire du code affirmait l'inverse : une supposition jamais mesurée.
+    `show` retire maintenant le plein écran dans l'enveloppe `guard::run`
+    (focus de la console, `fullscreenstate 0 0`, focus et curseur rendus),
+    parce que `fullscreenstate` n'accepte pas de sélecteur de fenêtre.
+  - `isolated_start_concurrent` : deux starts simultanés voyaient chacun deux
+    nouvelles entrées dans `hypr/` et abandonnaient tous les deux. Le cas « une
+    seule entrée » était pire, il attribuait sans vérifier : un start pouvait
+    enregistrer la signature d'un autre et détruire son bureau au rollback. Le
+    diff de listing disparaît au profit de la table d'instances de l'hôte
+    (`hyprctl instances -j`), qui donne signature *et* socket du process
+    portant les marqueurs de ce start. Même leçon que le titre de fenêtre du
+    2026-07-24 et que le nonce d'instance, un cran plus haut : l'ordre
+    d'apparition n'est pas une identité.
+  - `teardown_corrupt` : régression introduite par le passage en v3.
+    `load_pre_v3_from` mappait un JSON illisible vers `CorruptSession`,
+    `load_from` laissait remonter un `Error::Json` brut, donc l'instruction de
+    récupération disparaissait du message. Mappé comme l'ancien chemin.
+  - `isolated_target` : défaut du scénario, `assert_nested_no_parking` appelé
+    sans sa signature (`$2: unbound variable`).
+  - `isolated_spawn` (curseur) et `isolated_start_match_failure` (curseur et
+    fenêtre active) : **non corrigés, à re-mesurer**. `HostSnapshot` porte un
+    champ `cursor` que `deviation` ne compare jamais, donc rien ne garantit la
+    position ; mais la position observée (1227, 508) tombe sur le moniteur de
+    l'utilisateur, pas sur l'output headless où un warp du compositeur l'aurait
+    posée, et le run s'est joué pendant qu'Augustin utilisait sa machine. Une
+    main sur la souris explique ces trois assertions aussi bien que le code.
+    Re-run souris et clavier immobiles avant toute correction : corriger sur ce
+    signal-là réécrirait la gestion du curseur pour rien.
 - **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 ✅ (`f2b6f7d` +
   `12bbf53`, G1 81 tests) · S2 S3 S4 S6 ✅ (`3593d9d`, 96 tests) · S5 S8 ✅
   (`5f55739`) · S7 ✅ (`1b721cd`) · S9 S10 S11 ✅ (`2793fcb`, 142 tests) ·
-  S12 ✅ (`8449c81`) · scénarios G2 ✅ (`40a1bda`) · **CP-A à CP-D non joués**.
+  S12 ✅ (`8449c81`) · scénarios G2 ✅ (`40a1bda`) · **G2 joué une fois**
+  (22/29), quatre correctifs posés, deux rouges en attente d'une mesure propre.
 - **Écart d'exécution assumé** : les slices ont été livrées en quatre vagues
   d'agents en parallèle sur fichiers disjoints, pas une par une avec son
   checkpoint. Les gates G1 ont tourné après chaque vague, mais les checkpoints

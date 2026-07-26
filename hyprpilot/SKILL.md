@@ -105,7 +105,9 @@ What differs from shared mode:
 - Portal file pickers never open (see the caveat below).
 - `session show` / `session hide` are the only way to let the user look at the
   desktop. Do not tell them to click the `agent-*` workspace in waybar: that
-  moves their focus to an invisible headless output.
+  moves their focus to an invisible headless output. `show` focuses the console
+  for a moment — Hyprland only drops a fullscreen state on the focused window —
+  then puts the user's focus and cursor back, so expect a brief flicker.
 
 ## Secondary windows — shared mode (portals, pickers, "Library"-style popups)
 
