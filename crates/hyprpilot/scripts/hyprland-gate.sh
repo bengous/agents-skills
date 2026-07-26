@@ -4427,7 +4427,7 @@ scenario_isolated_target() (
 		fail "target B isolated_target: fenetre active de l'instance observe=${active_address}; attendu=${b_address}"
 		return 1
 	fi
-	assert_nested_no_parking "target B isolated_target" || return 1
+	assert_nested_no_parking "${signature}" "target B isolated_target" || return 1
 	if ! shot_output=$(
 		"${HYPRPILOT}" --session "${session}" shot iso-target-b --out "${scenario_tmp}" 2>&1
 	) || [[ ! -s ${scenario_tmp}/iso-target-b.png ]]; then
@@ -4461,7 +4461,7 @@ scenario_isolated_target() (
 		fail "target A isolated_target: fenetre active de l'instance observe=${active_address}; attendu=${a_address}"
 		return 1
 	fi
-	assert_nested_no_parking "target A isolated_target" || return 1
+	assert_nested_no_parking "${signature}" "target A isolated_target" || return 1
 
 	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
 		fail "teardown isolated_target observe=echec (${command_output}); attendu=succes"

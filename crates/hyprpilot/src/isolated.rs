@@ -21,6 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::capture;
 use crate::error::{Error, RestoreFailure};
+use crate::guard;
 use crate::hypr::{self, Ctl};
 use crate::session::{self, Instance, Isolated, ModeState, Session};
 
@@ -408,10 +409,6 @@ impl Start<'_> {
     fn spawn_instance(&self, config: &Path, acquired: &mut Acquired) -> Result<Live, Error> {
         let log = self.dir.join(NESTED_LOG_FILE);
         let command = spawn_command(&self.marker(), &self.workspace, config, &log)?;
-        let instances = instances_dir()?;
-        let runtime = session::runtime_root()?;
-        let signatures_before = dir_entries(&instances)?;
-        let sockets_before = wayland_sockets(&runtime)?;
         let windows_before = hypr::clients()?
             .into_iter()
             .map(|client| client.address)
@@ -419,25 +416,20 @@ impl Start<'_> {
 
         hypr::dispatch(&["exec", &command])?;
 
-        let signature = wait_for_new_entry(
-            &instances,
-            &signatures_before,
-            dir_entries,
-            "a new Hyprland instance",
-            &log,
-        )?;
+        // Identity, never arrival order: the nested compositor carries both
+        // markers of this start, so the host's instance table attributes a
+        // signature *and* a socket to it whatever else is being born at the same
+        // moment. Diffing the runtime directory could not — measured on the first
+        // live run, two concurrent starts each saw two new entries and neither
+        // could claim one, and the single-entry case attributed without ever
+        // checking whose it was.
+        let instance = self.wait_for_marked_instance(&log)?;
         // Kept before the console is looked for: from here on the compositor has
         // a runtime directory to exit politely and to remove (fact §2.9), and a
         // failure below must not throw that away.
-        acquired.signature = Some(signature.clone());
+        acquired.signature = Some(instance.instance.clone());
         let console = self.wait_for_console(&windows_before, &log)?;
-        let wayland_display = wait_for_new_entry(
-            &runtime,
-            &sockets_before,
-            wayland_sockets,
-            "a new Wayland socket",
-            &log,
-        )?;
+        let (signature, wayland_display) = (instance.instance, instance.wl_socket);
         if !console.title.starts_with(CONSOLE_TITLE_PREFIX) {
             let _ = writeln!(
                 std::io::stderr(),
@@ -455,6 +447,32 @@ impl Start<'_> {
             pid: console_pid(&console)?,
             console_address: console.address,
         })
+    }
+
+    /// A compositor registers itself in the host's instance table while it starts,
+    /// which is the first moment a start can name what it spawned — and it names
+    /// it by ownership, not by whatever appeared meanwhile.
+    fn wait_for_marked_instance(&self, log: &Path) -> Result<hypr::InstanceInfo, Error> {
+        let marker = self.marker();
+        poll_until(
+            INSTANCE_APPEAR_TIMEOUT,
+            || {
+                let instances = hypr::instances()?;
+                let ours = |pid: i32| process_carries_marker(pid, &marker);
+                Ok(marked_instance(&instances, &ours)?.cloned().ok_or_else(|| {
+                    format!("{} live instances, none of them ours", instances.len())
+                }))
+            },
+            |observed| {
+                format!(
+                    "the nested Hyprland of agent desktop `{name}` ({AGENT_SESSION_ENV}={name}, \
+                     {AGENT_INSTANCE_ENV}={nonce}) (last observed: {observed}); nested log: {}",
+                    log.display(),
+                    name = self.name,
+                    nonce = self.nonce,
+                )
+            },
+        )
     }
 
     fn wait_for_console(
@@ -1430,78 +1448,36 @@ fn shell_path(path: &Path) -> Result<&str, Error> {
 }
 
 /// Where every compositor keeps its instance directory, the nested ones
-/// included: a start discovers its own by diffing this (§4.5) and teardown
-/// removes it (fact §2.9).
+/// included: teardown removes the one belonging to this session (fact §2.9).
 pub fn instances_dir() -> Result<PathBuf, Error> {
     Ok(session::runtime_root()?.join("hypr"))
 }
 
-fn dir_entries(dir: &Path) -> Result<BTreeSet<String>, Error> {
-    let context = || format!("listing {}", dir.display());
-    let entries = fs::read_dir(dir).map_err(|source| Error::Io {
-        context: context(),
-        source,
-    })?;
-    let mut names = BTreeSet::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            context: context(),
-            source,
-        })?;
-        names.insert(entry.file_name().to_string_lossy().into_owned());
-    }
-    Ok(names)
-}
-
-fn wayland_sockets(dir: &Path) -> Result<BTreeSet<String>, Error> {
-    Ok(dir_entries(dir)?
-        .into_iter()
-        .filter(|name| is_wayland_socket(name))
-        .collect())
-}
-
-/// A Wayland socket is `wayland-<n>`; its lock file is `wayland-<n>.lock`, and
-/// no socket name carries a dot.
-fn is_wayland_socket(name: &str) -> bool {
-    name.starts_with("wayland-") && !name.contains('.')
-}
-
-fn new_entries(before: &BTreeSet<String>, now: &BTreeSet<String>) -> Vec<String> {
-    now.difference(before).cloned().collect()
-}
-
-/// Bounded diff of a runtime directory: exactly one new entry is ours, several
-/// mean a concurrent birth this start refuses to guess between.
-fn wait_for_new_entry(
-    dir: &Path,
-    before: &BTreeSet<String>,
-    list: impl Fn(&Path) -> Result<BTreeSet<String>, Error>,
-    what: &str,
-    log: &Path,
-) -> Result<String, Error> {
-    poll_until(
-        INSTANCE_APPEAR_TIMEOUT,
-        || match new_entries(before, &list(dir)?).as_slice() {
-            [] => Ok(Err("none".to_owned())),
-            [entry] => Ok(Ok(entry.clone())),
-            several => Err(Error::Tool {
-                command: format!("listing {}", dir.display()),
+/// Ours is the instance whose process carries both markers of this start. The
+/// per-start nonce makes that unique, so two matches mean something is lying and
+/// the start refuses to adopt a stranger's compositor rather than guess.
+fn marked_instance<'a>(
+    instances: &'a [hypr::InstanceInfo],
+    ours: &dyn Fn(i32) -> Result<bool, Error>,
+) -> Result<Option<&'a hypr::InstanceInfo>, Error> {
+    let mut found: Option<&hypr::InstanceInfo> = None;
+    for instance in instances {
+        if !ours(instance.pid)? {
+            continue;
+        }
+        if let Some(other) = found {
+            return Err(Error::Tool {
+                command: "hyprctl instances".to_owned(),
                 message: format!(
-                    "{} new entries appeared ({}) — cannot tell which one belongs to this start; \
-                     teardown and retry",
-                    several.len(),
-                    several.join(", ")
+                    "two live instances carry the markers of this start ({} pid {}, {} pid {}) — \
+                     refusing to guess which one it spawned; teardown and retry",
+                    other.instance, other.pid, instance.instance, instance.pid
                 ),
-            }),
-        },
-        |observed| {
-            format!(
-                "{what} in {} (last observed: {observed}); nested log: {}",
-                dir.display(),
-                log.display()
-            )
-        },
-    )
+            });
+        }
+        found = Some(instance);
+    }
+    Ok(found)
 }
 
 /// The console carries the nested compositor's class (fact §2.5) and its process
@@ -2041,22 +2017,33 @@ pub fn show(session: &str, path: &Path, isolated: &mut Isolated) -> Result<Strin
     }
     let destination = user_workspace(&focused, &hypr::monitors()?, session, isolated)?;
 
-    // Floating first: changing the floating mode is what drops the fullscreen
-    // state the start's one-shot rule set, and a fullscreen console would
-    // otherwise cover the user's whole monitor. The size is then pinned to what
-    // the console had, because the agent desktop renders at the size of this
-    // window: letting Hyprland pick a floating size would silently change the
-    // resolution the agent has been working in.
+    // Measured on the first live run of §5: `setfloating` does NOT drop the
+    // fullscreen state the start's one-shot rule set, and Hyprland then refuses
+    // `resizewindowpixel` with "Window is fullscreen". `fullscreenstate` takes no
+    // window selector, so the console is focused for the length of the clear and
+    // the user's focus and cursor are put back by the same envelope `--focus`
+    // uses — a fullscreen console left as it is would cover their whole monitor.
+    // The size is pinned to what the console had, because the agent desktop
+    // renders at the size of this window: letting Hyprland pick a floating size
+    // would silently change the resolution the agent has been working in.
     let size = console.size;
-    hypr::dispatch(&["setfloating", &window_arg(&console_address)])?;
-    resize_console(&console_address, size)?;
-    hypr::dispatch(&[
-        "movetoworkspacesilent",
-        &format!(
-            "{},address:{console_address}",
-            session::workspace_selector(&destination)
-        ),
-    ])?;
+    guard::run(
+        Some(&console_address),
+        || Ok(()),
+        |()| {
+            hypr::dispatch(&["fullscreenstate", "0", "0"])?;
+            hypr::dispatch(&["setfloating", &window_arg(&console_address)])?;
+            resize_console(&console_address, size)?;
+            hypr::dispatch(&[
+                "movetoworkspacesilent",
+                &format!(
+                    "{},address:{console_address}",
+                    session::workspace_selector(&destination)
+                ),
+            ])
+        },
+        |(), cursor| guard::restore_cursor(cursor),
+    )?;
 
     let console = settle_console(
         &console_address,
@@ -2586,14 +2573,13 @@ mod tests {
         AGENT_SESSION_ENV, Console, ConsoleWant, Exit, FrameSite, HostSnapshot, Keymap,
         LiveInstance, Marker, Registered, Sweep, TeardownPlan, Visibility, active_workspaces,
         capturable, capture_target, clear_runtime_dir, clear_stale_socket, console_reaped,
-        console_settled, deviation, dir_entries, ensure_output_absent, frame_site, frames_reason,
-        frozen_reason, instance_dir, instance_match, instance_nonce, is_wayland_socket,
-        keep_instance_log, keymap_of, live_instance_in, marked_pids_in, nested_config, new_entries,
-        output_is_configured, output_vacated, persist_visibility, plain_signature, recorded_window,
-        refuse_disposition, refuse_nested_marker, refuse_untracked, remove_instance_dir,
-        renameable, select_console, shell_path, shown_where_the_user_looks, spawn_command,
-        stop_instance, teardown_plan, terminate_marked_in, user_workspace, visibility,
-        wayland_sockets, workspace_occupants,
+        console_settled, deviation, ensure_output_absent, frame_site, frames_reason, frozen_reason,
+        instance_dir, instance_match, instance_nonce, keep_instance_log, keymap_of,
+        live_instance_in, marked_instance, marked_pids_in, nested_config, output_is_configured,
+        output_vacated, persist_visibility, plain_signature, recorded_window, refuse_disposition,
+        refuse_nested_marker, refuse_untracked, remove_instance_dir, renameable, select_console,
+        shell_path, shown_where_the_user_looks, spawn_command, stop_instance, teardown_plan,
+        terminate_marked_in, user_workspace, visibility, workspace_occupants,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Devices, FocusedWorkspace, Monitor};
@@ -2750,25 +2736,37 @@ mod tests {
         Ok(())
     }
 
+    fn instance_info(instance: &str, pid: i32, socket: &str) -> crate::hypr::InstanceInfo {
+        crate::hypr::InstanceInfo {
+            instance: instance.to_owned(),
+            pid,
+            wl_socket: socket.to_owned(),
+        }
+    }
+
     #[test]
-    fn instance_diff_reports_only_entries_the_spawn_created() -> Result<(), Box<dyn StdError>> {
-        let dir = tempfile::tempdir()?;
-        // A third-party instance that already existed is never a candidate.
-        fs::create_dir_all(dir.path().join("cafe_1700000000"))?;
-        let before = dir_entries(dir.path())?;
-        assert!(new_entries(&before, &dir_entries(dir.path())?).is_empty());
+    fn an_instance_is_attributed_by_its_markers_not_by_what_appeared()
+    -> Result<(), Box<dyn StdError>> {
+        let instances = vec![
+            instance_info("cafe_1700000000", 10, "wayland-1"),
+            instance_info("beef_1700000001", 20, "wayland-2"),
+            instance_info("dead_1700000002", 30, "wayland-3"),
+        ];
 
-        fs::create_dir_all(dir.path().join("beef_1700000001"))?;
-        assert_eq!(
-            new_entries(&before, &dir_entries(dir.path())?),
-            vec!["beef_1700000001".to_owned()]
-        );
+        // The user's own compositor and a concurrent start's are both present, and
+        // neither is a candidate: the socket comes from the same record, so it can
+        // never be the one a racing start opened.
+        let found = marked_instance(&instances, &|pid: i32| Ok(pid == 20))?
+            .ok_or("the marked instance was not found")?;
+        assert_eq!(found.instance, "beef_1700000001");
+        assert_eq!(found.wl_socket, "wayland-2");
 
-        fs::create_dir_all(dir.path().join("dead_1700000002"))?;
-        assert_eq!(
-            new_entries(&before, &dir_entries(dir.path())?),
-            vec!["beef_1700000001".to_owned(), "dead_1700000002".to_owned()]
-        );
+        assert!(marked_instance(&instances, &|_| Ok(false))?.is_none());
+
+        let Err(error) = marked_instance(&instances, &|pid: i32| Ok(pid != 10)) else {
+            return Err("two marked instances must never be guessed between".into());
+        };
+        assert!(error.to_string().contains("two live instances"), "{error}");
         Ok(())
     }
 
@@ -2802,26 +2800,6 @@ mod tests {
         assert!(failure.actual.contains("still accepts"), "{failure:?}");
         assert!(live.exists(), "a live socket must survive");
         drop(listener);
-        Ok(())
-    }
-
-    #[test]
-    fn wayland_socket_listing_ignores_lock_files() -> Result<(), Box<dyn StdError>> {
-        let dir = tempfile::tempdir()?;
-        for name in ["wayland-1", "wayland-1.lock", "wayland-2", "bus"] {
-            fs::write(dir.path().join(name), b"")?;
-        }
-
-        assert_eq!(
-            wayland_sockets(dir.path())?,
-            ["wayland-1", "wayland-2"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<BTreeSet<_>>()
-        );
-        assert!(is_wayland_socket("wayland-42"));
-        assert!(!is_wayland_socket("wayland-42.lock"));
-        assert!(!is_wayland_socket("bus"));
         Ok(())
     }
 

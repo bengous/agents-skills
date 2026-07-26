@@ -44,6 +44,21 @@ pub struct Client {
     pub pid: i32,
 }
 
+/// One live Hyprland instance, as the host's own table reports it. The pid is
+/// what makes an instance attributable: two starts racing both watch the same
+/// runtime directory gain two signatures, and only the process behind one of them
+/// carries the markers of a given start.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstanceInfo {
+    pub instance: String,
+    pub pid: i32,
+    pub wl_socket: String,
+}
+
+pub fn instances() -> Result<Vec<InstanceInfo>, Error> {
+    run_json_on(Ctl::Host, &["instances"])
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Monitor {

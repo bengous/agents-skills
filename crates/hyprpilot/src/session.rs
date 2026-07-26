@@ -461,11 +461,18 @@ fn unsupported_version(path: &Path, found: Option<u32>) -> Error {
 
 fn load_from(path: &Path) -> Result<Session, Error> {
     let raw = read_from(path)?;
-    let header: SessionHeader = parse_json(&raw, path)?;
+    // A file that exists but does not parse is a corrupt session, not a bare
+    // JSON error: only `CorruptSession` states that nothing was removed and how
+    // to recover by hand. Same mapping as the pre-v3 loader.
+    let corrupt = |error: Error| Error::CorruptSession {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    };
+    let header: SessionHeader = parse_json(&raw, path).map_err(&corrupt)?;
     if header.schema_version != Some(SCHEMA_VERSION) {
         return Err(unsupported_version(path, header.schema_version));
     }
-    let session: Session = parse_json(&raw, path)?;
+    let session: Session = parse_json(&raw, path).map_err(corrupt)?;
     if let ModeState::Shared(shared) = &session.state {
         check_primary(shared, path)?;
     }
