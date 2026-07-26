@@ -17,11 +17,26 @@ cargo build --release -p hyprpilot
 install -m755 target/release/hyprpilot ~/.local/bin/
 ```
 
+## Sessions and modes
+
+Every command takes a global `--session NAME` (default: `$HYPRPILOT_SESSION`,
+else `default`, alphabet `[a-z0-9-]{1,32}`).
+
+- **shared** — the mode documented in this file: the user's own windows are
+  parked on the output `hyprpilot`. That output is a singleton, so a second
+  shared session is refused whatever its name.
+- **isolated** (`session start --isolated`) — an agent desktop: a nested
+  Hyprland per session, its console window living on the active workspace of a
+  per-session headless output. Under construction; every command in isolated
+  mode currently fails naming the slice that implements it
+  (`hyprpilot-isolated-slice-plan.md`), without touching the compositor.
+  `session resize` will stay unsupported there for this cycle.
+
 ## Commands
 
 | Command | Role |
 |---|---|
-| `session start --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window |
+| `session start [--isolated] --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window |
 | `session resize WxH` | resize the headless output in place, re-place the active window (no teardown needed) |
 | `windows` | JSON array of every Hyprland client, annotated `tracked`/`active`/`focused` — discovery without `hyprctl`+`jq` |
 | `target [--address A] [--match-title T] [--match-class C] [--pid P] [--untracked] [--wait 10s] [--on-teardown restore\|close]` | adopt another window into the session (or switch back to a tracked one); the previous target is parked, invisible |
@@ -35,10 +50,22 @@ install -m755 target/release/hyprpilot ~/.local/bin/
 | `doctor` | environment checks (hyprctl, grim, protocols, layout) |
 | `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), then remove the output and state |
 
-State lives in `$XDG_RUNTIME_DIR/hyprpilot/session.json` (one session at a
-time, `schema_version: 2`, multi-window, written atomically; the legacy
-unversioned format is only readable by `teardown`). Requires Hyprland
-(tested on 0.55), grim and zenity+jq for the E2E gate.
+State lives in `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/session.json`
+(`schema_version: 3`, one claim per name, multi-window, written atomically).
+Requires Hyprland (tested on 0.55), grim and zenity+jq for the E2E gate.
+
+**Reserved namespace**: outputs `hyprpilot` (shared) and `hyprpilot-<session>`
+(isolated); workspaces `hyprpilot` and `special:hyprpilot-parked` (shared) and
+`agent-<session>` (isolated). Named `agent-*` workspaces show up in
+`hyprctl workspaces -j` as soon as they exist, so waybar may display them
+depending on its `all-outputs` setting; they are a presence indicator, not a
+button (clicking one moves focus to an invisible headless output).
+
+**No state compatibility**: a `schema_version: 2` or unversioned state file
+makes every command fail with the version found, the version expected and the
+way out. Only `teardown` still reads the pre-v3 location
+`$XDG_RUNTIME_DIR/hyprpilot/session.json`, so a session left by an older build
+can be cleaned up.
 
 ## Contracts
 
@@ -78,10 +105,16 @@ unversioned format is only readable by `teardown`). Requires Hyprland
   after teardown and disappears at the next Hyprland config reload. Never
   toggle that special workspace; `shot`/`wait` refuse to capture while it
   is visible on the session output.
-- The output name `hyprpilot` is a reserved namespace.
 - Removing the output on teardown makes Hyprland re-center the user's
   cursor on the remaining monitor: teardown currently does not restore the
   cursor position afterwards.
+- **Portals inside an agent desktop**: an app launched in a nested Hyprland
+  inherits the host's `DBUS_SESSION_BUS_ADDRESS`, so any `FileChooser` portal
+  call hangs with no dialog anywhere — including every GTK4 file picker, whose
+  only path is the portal (`GTK_USE_PORTAL=0` changes nothing). Measured, with
+  the D-Bus traces and a validated private-bus workaround that is out of scope
+  for this cycle, in [`references/portal-probe.md`](references/portal-probe.md).
+  Shared mode is unaffected: it drives the user's real portal dialogs.
 
 ## Design notes
 

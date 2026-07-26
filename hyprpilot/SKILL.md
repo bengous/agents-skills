@@ -92,6 +92,12 @@ during that window — keep `--focus` actions short.
 
 - `session start` matches windows by **exact** title/class (`hyprctl clients`
   values). Iced/winit windows often have an empty class — match by title.
+- Every command takes `--session NAME` (default `$HYPRPILOT_SESSION`, else
+  `default`, alphabet `[a-z0-9-]{1,32}`); the whole loop above is one session.
+  Reserved namespace, do not touch by hand: outputs `hyprpilot` and
+  `hyprpilot-<session>`, workspaces `hyprpilot`, `special:hyprpilot-parked`
+  and `agent-<session>`. `agent-*` workspaces may appear in waybar; they mark
+  an agent desktop's presence and clicking one focuses an invisible output.
 - `--size WxH` (default 1600x1000) sets the headless output resolution.
 - `shot` is framed to the window (fewer tokens, no waybar); `--full` captures
   the whole output. Files land in `$XDG_RUNTIME_DIR/hyprpilot/shots/`.
@@ -131,6 +137,14 @@ Caveats:
 - One session at a time. If `session start` reports an existing session, run
   `hyprpilot teardown` first. A start that failed midway leaves its state on
   purpose — `teardown` cleans it up.
+- File pickers work here because this mode drives the user's real desktop.
+  An **agent desktop** (`--isolated`, under construction) cannot open them:
+  the nested compositor inherits the host D-Bus session, so `FileChooser`
+  portal calls hang with no dialog — every GTK4 picker included. Measured in
+  `crates/hyprpilot/references/portal-probe.md`.
+- State left by an older build (`schema_version: 2`, or the unversioned
+  format) is refused by every command with the version it holds and the way
+  out; `hyprpilot teardown` still clears it.
 - `teardown` walks every tracked window in reverse adoption order:
   **attached** windows go back to their origin workspace, position and
   size (`restore`), `close`-disposition windows are actually closed, a
