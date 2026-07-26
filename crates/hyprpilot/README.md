@@ -151,8 +151,16 @@ idempotent success.
 Unit tests cover the state, the mode routing, the generated nested config, the
 teardown plan and the escalation ladders; `scripts/hyprland-gate.sh all` plays
 the end-to-end scenarios against a live session (opt-in, never automatic).
-**Isolated mode has never been run against a live compositor**: the twelve
-scenarios added for it in that script have not been played yet.
+All 29 scenarios pass against Hyprland 0.56, isolated mode included. The run
+found four defects no unit test could reach: `setfloating` does not clear a
+fullscreen state, so `session show` had to focus the console to drop it;
+attributing a nested compositor by diffing the instance directory is unsound
+under concurrent starts, and identity now comes from `hyprctl instances`; an
+unparseable v3 state file lost its recovery instruction; and a console shown on
+the user's workspace warped their cursor as it died. One scenario
+(`isolated_show_hide`) failed once in four runs on a start whose console never
+mapped — not reproduced since, and a failing start now prints the tail of the
+nested compositor's log before the rollback removes it.
 
 ## Contracts
 

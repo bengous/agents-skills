@@ -535,8 +535,10 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
 - **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 ✅ (`f2b6f7d` +
   `12bbf53`, G1 81 tests) · S2 S3 S4 S6 ✅ (`3593d9d`, 96 tests) · S5 S8 ✅
   (`5f55739`) · S7 ✅ (`1b721cd`) · S9 S10 S11 ✅ (`2793fcb`, 142 tests) ·
-  S12 ✅ (`8449c81`) · scénarios G2 ✅ (`40a1bda`) · **G2 joué une fois**
-  (22/29), quatre correctifs posés, deux rouges en attente d'une mesure propre.
+  S12 ✅ (`8449c81`) · scénarios G2 ✅ (`40a1bda`) · **G2 vert 29/29** au
+  quatrième run (22 → 26 → 27 → 29), CP-A à CP-D couverts par ce run complet.
+  Hôte vérifié intact après : un seul moniteur, un seul workspace, une seule
+  instance, aucun état résiduel sous `$XDG_RUNTIME_DIR/hyprpilot`.
 - **Écart d'exécution assumé** : les slices ont été livrées en quatre vagues
   d'agents en parallèle sur fichiers disjoints, pas une par une avec son
   checkpoint. Les gates G1 ont tourné après chaque vague, mais les checkpoints
