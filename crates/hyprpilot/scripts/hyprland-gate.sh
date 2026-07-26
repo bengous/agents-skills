@@ -4760,6 +4760,12 @@ scenario_isolated_show_occluded() (
 	switch_host_workspace "${host_workspace}" "retour isolated_show_occluded" || return 1
 	restore_workspace=""
 	wait_workspace_absent "${decoy}" "retour isolated_show_occluded" || return 1
+	# Revenir sur le workspace de l'utilisateur y refocalise sa fenêtre, et
+	# Hyprland warpe le curseur au centre de celle-ci. C'est l'effet de la bascule
+	# que ce scenario joue POUR l'utilisateur, pas de hyprpilot : la reference du
+	# curseur est donc reprise ici, et l'assertion finale garde tout son sens,
+	# elle prouve que `session hide` et `teardown` ne le deplacent pas.
+	read_stable_cursor host_cursor_x host_cursor_y "retour isolated_show_occluded" || return 1
 	if ! command_output=$("${HYPRPILOT}" --session "${session}" session hide 2>&1); then
 		fail "session hide isolated_show_occluded observe=echec (${command_output}); attendu=console sur agent-${session}"
 		return 1
