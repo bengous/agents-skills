@@ -28,6 +28,10 @@ fail() {
 	printf 'FAIL: %s\n' "$*"
 }
 
+note() {
+	printf 'NOTE: %s\n' "$*"
+}
+
 skip() {
 	printf 'SKIP: %s\n' "$*"
 	exit 0
@@ -420,6 +424,808 @@ wait_client_gone() {
 	return 1
 }
 
+# --- Helpers du mode isolé (bureaux agents) --------------------------------
+
+session_dir_path() {
+	printf '%s/hyprpilot/sessions/%s' "${XDG_RUNTIME_DIR}" "$1"
+}
+
+session_file_path() {
+	printf '%s/session.json' "$(session_dir_path "$1")"
+}
+
+# Lecture silencieuse d'un champ d'etat : les traps s'en servent sans polluer
+# la sortie quand la session a deja disparu.
+state_field() {
+	local session=$1
+	local field=$2
+	local file value
+
+	file=$(session_file_path "${session}")
+	[[ -f ${file} ]] || return 1
+	value=$(jq -r "${field}" <"${file}" 2>/dev/null) || return 1
+	[[ ${value} != null ]] || return 1
+	printf '%s' "${value}"
+}
+
+read_state_field() {
+	local session=$1
+	local field=$2
+	local destination=$3
+	local label=$4
+	local file value
+
+	file=$(session_file_path "${session}")
+	if [[ ! -f ${file} ]]; then
+		fail "${label}: etat observe=absent (${file}); attendu=session.json de ${session}"
+		return 1
+	fi
+	if ! value=$(jq -r "${field}" <"${file}" 2>/dev/null) || [[ ${value} == null ]]; then
+		fail "${label}: champ observe=absent ou nul (${field}); attendu=valeur dans ${file}"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${value}"
+}
+
+assert_state_field() {
+	local session=$1
+	local field=$2
+	local expected=$3
+	local label=$4
+	local observed
+
+	read_state_field "${session}" "${field}" observed "${label}" || return 1
+	if [[ ${observed} != "${expected}" ]]; then
+		fail "${label}: ${field} observe=${observed}; attendu=${expected}"
+		return 1
+	fi
+}
+
+require_isolated_support() {
+	[[ -n ${XDG_RUNTIME_DIR:-} ]] ||
+		skip "XDG_RUNTIME_DIR est vide: aucun bureau agent possible"
+	command -v Hyprland >/dev/null 2>&1 ||
+		skip "binaire Hyprland absent du PATH: aucun bureau agent possible"
+}
+
+snapshot_hypr_signatures() {
+	local destination=$1
+	local entry joined=""
+
+	if [[ -d ${XDG_RUNTIME_DIR}/hypr ]]; then
+		for entry in "${XDG_RUNTIME_DIR}"/hypr/*; do
+			[[ -d ${entry} ]] || continue
+			joined+=${entry##*/}$'\n'
+		done
+	fi
+	printf -v "${destination}" '%s' "${joined}"
+}
+
+# Signatures apparues depuis le snapshot, hote exclu : la seule identification
+# d'instance nested qu'un trap peut utiliser sans lire l'etat de l'outil.
+new_hypr_signatures() {
+	local destination=$1
+	local before=$2
+	local current="" signature joined=""
+
+	snapshot_hypr_signatures current
+	while IFS= read -r signature; do
+		[[ -n ${signature} ]] || continue
+		[[ ${signature} != "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || continue
+		[[ $'\n'${before} != *$'\n'"${signature}"$'\n'* ]] || continue
+		joined+=${signature}$'\n'
+	done <<<"${current}"
+	printf -v "${destination}" '%s' "${joined}"
+}
+
+nested_process_is_hyprland() {
+	local pid=$1
+	local cmdline
+
+	[[ ${pid} =~ ^[0-9]+$ ]] || return 1
+	[[ -r /proc/${pid}/cmdline ]] || return 1
+	cmdline=$(tr '\0' ' ' </proc/"${pid}"/cmdline) || return 1
+	[[ ${cmdline} == *Hyprland* ]]
+}
+
+# Un compositeur imbrique apparait comme client class aquamarine de l'hote
+# (fait §2.5) ; l'hote n'est jamais son propre client. Garde des chemins qui
+# signalent un PID : un etat errone ne peut pas viser la session utilisateur.
+nested_pid_is_console() {
+	local pid=$1
+	local raw
+
+	[[ ${pid} =~ ^[0-9]+$ ]] || return 1
+	raw=$(hyprctl clients -j 2>/dev/null) || return 1
+	jq -e --argjson pid "${pid}" \
+		'any(.[]; .pid == $pid and .class == "aquamarine")' <<<"${raw}" >/dev/null
+}
+
+nested_instance_alive() {
+	hyprctl -i "$1" version >/dev/null 2>&1
+}
+
+wait_nested_instance_gone() {
+	local signature=$1
+	local label=$2
+	local attempt
+
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		nested_instance_alive "${signature}" || return 0
+		sleep 0.1
+	done
+	fail "${label}: instance observe=vivante (${signature}); attendu=terminee en 5s"
+	return 1
+}
+
+# Termine une instance nested et efface son socket sans passer par hyprpilot :
+# utilisable dans un trap apres n'importe quel echec. Le PID n'est signale
+# qu'apres confirmation par /proc, jamais cherche par nom de binaire.
+kill_nested_signature() {
+	local signature=$1
+	local pid=$2
+	local label=$3
+	local socket_dir attempt status=0
+
+	if [[ -z ${signature} || ${signature} == "${HYPRLAND_INSTANCE_SIGNATURE:-}" ||
+		! ${signature} =~ ^[A-Za-z0-9_.-]+$ ]]; then
+		fail "${label}: signature observe=${signature:-<vide>}; attendu=signature nested distincte de l'hote"
+		return 1
+	fi
+	socket_dir=${XDG_RUNTIME_DIR}/hypr/${signature}
+	if nested_instance_alive "${signature}"; then
+		hyprctl -i "${signature}" dispatch exit >/dev/null 2>&1 || true
+		for ((attempt = 0; attempt < 50; attempt++)); do
+			nested_instance_alive "${signature}" || break
+			sleep 0.1
+		done
+	fi
+	if nested_instance_alive "${signature}" && [[ -n ${pid} ]] &&
+		nested_process_is_hyprland "${pid}" && nested_pid_is_console "${pid}"; then
+		kill -TERM "${pid}" 2>/dev/null || true
+		for ((attempt = 0; attempt < 30; attempt++)); do
+			kill -0 "${pid}" 2>/dev/null || break
+			sleep 0.1
+		done
+		if kill -0 "${pid}" 2>/dev/null; then
+			kill -KILL "${pid}" 2>/dev/null || true
+		fi
+	fi
+	if nested_instance_alive "${signature}"; then
+		fail "${label}: instance observe=vivante (${signature}); attendu=terminee"
+		status=1
+	fi
+	if [[ -e ${socket_dir} ]] && ! rm -rf -- "${socket_dir}"; then
+		fail "${label}: socket observe=present (${socket_dir}); attendu=supprime"
+		status=1
+	fi
+	return "${status}"
+}
+
+named_output_present() {
+	local output=$1
+	local monitors
+
+	monitors=$(hyprctl monitors -j 2>/dev/null) || return 2
+	jq -e --arg name "${output}" 'any(.[]; .name == $name)' <<<"${monitors}" >/dev/null
+}
+
+assert_named_output_absent() {
+	local output=$1
+	local label=$2
+	local monitors
+
+	if ! monitors=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observe=erreur hyprctl (${monitors}); attendu=liste sans ${output}"
+		return 1
+	fi
+	if jq -e --arg name "${output}" 'any(.[]; .name == $name)' <<<"${monitors}" >/dev/null; then
+		fail "${label}: output observe=${output} present; attendu=absent"
+		return 1
+	fi
+}
+
+wait_named_output_absent() {
+	local output=$1
+	local label=$2
+	local attempt
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		named_output_present "${output}" || break
+		sleep 0.1
+	done
+	assert_named_output_absent "${output}" "${label}"
+}
+
+remove_named_output() {
+	local output=$1
+	local label=$2
+	local command_output
+
+	if [[ ${output} != hyprpilot-e2e-* ]]; then
+		fail "${label}: output observe=${output}; attendu=output e2e cree par le scenario"
+		return 1
+	fi
+	named_output_present "${output}" || return 0
+	if ! command_output=$(hyprctl output remove "${output}" 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "${label}: output remove observe=${command_output}; attendu=ok pour ${output}"
+		return 1
+	fi
+}
+
+remove_session_dir() {
+	local session=$1
+	local label=$2
+	local directory
+
+	directory=$(session_dir_path "${session}")
+	if [[ ${directory} != "${XDG_RUNTIME_DIR}"/hyprpilot/sessions/e2e-* ]]; then
+		fail "${label}: dossier observe=${directory}; attendu=session e2e sous ${XDG_RUNTIME_DIR}"
+		return 1
+	fi
+	[[ -e ${directory} ]] || return 0
+	if ! rm -rf -- "${directory}"; then
+		fail "${label}: dossier observe=present (${directory}); attendu=supprime"
+		return 1
+	fi
+}
+
+# Nettoyage brut d'un bureau agent : instances apparues pendant le scenario,
+# output headless, dossier de session. Ne depend d'aucune commande de
+# hyprpilot et reste correct si le scenario a echoue avant de tout creer.
+# signatures_ready=0 => le snapshot n'a pas ete pris, aucune instance touchee.
+isolated_raw_cleanup() {
+	local session=$1
+	local signatures_ready=$2
+	local signatures_before=$3
+	local label=$4
+	local status=0 signatures="" signature pid=""
+	local -a fresh=()
+
+	if ((signatures_ready)); then
+		new_hypr_signatures signatures "${signatures_before}"
+		while IFS= read -r signature; do
+			[[ -n ${signature} ]] || continue
+			fresh+=("${signature}")
+		done <<<"${signatures}"
+		if ((${#fresh[@]} == 1)); then
+			pid=$(state_field "${session}" '.instance.pid') || pid=""
+		fi
+		for signature in "${fresh[@]}"; do
+			kill_nested_signature "${signature}" "${pid}" "${label}" || status=1
+		done
+	fi
+	remove_named_output "hyprpilot-${session}" "${label}" || status=1
+	remove_session_dir "${session}" "${label}" || status=1
+	return "${status}"
+}
+
+restore_cursor_best_effort() {
+	local x=$1
+	local y=$2
+
+	[[ ${x} =~ ^-?[0-9]+$ && ${y} =~ ^-?[0-9]+$ ]] || return 0
+	hyprctl dispatch movecursor "${x}" "${y}" >/dev/null 2>&1 || true
+}
+
+read_named_output() {
+	local output=$1
+	local width_destination=$2
+	local height_destination=$3
+	local scale_destination=$4
+	local workspace_destination=$5
+	local label=$6
+	local raw values width height scale workspace extra
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observe=erreur hyprctl (${raw}); attendu=output ${output}"
+		return 1
+	fi
+	if ! values=$(
+		jq -er --arg name "${output}" '
+			[.[] | select(.name == $name)]
+			| select(length == 1)
+			| .[0]
+			| [.width, .height, .scale, (.activeWorkspace.name // "")]
+			| @tsv
+		' <<<"${raw}"
+	); then
+		fail "${label}: output observe=absent ou duplique (${output}); attendu=un seul moniteur ${output}"
+		return 1
+	fi
+	IFS=$'\t' read -r width height scale workspace extra <<<"${values}"
+	if [[ -n ${extra:-} || ! ${width} =~ ^[1-9][0-9]*$ || ! ${height} =~ ^[1-9][0-9]*$ ]]; then
+		fail "${label}: geometrie observe=${values}; attendu=taille positive pour ${output}"
+		return 1
+	fi
+	printf -v "${width_destination}" '%s' "${width}"
+	printf -v "${height_destination}" '%s' "${height}"
+	printf -v "${scale_destination}" '%s' "${scale}"
+	printf -v "${workspace_destination}" '%s' "${workspace}"
+}
+
+# Console d'une instance nested cote hote : workspace attendu + class
+# aquamarine (fait §2.5), jamais le titre. Silencieux: appele en boucle.
+find_console_window() {
+	local workspace=$1
+	local address_destination=$2
+	local pid_destination=$3
+	local raw values address pid
+
+	raw=$(hyprctl clients -j 2>/dev/null) || return 1
+	values=$(
+		jq -er --arg workspace "${workspace}" '
+			[.[] | select(.workspace.name == $workspace and .class == "aquamarine")]
+			| select(length == 1)
+			| .[0]
+			| [.address, .pid]
+			| @tsv
+		' <<<"${raw}"
+	) || return 1
+	IFS=$'\t' read -r address pid <<<"${values}"
+	printf -v "${address_destination}" '%s' "${address}"
+	printf -v "${pid_destination}" '%s' "${pid}"
+}
+
+wait_console_workspace() {
+	local session_workspace=$1
+	local console_address=$2
+	local label=$3
+	local workspace attempt stable_reads=0
+	# shellcheck disable=SC2034 # Sorties obligatoires de read_client_state (printf -v), seul workspace est relu.
+	local x y width height floating monitor
+
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		read_client_state "${console_address}" x y width height workspace floating monitor \
+			"${label}" || return 1
+		if [[ ${workspace} == "${session_workspace}" ]]; then
+			((stable_reads += 1))
+			if ((stable_reads == 2)); then
+				return 0
+			fi
+		else
+			stable_reads=0
+		fi
+		sleep 0.1
+	done
+	fail "${label}: workspace de la console observe=${workspace}; attendu=${session_workspace} stable"
+	return 1
+}
+
+wait_nested_addresses_by_title() {
+	local signature=$1
+	local destination=$2
+	local wanted_title=$3
+	local expected_count=$4
+	local label=$5
+	local raw addresses count previous="" attempt stable_reads=0
+
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		if ! raw=$(hyprctl -i "${signature}" clients -j 2>&1); then
+			fail "${label}: clients de l'instance observe=erreur hyprctl (${raw}); attendu=${expected_count} fenêtre(s)"
+			return 1
+		fi
+		if ! addresses=$(
+			jq -c --arg title "${wanted_title}" \
+				'[.[] | select(.title == $title) | .address] | sort' <<<"${raw}"
+		); then
+			fail "${label}: clients de l'instance observe=JSON invalide; attendu=tableau filtrable"
+			return 1
+		fi
+		count=$(jq 'length' <<<"${addresses}")
+		if ((count == expected_count)); then
+			if [[ ${addresses} == "${previous}" ]]; then
+				((stable_reads += 1))
+			else
+				stable_reads=1
+				previous=${addresses}
+			fi
+			if ((stable_reads == 2)); then
+				printf -v "${destination}" '%s' "${addresses}"
+				return 0
+			fi
+		else
+			stable_reads=0
+			previous=""
+		fi
+		sleep 0.1
+	done
+	fail "${label}: adresses de l'instance observe=${addresses}; attendu=${expected_count} fenêtre(s) stables en 5s"
+	return 1
+}
+
+read_nested_active_address() {
+	local signature=$1
+	local destination=$2
+	local label=$3
+	local raw address
+
+	if ! raw=$(hyprctl -i "${signature}" activewindow -j 2>&1); then
+		fail "${label}: fenetre active de l'instance observe=erreur hyprctl (${raw}); attendu=JSON"
+		return 1
+	fi
+	if ! address=$(jq -er '.address' <<<"${raw}" 2>/dev/null); then
+		fail "${label}: fenetre active de l'instance observe=${raw}; attendu=une adresse"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${address}"
+}
+
+read_nested_client_size() {
+	local signature=$1
+	local address=$2
+	local width_destination=$3
+	local height_destination=$4
+	local label=$5
+	local raw values width height extra
+
+	if ! raw=$(hyprctl -i "${signature}" clients -j 2>&1); then
+		fail "${label}: clients de l'instance observe=erreur hyprctl (${raw}); attendu=fenetre ${address}"
+		return 1
+	fi
+	if ! values=$(
+		jq -er --arg address "${address}" '
+			[.[] | select(.address == $address)]
+			| select(length == 1)
+			| .[0].size
+			| @tsv
+		' <<<"${raw}"
+	); then
+		fail "${label}: taille observe=absente pour ${address}; attendu=size de la fenetre dans l'instance"
+		return 1
+	fi
+	IFS=$'\t' read -r width height extra <<<"${values}"
+	if [[ -n ${extra:-} || ! ${width} =~ ^[1-9][0-9]*$ || ! ${height} =~ ^[1-9][0-9]*$ ]]; then
+		fail "${label}: taille observe=${values}; attendu=deux entiers positifs"
+		return 1
+	fi
+	printf -v "${width_destination}" '%s' "${width}"
+	printf -v "${height_destination}" '%s' "${height}"
+}
+
+read_nested_output_size() {
+	local signature=$1
+	local width_destination=$2
+	local height_destination=$3
+	local label=$4
+	local raw values width height extra
+
+	if ! raw=$(hyprctl -i "${signature}" monitors -j 2>&1); then
+		fail "${label}: monitors de l'instance observe=erreur hyprctl (${raw}); attendu=un output"
+		return 1
+	fi
+	if ! values=$(
+		jq -er 'select(length == 1) | .[0] | [.width, .height] | @tsv' <<<"${raw}"
+	); then
+		fail "${label}: monitors de l'instance observe=${raw}; attendu=exactement un output"
+		return 1
+	fi
+	IFS=$'\t' read -r width height extra <<<"${values}"
+	if [[ -n ${extra:-} || ! ${width} =~ ^[1-9][0-9]*$ || ! ${height} =~ ^[1-9][0-9]*$ ]]; then
+		fail "${label}: taille de l'output nested observe=${values}; attendu=deux entiers positifs"
+		return 1
+	fi
+	printf -v "${width_destination}" '%s' "${width}"
+	printf -v "${height_destination}" '%s' "${height}"
+}
+
+# §5 : en isolé, `target` ne parque rien. Aucun client de l'instance ne doit
+# se retrouver sur un workspace special.
+assert_nested_no_parking() {
+	local signature=$1
+	local label=$2
+	local raw
+
+	if ! raw=$(hyprctl -i "${signature}" clients -j 2>&1); then
+		fail "${label}: clients de l'instance observe=erreur hyprctl (${raw}); attendu=liste sans workspace special"
+		return 1
+	fi
+	if ! jq -e 'all(.[]; (.workspace.name // "") | startswith("special:") | not)' \
+		<<<"${raw}" >/dev/null; then
+		fail "${label}: workspaces de l'instance observe=$(jq -c '[.[].workspace.name]' <<<"${raw}"); attendu=aucun workspace special"
+		return 1
+	fi
+}
+
+read_active_workspace() {
+	local destination=$1
+	local label=$2
+	local raw name
+
+	if ! raw=$(hyprctl activeworkspace -j 2>&1); then
+		fail "${label}: workspace actif observe=erreur hyprctl (${raw}); attendu=JSON"
+		return 1
+	fi
+	if ! name=$(jq -er '.name' <<<"${raw}" 2>/dev/null); then
+		fail "${label}: workspace actif observe=${raw}; attendu=champ name"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${name}"
+}
+
+read_host_addresses() {
+	local destination=$1
+	local label=$2
+	local raw addresses
+
+	if ! raw=$(hyprctl clients -j 2>&1); then
+		fail "${label}: clients observe=erreur hyprctl (${raw}); attendu=liste des fenêtres hôte"
+		return 1
+	fi
+	if ! addresses=$(jq -c '[.[].address] | sort' <<<"${raw}"); then
+		fail "${label}: clients observe=JSON invalide; attendu=tableau d'adresses"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${addresses}"
+}
+
+# Projection stable des monitors : les champs volatils (focus, dpms, format)
+# changeraient sans qu'un output ait bouge.
+read_host_monitors_shape() {
+	local destination=$1
+	local label=$2
+	local raw shape
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observe=erreur hyprctl (${raw}); attendu=liste des outputs"
+		return 1
+	fi
+	if ! shape=$(
+		jq -Sc '[.[] | {name, x, y, width, height, scale, transform}] | sort_by(.name)' \
+			<<<"${raw}"
+	); then
+		fail "${label}: monitors observe=JSON invalide; attendu=liste projetable"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${shape}"
+}
+
+read_focused_monitor() {
+	local x_destination=$1
+	local y_destination=$2
+	local height_destination=$3
+	local label=$4
+	local raw values x y height extra
+
+	if ! raw=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observe=erreur hyprctl (${raw}); attendu=un moniteur focalise"
+		return 1
+	fi
+	if ! values=$(
+		jq -er '
+			[.[] | select(.focused == true)]
+			| select(length == 1)
+			| .[0]
+			| [.x, .y, .height]
+			| @tsv
+		' <<<"${raw}"
+	); then
+		fail "${label}: moniteur focalise observe=absent ou multiple; attendu=exactement un"
+		return 1
+	fi
+	IFS=$'\t' read -r x y height extra <<<"${values}"
+	if [[ -n ${extra:-} || ! ${x} =~ ^-?[0-9]+$ || ! ${y} =~ ^-?[0-9]+$ ||
+		! ${height} =~ ^[1-9][0-9]*$ ]]; then
+		fail "${label}: moniteur focalise observe=${values}; attendu=x, y et hauteur entiers"
+		return 1
+	fi
+	printf -v "${x_destination}" '%s' "${x}"
+	printf -v "${y_destination}" '%s' "${y}"
+	printf -v "${height_destination}" '%s' "${height}"
+}
+
+# Point du bureau utilisateur volontairement excentre : `output remove`
+# recentre le curseur sur le moniteur restant, un point central rendrait
+# l'assertion de restauration vacante.
+move_cursor_offcenter() {
+	local x_destination=$1
+	local y_destination=$2
+	local label=$3
+	local monitor_x monitor_y monitor_height target_x target_y command_output
+	local observed_x observed_y delta_x delta_y attempt stable_reads=0
+
+	read_focused_monitor monitor_x monitor_y monitor_height "${label}" || return 1
+	target_x=$((monitor_x + 13))
+	target_y=$((monitor_y + monitor_height / 2 + 7))
+	if ! command_output=$(hyprctl dispatch movecursor "${target_x}" "${target_y}" 2>&1) ||
+		[[ ${command_output} != ok ]]; then
+		fail "${label}: movecursor observe=${command_output}; attendu=ok vers (${target_x}, ${target_y})"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		read_cursor observed_x observed_y "${label}" || return 1
+		delta_x=$((observed_x - target_x))
+		delta_y=$((observed_y - target_y))
+		((delta_x < 0)) && delta_x=$((-delta_x))
+		((delta_y < 0)) && delta_y=$((-delta_y))
+		if ((delta_x <= 1 && delta_y <= 1)); then
+			((stable_reads += 1))
+			if ((stable_reads == 2)); then
+				printf -v "${x_destination}" '%s' "${observed_x}"
+				printf -v "${y_destination}" '%s' "${observed_y}"
+				return 0
+			fi
+		else
+			stable_reads=0
+		fi
+		sleep 0.1
+	done
+	fail "${label}: curseur observe=(${observed_x}, ${observed_y}); attendu=(${target_x}, ${target_y}) +/-1 sur 2 lectures"
+	return 1
+}
+
+read_stable_cursor() {
+	local x_destination=$1
+	local y_destination=$2
+	local label=$3
+	local observed_x observed_y previous_x="" previous_y="" attempt
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		read_cursor observed_x observed_y "${label}" || return 1
+		if [[ ${observed_x} == "${previous_x}" && ${observed_y} == "${previous_y}" ]]; then
+			printf -v "${x_destination}" '%s' "${observed_x}"
+			printf -v "${y_destination}" '%s' "${observed_y}"
+			return 0
+		fi
+		previous_x=${observed_x}
+		previous_y=${observed_y}
+		sleep 0.1
+	done
+	fail "${label}: curseur observe=(${observed_x}, ${observed_y}); attendu=deux lectures identiques en 3s"
+	return 1
+}
+
+assert_cursor_restored() {
+	local expected_x=$1
+	local expected_y=$2
+	local label=$3
+	local observed_x observed_y delta_x delta_y attempt
+
+	for ((attempt = 0; attempt < 10; attempt++)); do
+		read_cursor observed_x observed_y "${label}" || return 1
+		delta_x=$((observed_x - expected_x))
+		delta_y=$((observed_y - expected_y))
+		((delta_x < 0)) && delta_x=$((-delta_x))
+		((delta_y < 0)) && delta_y=$((-delta_y))
+		if ((delta_x <= 1 && delta_y <= 1)); then
+			return 0
+		fi
+		sleep 0.1
+	done
+	fail "${label}: curseur observe=(${observed_x}, ${observed_y}); attendu=(${expected_x}, ${expected_y}) +/-1 px par axe"
+	return 1
+}
+
+read_host_snapshot() {
+	local workspace_destination=$1
+	local focus_destination=$2
+	local cursor_x_destination=$3
+	local cursor_y_destination=$4
+	local addresses_destination=$5
+	local monitors_destination=$6
+	local label=$7
+	local workspace focus cursor_x cursor_y addresses monitors
+
+	read_active_workspace workspace "${label}" || return 1
+	read_active_address focus "${label}" || return 1
+	read_cursor cursor_x cursor_y "${label}" || return 1
+	read_host_addresses addresses "${label}" || return 1
+	read_host_monitors_shape monitors "${label}" || return 1
+	printf -v "${workspace_destination}" '%s' "${workspace}"
+	printf -v "${focus_destination}" '%s' "${focus}"
+	printf -v "${cursor_x_destination}" '%s' "${cursor_x}"
+	printf -v "${cursor_y_destination}" '%s' "${cursor_y}"
+	printf -v "${addresses_destination}" '%s' "${addresses}"
+	printf -v "${monitors_destination}" '%s' "${monitors}"
+}
+
+# Compare le bureau utilisateur a un snapshot. Les fenêtres se comparent par
+# ADRESSE, jamais par titre (un titre change tout seul). expected_monitors="-"
+# saute la comparaison des outputs, pour un instant ou la session tient encore
+# son headless. expected_gained = adresses hôte que le scenario autorise en
+# plus (la console du nested, sinon []). Toutes les deviations sont rapportees.
+assert_host_snapshot_equals() {
+	local expected_workspace=$1
+	local expected_focus=$2
+	local expected_cursor_x=$3
+	local expected_cursor_y=$4
+	local expected_addresses=$5
+	local expected_monitors=$6
+	local expected_gained=$7
+	local label=$8
+	local workspace focus addresses monitors lost gained status=0
+
+	read_active_workspace workspace "${label}" || return 1
+	if [[ ${workspace} != "${expected_workspace}" ]]; then
+		fail "${label}: workspace actif observe=${workspace}; attendu=${expected_workspace}"
+		status=1
+	fi
+	read_active_address focus "${label}" || return 1
+	if [[ ${focus} != "${expected_focus}" ]]; then
+		fail "${label}: fenetre active observe=${focus:-<aucune>}; attendu=${expected_focus:-<aucune>}"
+		status=1
+	fi
+	assert_cursor_restored "${expected_cursor_x}" "${expected_cursor_y}" "${label}" || status=1
+	read_host_addresses addresses "${label}" || return 1
+	if ! lost=$(jq -c --argjson after "${addresses}" '. - $after' <<<"${expected_addresses}"); then
+		fail "${label}: adresses observe=comparaison impossible; attendu=deux tableaux JSON"
+		return 1
+	fi
+	if ! gained=$(jq -c --argjson before "${expected_addresses}" '. - $before' <<<"${addresses}"); then
+		fail "${label}: adresses observe=comparaison impossible; attendu=deux tableaux JSON"
+		return 1
+	fi
+	if [[ ${lost} != "[]" ]]; then
+		fail "${label}: fenêtres hôte disparues=${lost}; attendu=aucune"
+		status=1
+	fi
+	if ! jq -e --argjson expected "${expected_gained}" \
+		'sort == ($expected | sort)' <<<"${gained}" >/dev/null; then
+		fail "${label}: fenêtres hôte apparues=${gained}; attendu=${expected_gained}"
+		status=1
+	fi
+	if [[ ${expected_monitors} != "-" ]]; then
+		read_host_monitors_shape monitors "${label}" || return 1
+		if [[ ${monitors} != "${expected_monitors}" ]]; then
+			fail "${label}: monitors observe=${monitors}; attendu=${expected_monitors}"
+			status=1
+		fi
+	fi
+	return "${status}"
+}
+
+workspace_present() {
+	local workspace=$1
+	local raw
+
+	raw=$(hyprctl workspaces -j 2>/dev/null) || return 2
+	jq -e --arg name "${workspace}" 'any(.[]; .name == $name)' <<<"${raw}" >/dev/null
+}
+
+assert_workspace_absent() {
+	local workspace=$1
+	local label=$2
+	local raw
+
+	if ! raw=$(hyprctl workspaces -j 2>&1); then
+		fail "${label}: workspaces observe=erreur hyprctl (${raw}); attendu=liste sans ${workspace}"
+		return 1
+	fi
+	if jq -e --arg name "${workspace}" 'any(.[]; .name == $name)' <<<"${raw}" >/dev/null; then
+		fail "${label}: workspace observe=${workspace} present; attendu=absent"
+		return 1
+	fi
+}
+
+# Hyprland peut mettre un instant a detruire un workspace nomme devenu vide
+# apres `output remove` : l'attente est bornee, l'echec reste une fuite.
+wait_workspace_absent() {
+	local workspace=$1
+	local label=$2
+	local attempt
+
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		workspace_present "${workspace}" || break
+		sleep 0.1
+	done
+	assert_workspace_absent "${workspace}" "${label}"
+}
+
+assert_png_dimensions() {
+	local path=$1
+	local expected_width=$2
+	local expected_height=$3
+	local label=$4
+	local width height
+
+	read_png_size "${path}" width height "${label}" || return 1
+	if ((width != expected_width || height != expected_height)); then
+		fail "${label}: PNG observe=${width}x${height} (${path}); attendu=${expected_width}x${expected_height}"
+		return 1
+	fi
+}
+
 scenario_start_offscreen() (
 	local cleanup_failed=0
 	local scenario_tmp="" zenity_pid="" window_address=""
@@ -714,7 +1520,7 @@ scenario_windows_ambiguous() (
 		fail "windows_ambiguous: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
 		return 1
 	fi
-	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	session_file=$(session_file_path default)
 	if [[ -e ${session_file} ]]; then
 		fail "precondition windows_ambiguous: session observe=presente (${session_file}); attendu=absente"
 		return 1
@@ -837,7 +1643,7 @@ scenario_target_lifecycle() (
 		fail "target_lifecycle: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
 		return 1
 	fi
-	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	session_file=$(session_file_path default)
 	if [[ -e ${session_file} ]]; then
 		fail "precondition target_lifecycle: session observe=presente; attendu=absente"
 		return 1
@@ -1005,7 +1811,7 @@ scenario_target_close() (
 		fail "target_close: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
 		return 1
 	fi
-	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	session_file=$(session_file_path default)
 	if [[ -e ${session_file} ]]; then
 		fail "precondition target_close: session observe=presente; attendu=absente"
 		return 1
@@ -1863,7 +2669,7 @@ scenario_teardown_corrupt() (
 			fi
 		fi
 		if [[ -n ${session_file} && -e ${session_file} ]]; then
-			if [[ ${session_file} != "${XDG_RUNTIME_DIR}/hyprpilot/session.json" ]]; then
+			if [[ ${session_file} != "$(session_file_path default)" ]]; then
 				fail "nettoyage teardown_corrupt: fichier observe=${session_file}; attendu=session runtime hyprpilot"
 				cleanup_failed=1
 			elif ! rm -- "${session_file}"; then
@@ -1915,7 +2721,7 @@ scenario_teardown_corrupt() (
 	read_client_state "${window_address}" before_x before_y before_width before_height \
 		before_workspace before_floating before_monitor "avant corruption teardown_corrupt" ||
 		return 1
-	session_file=${XDG_RUNTIME_DIR}/hyprpilot/session.json
+	session_file=$(session_file_path default)
 	if [[ ! -f ${session_file} ]]; then
 		fail "corruption teardown_corrupt: fichier observe=absent (${session_file}); attendu=session.json"
 		return 1
@@ -1963,6 +2769,1440 @@ scenario_teardown_corrupt() (
 	assert_output_absent "nettoyage manuel teardown_corrupt"
 )
 
+scenario_shared_teardown_cursor() (
+	local cleanup_failed=0
+	local session="e2e-cursor-$$"
+	local title="hyprpilot-e2e-shared-cursor-$$"
+	local zenity_pid="" command_output="" cleanup_output="" session_file=""
+	local entry_x="" entry_y="" before_x before_y
+	# shellcheck disable=SC2034 # Sortie obligatoire de wait_client_addresses_by_title (printf -v), non relue ici.
+	local addresses_json=""
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_shared_teardown_cursor() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if ! cleanup_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+				fail "nettoyage shared_teardown_cursor: teardown observe=echec (${cleanup_output}); attendu=succes"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${zenity_pid} ]] && kill -0 "${zenity_pid}" 2>/dev/null; then
+			kill "${zenity_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${zenity_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage shared_teardown_cursor"; then
+			cleanup_failed=1
+		fi
+		if ! remove_session_dir "${session}" "nettoyage shared_teardown_cursor"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_shared_teardown_cursor EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "shared_teardown_cursor: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	session_file=$(session_file_path "${session}")
+	read_cursor entry_x entry_y "precondition shared_teardown_cursor" || return 1
+	if [[ -e ${session_file} ]]; then
+		fail "precondition shared_teardown_cursor: session observe=presente (${session_file}); attendu=absente"
+		return 1
+	fi
+	assert_output_absent "precondition shared_teardown_cursor" || return 1
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	zenity_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 1 \
+		"settle spawn shared_teardown_cursor" || return 1
+	move_cursor_offcenter before_x before_y "precondition curseur shared_teardown_cursor" ||
+		return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start shared_teardown_cursor observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_stable_cursor before_x before_y "avant teardown shared_teardown_cursor" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown shared_teardown_cursor observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	assert_cursor_restored "${before_x}" "${before_y}" \
+		"curseur apres teardown shared_teardown_cursor" || return 1
+	assert_output_absent "teardown shared_teardown_cursor" || return 1
+	if [[ -e ${session_file} ]]; then
+		fail "teardown shared_teardown_cursor: session observe=presente (${session_file}); attendu=supprimee"
+		return 1
+	fi
+
+	kill "${zenity_pid}" 2>/dev/null || true
+	wait "${zenity_pid}" 2>/dev/null || true
+	zenity_pid=""
+)
+
+scenario_isolated_output() (
+	local cleanup_failed=0
+	local session="e2e-out-$$"
+	local title="hyprpilot-e2e-iso-out-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir=""
+	local command_output="" start_failed=0
+	local output_width output_height output_scale output_workspace
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_output() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_output"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_output EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_output" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_output: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	assert_named_output_absent "hyprpilot-${session}" "precondition isolated_output" || return 1
+
+	# Tolerance assumee: tant que S4 a S6 ne sont pas livrees, le start cree
+	# l'output puis echoue en nommant sa slice. Le scenario porte sur l'output
+	# observe, pas sur le code de sortie du start.
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		start_failed=1
+	fi
+	if ((start_failed != 0)); then
+		if ! named_output_present "hyprpilot-${session}"; then
+			fail "session start isolated_output observe=echec (${command_output}); attendu=output hyprpilot-${session} cree"
+			return 1
+		fi
+		note "isolated_output: start incomplet (${command_output}); output en place, assertions poursuivies"
+	fi
+
+	read_named_output "hyprpilot-${session}" output_width output_height output_scale \
+		output_workspace "isolated_output" || return 1
+	if ((output_width != 1280 || output_height != 720)); then
+		fail "isolated_output: taille observe=${output_width}x${output_height}; attendu=1280x720"
+		return 1
+	fi
+	if [[ ! ${output_scale} =~ ^1(\.0+)?$ ]]; then
+		fail "isolated_output: scale observe=${output_scale}; attendu=1"
+		return 1
+	fi
+	if [[ ${output_workspace} != "agent-${session}" ]]; then
+		fail "isolated_output: workspace actif de hyprpilot-${session} observe=${output_workspace}; attendu=agent-${session}"
+		return 1
+	fi
+	assert_state_field "${session}" '.mode' isolated "etat isolated_output" || return 1
+	assert_state_field "${session}" '.output' "hyprpilot-${session}" "etat isolated_output" || return 1
+	assert_state_field "${session}" '.workspace' "agent-${session}" "etat isolated_output" || return 1
+
+	# Retrait par hyprctl brut: le scenario ne depend pas du teardown de l'outil.
+	isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+		"retrait isolated_output" || return 1
+	wait_named_output_absent "hyprpilot-${session}" "retrait isolated_output" || return 1
+	wait_workspace_absent "agent-${session}" "retrait isolated_output" || return 1
+	if [[ -e ${session_dir} ]]; then
+		fail "retrait isolated_output: session observe=presente (${session_dir}); attendu=supprimee"
+		return 1
+	fi
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "retrait isolated_output: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_isolated_spawn() (
+	local cleanup_failed=0
+	local session="e2e-spawn-$$"
+	local title="hyprpilot-e2e-iso-spawn-$$"
+	local signatures_before="" signatures_ready=0 fresh_signatures=""
+	local entry_x="" entry_y="" session_dir="" command_output=""
+	local signature="" console_address="" console_pid="" wayland_display=""
+	local found_address="" found_pid=""
+	local host_workspace host_focus host_cursor_x host_cursor_y host_addresses
+	# shellcheck disable=SC2034 # Sortie obligatoire de read_host_snapshot (printf -v): la session tient encore son headless, les monitors ne sont pas comparables ici.
+	local host_monitors
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_spawn() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_spawn"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_spawn EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_spawn" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_spawn: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	assert_named_output_absent "hyprpilot-${session}" "precondition isolated_spawn" || return 1
+	read_host_snapshot host_workspace host_focus host_cursor_x host_cursor_y host_addresses \
+		host_monitors "snapshot isolated_spawn" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_spawn observe=echec (${command_output}); attendu=instance vivante"
+		return 1
+	fi
+
+	assert_state_field "${session}" '.mode' isolated "etat isolated_spawn" || return 1
+	assert_state_field "${session}" '.instance.stage' live "etat isolated_spawn" || return 1
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_spawn" || return 1
+	read_state_field "${session}" '.instance.pid' console_pid "etat isolated_spawn" || return 1
+	read_state_field "${session}" '.instance.console_address' console_address \
+		"etat isolated_spawn" || return 1
+	read_state_field "${session}" '.instance.wayland_display' wayland_display \
+		"etat isolated_spawn" || return 1
+	if [[ ! ${wayland_display} =~ ^wayland-[0-9]+$ ]]; then
+		fail "etat isolated_spawn: wayland_display observe=${wayland_display}; attendu=wayland-<n>"
+		return 1
+	fi
+
+	new_hypr_signatures fresh_signatures "${signatures_before}"
+	if [[ ${fresh_signatures} != "${signature}"$'\n' ]]; then
+		fail "isolated_spawn: signatures apparues=${fresh_signatures//$'\n'/ }; attendu=la seule ${signature}"
+		return 1
+	fi
+	if ! nested_instance_alive "${signature}"; then
+		fail "isolated_spawn: instance observe=injoignable (${signature}); attendu=vivante"
+		return 1
+	fi
+	if ! nested_process_is_hyprland "${console_pid}"; then
+		fail "isolated_spawn: process observe=${console_pid} n'est pas un Hyprland; attendu=le compositeur imbrique"
+		return 1
+	fi
+	if ! find_console_window "agent-${session}" found_address found_pid; then
+		fail "isolated_spawn: console observe=absente de agent-${session}; attendu=une fenêtre class aquamarine"
+		return 1
+	fi
+	if [[ ${found_address} != "${console_address}" || ${found_pid} != "${console_pid}" ]]; then
+		fail "isolated_spawn: console observe=${found_address} pid ${found_pid}; attendu=${console_address} pid ${console_pid}"
+		return 1
+	fi
+
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" - "[\"${console_address}\"]" \
+		"hote apres spawn isolated_spawn" || return 1
+)
+
+scenario_isolated_teardown() (
+	local cleanup_failed=0
+	local session="e2e-down-$$"
+	local title="hyprpilot-e2e-iso-down-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" command_output=""
+	local signature="" nested_pid="" console_address=""
+	local before_x before_y attempt process_gone=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_teardown() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_teardown"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_teardown EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_teardown" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_teardown: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	assert_named_output_absent "hyprpilot-${session}" "precondition isolated_teardown" || return 1
+	move_cursor_offcenter before_x before_y "precondition curseur isolated_teardown" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_teardown observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature \
+		"etat isolated_teardown" || return 1
+	read_state_field "${session}" '.instance.pid' nested_pid "etat isolated_teardown" || return 1
+	read_state_field "${session}" '.instance.console_address' console_address \
+		"etat isolated_teardown" || return 1
+	read_stable_cursor before_x before_y "avant teardown isolated_teardown" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_teardown observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	assert_cursor_restored "${before_x}" "${before_y}" \
+		"curseur apres teardown isolated_teardown" || return 1
+	wait_nested_instance_gone "${signature}" "teardown isolated_teardown" || return 1
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if ! kill -0 "${nested_pid}" 2>/dev/null; then
+			process_gone=1
+			break
+		fi
+		sleep 0.1
+	done
+	if ((process_gone == 0)); then
+		fail "teardown isolated_teardown: process observe=${nested_pid} vivant apres 3s; attendu=disparu"
+		return 1
+	fi
+	if [[ -e ${XDG_RUNTIME_DIR}/hypr/${signature} ]]; then
+		fail "teardown isolated_teardown: socket observe=present (${XDG_RUNTIME_DIR}/hypr/${signature}); attendu=supprime"
+		return 1
+	fi
+	wait_client_gone "${console_address}" "teardown isolated_teardown console" || return 1
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_teardown" || return 1
+	wait_workspace_absent "agent-${session}" "teardown isolated_teardown" || return 1
+	if [[ -e ${session_dir} ]]; then
+		fail "teardown isolated_teardown: session observe=presente (${session_dir}); attendu=supprimee"
+		return 1
+	fi
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_teardown: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+
+	# Idempotence (§6.5): un second teardown sur une session deja demontee.
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		if [[ ${command_output} != *"no active session"* ]]; then
+			fail "second teardown isolated_teardown observe=${command_output}; attendu=succes ou no active session"
+			return 1
+		fi
+	fi
+)
+
+scenario_isolated_app() (
+	local cleanup_failed=0
+	local session="e2e-app-$$"
+	local title="hyprpilot-e2e-iso-app-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" command_output=""
+	local signature="" console_address="" addresses_json="" app_address=""
+	local host_workspace host_focus host_cursor_x host_cursor_y host_addresses host_monitors
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_app() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_app"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_app EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_app" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_app: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	assert_named_output_absent "hyprpilot-${session}" "precondition isolated_app" || return 1
+	read_host_snapshot host_workspace host_focus host_cursor_x host_cursor_y host_addresses \
+		host_monitors "snapshot isolated_app" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_app observe=echec (${command_output}); attendu=ready"
+		return 1
+	fi
+	if [[ ${command_output} != *"ready"* ]]; then
+		fail "session start isolated_app observe=${command_output}; attendu=message ready"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_app" || return 1
+	read_state_field "${session}" '.instance.console_address' console_address \
+		"etat isolated_app" || return 1
+
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 1 \
+		"fenêtre de l'app isolated_app" || return 1
+	app_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	assert_state_field "${session}" '.active_address' "${app_address}" \
+		"etat isolated_app" || return 1
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" - "[\"${console_address}\"]" \
+		"hote avec app isolated_app" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_app observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_app" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_app: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" "${host_monitors}" "[]" \
+		"hote apres teardown isolated_app" || return 1
+)
+
+scenario_isolated_shot() (
+	local cleanup_failed=0
+	local session="e2e-shot-$$"
+	local title="hyprpilot-e2e-iso-shot-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" scenario_tmp=""
+	local command_output="" shot_output=""
+	local signature="" addresses_json="" app_address=""
+	local window_width window_height output_width output_height
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_shot() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_shot"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-iso-shot.* ]]; then
+				fail "nettoyage isolated_shot: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage isolated_shot: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_shot EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_shot" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_shot: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-iso-shot.XXXXXX"); then
+		fail "isolated_shot: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_shot observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_shot" || return 1
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 1 \
+		"fenêtre de l'app isolated_shot" || return 1
+	app_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_nested_client_size "${signature}" "${app_address}" window_width window_height \
+		"fenêtre isolated_shot" || return 1
+	read_nested_output_size "${signature}" output_width output_height \
+		"output nested isolated_shot" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" wait --stable --timeout 5s 2>&1); then
+		fail "wait --stable isolated_shot observe=echec (${command_output}); attendu=frame stabilisee"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-window --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot isolated_shot observe=echec (${shot_output}); attendu=PNG de la fenêtre"
+		return 1
+	fi
+	assert_png_dimensions "${scenario_tmp}/iso-window.png" "${window_width}" "${window_height}" \
+		"shot fenêtre isolated_shot" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-full --full --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot --full isolated_shot observe=echec (${shot_output}); attendu=PNG du bureau agent"
+		return 1
+	fi
+	assert_png_dimensions "${scenario_tmp}/iso-full.png" "${output_width}" "${output_height}" \
+		"shot --full isolated_shot" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_shot observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_shot" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_shot: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_isolated_input() (
+	local cleanup_failed=0
+	local session="e2e-input-$$"
+	local title="hyprpilot-e2e-iso-input-$$"
+	local typed_text="iso-input-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" scenario_tmp="" stdout_file="" wrapper=""
+	local command_output="" signature="" addresses_json=""
+	local before_focus before_x before_y expected_output actual_output
+
+	assert_host_still() {
+		local label=$1
+		local observed_focus observed_x observed_y delta_x delta_y attempt stable_reads=0
+
+		for ((attempt = 0; attempt < 30; attempt++)); do
+			read_active_address observed_focus "${label}" || return 1
+			read_cursor observed_x observed_y "${label}" || return 1
+			delta_x=$((observed_x - before_x))
+			delta_y=$((observed_y - before_y))
+			((delta_x < 0)) && delta_x=$((-delta_x))
+			((delta_y < 0)) && delta_y=$((-delta_y))
+			if [[ ${observed_focus} == "${before_focus}" ]] &&
+				((delta_x <= 1 && delta_y <= 1)); then
+				((stable_reads += 1))
+				if ((stable_reads == 3)); then
+					return 0
+				fi
+			else
+				fail "${label}: observe=focus ${observed_focus:-<aucun>}, curseur (${observed_x}, ${observed_y}); attendu=focus ${before_focus:-<aucun>}, curseur (${before_x}, ${before_y}) +/-1"
+				return 1
+			fi
+			sleep 0.1
+		done
+		fail "${label}: observe=focus ${observed_focus:-<aucun>}, curseur (${observed_x}, ${observed_y}); attendu=3 lectures identiques a focus ${before_focus:-<aucun>}, curseur (${before_x}, ${before_y})"
+		return 1
+	}
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_input() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_input"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-iso-input.* ]]; then
+				fail "nettoyage isolated_input: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage isolated_input: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_input EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_input" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_input: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-iso-input.XXXXXX"); then
+		fail "isolated_input: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+	stdout_file=${scenario_tmp}/zenity.stdout
+	wrapper=${scenario_tmp}/app.sh
+
+	# La valeur saisie est relue dans la sortie de l'app. La redirection vit
+	# dans un script, pas dans --app: la commande passee reste deux mots sans
+	# guillemets ni metacaractere, quelle que soit la facon dont l'outil la
+	# transmet a l'instance.
+	if ! printf '#!/bin/sh\nexec zenity --entry --title=%s >%s\n' \
+		"${title}" "${stdout_file}" >"${wrapper}"; then
+		fail "isolated_input: wrapper observe=ecriture impossible (${wrapper}); attendu=script d'app"
+		return 1
+	fi
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "sh ${wrapper}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_input observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_input" || return 1
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 1 \
+		"fenêtre de l'app isolated_input" || return 1
+
+	read_active_address before_focus "avant input isolated_input" || return 1
+	read_stable_cursor before_x before_y "avant input isolated_input" || return 1
+
+	# (20, 20) relatif a la fenêtre: le meme point que les scenarios partages,
+	# donc hors des boutons du dialogue.
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" click 20 20 2>&1); then
+		fail "click isolated_input observe=echec (${command_output}); attendu=clic dans le bureau agent"
+		return 1
+	fi
+	assert_host_still "hote apres click isolated_input" || return 1
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" scroll 20 20 --dy 1 2>&1); then
+		fail "scroll isolated_input observe=echec (${command_output}); attendu=scroll dans le bureau agent"
+		return 1
+	fi
+	assert_host_still "hote apres scroll isolated_input" || return 1
+	# --focus est un no-op documente en isolé (§5): il ne doit rien bouger cote hôte.
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" type --focus "${typed_text}" 2>&1
+	); then
+		fail "type isolated_input observe=echec (${command_output}); attendu=${typed_text} saisi"
+		return 1
+	fi
+	assert_host_still "hote apres type isolated_input" || return 1
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" key Return 2>&1); then
+		fail "key isolated_input observe=echec (${command_output}); attendu=Return accepte"
+		return 1
+	fi
+	assert_host_still "hote apres key isolated_input" || return 1
+
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 0 \
+		"apres Return isolated_input" || return 1
+	if [[ ! -f ${stdout_file} ]]; then
+		fail "stdout isolated_input observe=absent (${stdout_file}); attendu=sortie de l'app lancee dans l'instance"
+		return 1
+	fi
+	expected_output="${typed_text}"$'\n'
+	IFS= read -r -d '' actual_output <"${stdout_file}" || true
+	if [[ ${actual_output} != "${expected_output}" ]]; then
+		fail "stdout isolated_input observe=${actual_output@Q}; attendu=${expected_output@Q}"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_input observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_input" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_input: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_isolated_target() (
+	local cleanup_failed=0
+	local session="e2e-target-$$"
+	local a_title="hyprpilot-e2e-iso-target-a-$$"
+	local b_title="hyprpilot-e2e-iso-target-b-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" scenario_tmp=""
+	local command_output="" shot_output="" signature="" addresses_json=""
+	local a_address="" b_address="" active_address="" windows_json=""
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_target() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_target"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-iso-target.* ]]; then
+				fail "nettoyage isolated_target: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage isolated_target: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_target EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_target" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_target: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-iso-target.XXXXXX"); then
+		fail "isolated_target: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${a_title}" \
+			--match-title "${a_title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_target observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_target" || return 1
+	wait_nested_addresses_by_title "${signature}" addresses_json "${a_title}" 1 \
+		"fenêtre A isolated_target" || return 1
+	a_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+
+	# Le second toplevel est lance DANS l'instance (§2.6): jamais sur l'hote.
+	if ! command_output=$(
+		hyprctl -i "${signature}" dispatch exec "zenity --entry --title=${b_title}" 2>&1
+	) || [[ ${command_output} != ok ]]; then
+		fail "setup B isolated_target: dispatch exec observe=${command_output}; attendu=ok dans l'instance"
+		return 1
+	fi
+	wait_nested_addresses_by_title "${signature}" addresses_json "${b_title}" 1 \
+		"fenêtre B isolated_target" || return 1
+	b_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-target-a --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/iso-target-a.png ]]; then
+		fail "shot A isolated_target observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" target --match-title "${b_title}" --wait 5s 2>&1
+	); then
+		fail "target B isolated_target observe=echec (${command_output}); attendu=bascule vers B"
+		return 1
+	fi
+	assert_state_field "${session}" '.active_address' "${b_address}" \
+		"etat apres target B isolated_target" || return 1
+	read_nested_active_address "${signature}" active_address "target B isolated_target" || return 1
+	if [[ ${active_address} != "${b_address}" ]]; then
+		fail "target B isolated_target: fenetre active de l'instance observe=${active_address}; attendu=${b_address}"
+		return 1
+	fi
+	assert_nested_no_parking "target B isolated_target" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-target-b --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/iso-target-b.png ]]; then
+		fail "shot B isolated_target observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+	if cmp -s -- "${scenario_tmp}/iso-target-a.png" "${scenario_tmp}/iso-target-b.png"; then
+		fail "captures isolated_target observe=identiques; attendu=deux toplevels distincts"
+		return 1
+	fi
+
+	if ! windows_json=$("${HYPRPILOT}" --session "${session}" windows 2>&1); then
+		fail "windows isolated_target observe=echec (${windows_json}); attendu=tableau JSON"
+		return 1
+	fi
+	if ! jq -e --arg a "${a_address}" --arg b "${b_address}" \
+		'type == "array" and ([.[].address] | sort) == ([$a, $b] | sort)' \
+		<<<"${windows_json}" >/dev/null; then
+		fail "windows isolated_target observe=${windows_json}; attendu=les deux fenêtres de l'instance (${a_address}, ${b_address})"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" target --match-title "${a_title}" 2>&1
+	); then
+		fail "target A isolated_target observe=echec (${command_output}); attendu=retour sur A"
+		return 1
+	fi
+	read_nested_active_address "${signature}" active_address "target A isolated_target" || return 1
+	if [[ ${active_address} != "${a_address}" ]]; then
+		fail "target A isolated_target: fenetre active de l'instance observe=${active_address}; attendu=${a_address}"
+		return 1
+	fi
+	assert_nested_no_parking "target A isolated_target" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_target observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_target" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_target: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_isolated_show_hide() (
+	local cleanup_failed=0
+	local session="e2e-show-$$"
+	local title="hyprpilot-e2e-iso-show-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" scenario_tmp=""
+	local command_output="" shot_output="" signature="" console_address=""
+	local addresses_json="" app_address="" window_width window_height
+	local host_workspace host_focus host_cursor_x host_cursor_y host_addresses host_monitors
+	# shellcheck disable=SC2034 # Sorties obligatoires de read_client_state (printf -v): seuls workspace et floating sont relus.
+	local console_x console_y console_width console_height console_monitor console_workspace
+	local console_floating
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_show_hide() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_show_hide"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-iso-show.* ]]; then
+				fail "nettoyage isolated_show_hide: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage isolated_show_hide: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_show_hide EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_show_hide" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_show_hide: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-iso-show.XXXXXX"); then
+		fail "isolated_show_hide: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_show_hide observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature \
+		"etat isolated_show_hide" || return 1
+	read_state_field "${session}" '.instance.console_address' console_address \
+		"etat isolated_show_hide" || return 1
+	assert_state_field "${session}" '.shown' false "etat isolated_show_hide" || return 1
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 1 \
+		"fenêtre de l'app isolated_show_hide" || return 1
+	app_address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+	read_nested_client_size "${signature}" "${app_address}" window_width window_height \
+		"fenêtre isolated_show_hide" || return 1
+	read_host_snapshot host_workspace host_focus host_cursor_x host_cursor_y host_addresses \
+		host_monitors "snapshot isolated_show_hide" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" session show 2>&1); then
+		fail "session show isolated_show_hide observe=echec (${command_output}); attendu=console sur ${host_workspace}"
+		return 1
+	fi
+	wait_console_workspace "${host_workspace}" "${console_address}" \
+		"session show isolated_show_hide" || return 1
+	read_client_state "${console_address}" console_x console_y console_width console_height \
+		console_workspace console_floating console_monitor \
+		"console apres show isolated_show_hide" || return 1
+	if [[ ${console_floating} != true ]]; then
+		fail "session show isolated_show_hide: console observe=floating ${console_floating}; attendu=true"
+		return 1
+	fi
+	assert_state_field "${session}" '.shown' true "etat apres show isolated_show_hide" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-shown --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot pendant show isolated_show_hide observe=echec (${shot_output}); attendu=capture valide"
+		return 1
+	fi
+	assert_png_dimensions "${scenario_tmp}/iso-shown.png" "${window_width}" "${window_height}" \
+		"shot pendant show isolated_show_hide" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" session hide 2>&1); then
+		fail "session hide isolated_show_hide observe=echec (${command_output}); attendu=console sur agent-${session}"
+		return 1
+	fi
+	wait_console_workspace "agent-${session}" "${console_address}" \
+		"session hide isolated_show_hide" || return 1
+	assert_state_field "${session}" '.shown' false "etat apres hide isolated_show_hide" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-hidden --out "${scenario_tmp}" 2>&1
+	); then
+		fail "shot apres hide isolated_show_hide observe=echec (${shot_output}); attendu=capture toujours valide"
+		return 1
+	fi
+	assert_png_dimensions "${scenario_tmp}/iso-hidden.png" "${window_width}" "${window_height}" \
+		"shot apres hide isolated_show_hide" || return 1
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" - "[]" \
+		"hote apres hide isolated_show_hide" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_show_hide observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_show_hide" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_show_hide: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_isolated_status() (
+	local cleanup_failed=0
+	local session="e2e-status-$$"
+	local title="hyprpilot-e2e-iso-status-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" command_output="" status_json=""
+	local signature="" nested_pid="" wayland_display="" lowered=""
+	local attempt process_gone=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_status() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_status"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_status EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_status" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_status: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_status observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat isolated_status" || return 1
+	read_state_field "${session}" '.instance.pid' nested_pid "etat isolated_status" || return 1
+	read_state_field "${session}" '.instance.wayland_display' wayland_display \
+		"etat isolated_status" || return 1
+
+	if ! status_json=$("${HYPRPILOT}" --session "${session}" status 2>&1); then
+		fail "status isolated_status observe=echec (${status_json}); attendu=JSON de session isolée"
+		return 1
+	fi
+	if ! jq -e --arg session "${session}" \
+		'.mode == "isolated" and .session == $session and .shown == false' \
+		<<<"${status_json}" >/dev/null; then
+		fail "status isolated_status observe=${status_json}; attendu=mode isolated, session ${session}, shown false"
+		return 1
+	fi
+	if ! jq -e --arg signature "${signature}" --arg display "${wayland_display}" \
+		'tostring | contains($signature) and contains($display)' \
+		<<<"${status_json}" >/dev/null; then
+		fail "status isolated_status observe=${status_json}; attendu=signature ${signature} et display ${wayland_display}"
+		return 1
+	fi
+
+	# Kill brutal du compositeur imbrique, par un PID confirme via /proc.
+	if ! nested_process_is_hyprland "${nested_pid}"; then
+		fail "kill isolated_status: process observe=${nested_pid} n'est pas un Hyprland; attendu=le compositeur imbrique"
+		return 1
+	fi
+	if ! nested_pid_is_console "${nested_pid}"; then
+		fail "kill isolated_status: process observe=${nested_pid} sans fenêtre console cote hote; attendu=le compositeur imbrique de la session"
+		return 1
+	fi
+	if ! kill -KILL "${nested_pid}" 2>/dev/null; then
+		fail "kill isolated_status: signal observe=echec sur ${nested_pid}; attendu=SIGKILL delivre"
+		return 1
+	fi
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if ! kill -0 "${nested_pid}" 2>/dev/null; then
+			process_gone=1
+			break
+		fi
+		sleep 0.1
+	done
+	if ((process_gone == 0)); then
+		fail "kill isolated_status: process observe=${nested_pid} vivant apres 3s; attendu=mort"
+		return 1
+	fi
+	wait_nested_instance_gone "${signature}" "kill isolated_status" || return 1
+
+	if command_output=$("${HYPRPILOT}" --session "${session}" status 2>&1); then
+		fail "status apres kill isolated_status observe=succes (${command_output}); attendu=exit non nul"
+		return 1
+	fi
+	lowered=${command_output,,}
+	if [[ ${lowered} != *instance* || ${lowered} != *teardown* ]]; then
+		fail "status apres kill isolated_status message observe=${command_output}; attendu=instance morte et sortie par teardown"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown apres kill isolated_status observe=echec (${command_output}); attendu=succes idempotent"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown isolated_status" || return 1
+	if [[ -e ${session_dir} ]]; then
+		fail "teardown isolated_status: session observe=presente (${session_dir}); attendu=supprimee"
+		return 1
+	fi
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_status: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+)
+
+scenario_host_intact() (
+	local cleanup_failed=0
+	local session="e2e-host-$$"
+	local title="hyprpilot-e2e-iso-host-$$"
+	local typed_text="iso-host-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" session_dir="" scenario_tmp=""
+	local command_output="" shot_output="" signature="" addresses_json=""
+	local host_workspace host_focus host_cursor_x host_cursor_y host_addresses host_monitors
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_host_intact() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage host_intact"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-host-intact.* ]]; then
+				fail "nettoyage host_intact: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage host_intact: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_host_intact EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition host_intact" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition host_intact: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-host-intact.XXXXXX"); then
+		fail "host_intact: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+
+	# Snapshot de reference: le curseur n'est deliberement pas deplace, tout le
+	# scenario doit laisser le bureau utilisateur ou il est.
+	read_host_snapshot host_workspace host_focus host_cursor_x host_cursor_y host_addresses \
+		host_monitors "snapshot avant host_intact" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	read_state_field "${session}" '.instance.signature' signature "etat host_intact" || return 1
+	wait_nested_addresses_by_title "${signature}" addresses_json "${title}" 1 \
+		"fenêtre de l'app host_intact" || return 1
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" click 20 20 2>&1); then
+		fail "click host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" scroll 20 20 --dy 1 2>&1); then
+		fail "scroll host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" type "${typed_text}" 2>&1); then
+		fail "type host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" key Tab 2>&1); then
+		fail "key host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" wait --stable --timeout 5s 2>&1); then
+		fail "wait host_intact observe=echec (${command_output}); attendu=frame stabilisee"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session}" shot iso-host --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/iso-host.png ]]; then
+		fail "shot host_intact observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown host_intact observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" "teardown host_intact" || return 1
+	wait_workspace_absent "agent-${session}" "teardown host_intact" || return 1
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown host_intact: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" "${host_monitors}" "[]" \
+		"snapshot apres host_intact" || return 1
+)
+
+scenario_isolated_parallel() (
+	local cleanup_failed=0
+	local session_a="e2e-par-a-$$"
+	local session_b="e2e-par-b-$$"
+	local a_title="hyprpilot-e2e-iso-par-a-$$"
+	local b_title="hyprpilot-e2e-iso-par-b-$$"
+	local signatures_before="" signatures_ready=0 leftover=""
+	local entry_x="" entry_y="" dir_a="" dir_b="" scenario_tmp=""
+	local command_output="" shot_output="" a_signature="" b_signature=""
+	local a_console="" b_console="" addresses_json=""
+	local host_workspace host_focus host_cursor_x host_cursor_y host_addresses host_monitors
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_parallel() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		# Le premier appel termine toutes les instances apparues, le second ne
+		# s'occupe que des ressources nommees de la seconde session.
+		if ! isolated_raw_cleanup "${session_a}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_parallel A"; then
+			cleanup_failed=1
+		fi
+		if ! isolated_raw_cleanup "${session_b}" 0 "" "nettoyage isolated_parallel B"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-iso-par.* ]]; then
+				fail "nettoyage isolated_parallel: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				fail "nettoyage isolated_parallel: repertoire observe=present (${scenario_tmp}); attendu=supprime"
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_parallel EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	dir_a=$(session_dir_path "${session_a}")
+	dir_b=$(session_dir_path "${session_b}")
+	read_cursor entry_x entry_y "precondition isolated_parallel" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${dir_a} || -e ${dir_b} ]]; then
+		fail "precondition isolated_parallel: sessions observe=presentes (${dir_a}, ${dir_b}); attendu=absentes"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-iso-par.XXXXXX"); then
+		fail "isolated_parallel: repertoire temporaire observe=creation impossible sous ${XDG_RUNTIME_DIR}; attendu=mktemp -d reussi"
+		return 1
+	fi
+	read_host_snapshot host_workspace host_focus host_cursor_x host_cursor_y host_addresses \
+		host_monitors "snapshot avant isolated_parallel" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session_a}" session start --isolated \
+			--app "zenity --entry --title=${a_title}" \
+			--match-title "${a_title}" --size 800x600 2>&1
+	); then
+		fail "session start A isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session_b}" session start --isolated \
+			--app "zenity --entry --title=${b_title}" \
+			--match-title "${b_title}" --size 800x600 2>&1
+	); then
+		fail "session start B isolated_parallel observe=echec (${command_output}); attendu=succes en parallèle de A"
+		return 1
+	fi
+	read_state_field "${session_a}" '.instance.signature' a_signature \
+		"etat A isolated_parallel" || return 1
+	read_state_field "${session_b}" '.instance.signature' b_signature \
+		"etat B isolated_parallel" || return 1
+	read_state_field "${session_a}" '.instance.console_address' a_console \
+		"etat A isolated_parallel" || return 1
+	read_state_field "${session_b}" '.instance.console_address' b_console \
+		"etat B isolated_parallel" || return 1
+	if [[ ${a_signature} == "${b_signature}" || ${a_console} == "${b_console}" ]]; then
+		fail "isolated_parallel: instances observe=signature ${a_signature}/${b_signature}, console ${a_console}/${b_console}; attendu=deux instances distinctes"
+		return 1
+	fi
+
+	# Chaque instance ne voit que sa propre app: l'isolation porte sur les
+	# clients, pas seulement sur les dossiers d'etat.
+	wait_nested_addresses_by_title "${a_signature}" addresses_json "${a_title}" 1 \
+		"fenêtre A isolated_parallel" || return 1
+	wait_nested_addresses_by_title "${b_signature}" addresses_json "${b_title}" 1 \
+		"fenêtre B isolated_parallel" || return 1
+	wait_nested_addresses_by_title "${a_signature}" addresses_json "${b_title}" 0 \
+		"etancheite A isolated_parallel" || return 1
+	wait_nested_addresses_by_title "${b_signature}" addresses_json "${a_title}" 0 \
+		"etancheite B isolated_parallel" || return 1
+
+	# Actions croisees.
+	if ! command_output=$("${HYPRPILOT}" --session "${session_a}" type "a-$$" 2>&1); then
+		fail "type A isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session_b}" click 20 20 2>&1); then
+		fail "click B isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session_a}" scroll 20 20 --dy 1 2>&1); then
+		fail "scroll A isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" --session "${session_b}" type "b-$$" 2>&1); then
+		fail "type B isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session_a}" shot par-a --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/par-a.png ]]; then
+		fail "shot A isolated_parallel observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session_b}" shot par-b --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/par-b.png ]]; then
+		fail "shot B isolated_parallel observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+	if cmp -s -- "${scenario_tmp}/par-a.png" "${scenario_tmp}/par-b.png"; then
+		fail "captures isolated_parallel observe=identiques; attendu=deux bureaux agents distincts"
+		return 1
+	fi
+
+	# Teardown A: B doit rester intacte et pilotable.
+	if ! command_output=$("${HYPRPILOT}" --session "${session_a}" teardown 2>&1); then
+		fail "teardown A isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_nested_instance_gone "${a_signature}" "teardown A isolated_parallel" || return 1
+	wait_named_output_absent "hyprpilot-${session_a}" "teardown A isolated_parallel" || return 1
+	wait_workspace_absent "agent-${session_a}" "teardown A isolated_parallel" || return 1
+	if [[ -e ${dir_a} ]]; then
+		fail "teardown A isolated_parallel: session observe=presente (${dir_a}); attendu=supprimee"
+		return 1
+	fi
+	if [[ -e ${XDG_RUNTIME_DIR}/hypr/${a_signature} ]]; then
+		fail "teardown A isolated_parallel: socket observe=present (${XDG_RUNTIME_DIR}/hypr/${a_signature}); attendu=supprime"
+		return 1
+	fi
+	if ! nested_instance_alive "${b_signature}"; then
+		fail "teardown A isolated_parallel: instance B observe=injoignable (${b_signature}); attendu=intacte"
+		return 1
+	fi
+	if [[ ! -e ${dir_b} ]]; then
+		fail "teardown A isolated_parallel: session B observe=absente (${dir_b}); attendu=intacte"
+		return 1
+	fi
+	if ! named_output_present "hyprpilot-${session_b}"; then
+		fail "teardown A isolated_parallel: output B observe=absent; attendu=hyprpilot-${session_b} intact"
+		return 1
+	fi
+	wait_nested_addresses_by_title "${b_signature}" addresses_json "${b_title}" 1 \
+		"fenêtre B apres teardown A isolated_parallel" || return 1
+	if ! shot_output=$(
+		"${HYPRPILOT}" --session "${session_b}" shot par-b-apres --out "${scenario_tmp}" 2>&1
+	) || [[ ! -s ${scenario_tmp}/par-b-apres.png ]]; then
+		fail "shot B apres teardown A isolated_parallel observe=${shot_output}; attendu=PNG non vide"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session_b}" teardown 2>&1); then
+		fail "teardown B isolated_parallel observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_nested_instance_gone "${b_signature}" "teardown B isolated_parallel" || return 1
+	wait_named_output_absent "hyprpilot-${session_b}" "teardown B isolated_parallel" || return 1
+	wait_workspace_absent "agent-${session_b}" "teardown B isolated_parallel" || return 1
+	if [[ -e ${dir_b} ]]; then
+		fail "teardown B isolated_parallel: session observe=presente (${dir_b}); attendu=supprimee"
+		return 1
+	fi
+	if [[ -e ${XDG_RUNTIME_DIR}/hypr/${b_signature} ]]; then
+		fail "teardown B isolated_parallel: socket observe=present (${XDG_RUNTIME_DIR}/hypr/${b_signature}); attendu=supprime"
+		return 1
+	fi
+	new_hypr_signatures leftover "${signatures_before}"
+	if [[ -n ${leftover} ]]; then
+		fail "teardown isolated_parallel: signatures residuelles=${leftover//$'\n'/ }; attendu=aucune"
+		return 1
+	fi
+	assert_host_snapshot_equals "${host_workspace}" "${host_focus}" "${host_cursor_x}" \
+		"${host_cursor_y}" "${host_addresses}" "${host_monitors}" "[]" \
+		"snapshot apres isolated_parallel" || return 1
+)
+
 discover_scenarios() {
 	local function_name declared_name line source index
 	local -a function_names=()
@@ -2001,7 +4241,7 @@ preflight() {
 
 	[[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] ||
 		skip "HYPRLAND_INSTANCE_SIGNATURE est vide"
-	for binary in hyprctl grim jq zenity; do
+	for binary in hyprctl grim jq zenity cmp; do
 		command -v "${binary}" >/dev/null 2>&1 ||
 			skip "binaire ${binary} absent du PATH"
 	done
