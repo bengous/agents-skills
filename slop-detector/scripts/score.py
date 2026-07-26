@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import io
 import json
 import re
 import sys
@@ -107,6 +108,17 @@ CONTRACTION_PAIRS = [
     (r"\bhad not\b", "hadn't"),
 ]
 
+# Possessive "'s" ("the team's work") is not a contraction. Count the suffixes that
+# can only be contractions, plus "'s" restricted to the closed set of stems where it
+# stands for "is"/"has" — otherwise a formal text full of possessives reads as
+# contraction-rich and the avoidance finding never fires.
+CONTRACTION_RE = re.compile(
+    r"\b\w+n[’']t\b"
+    r"|\b\w+[’'](?:re|ve|ll|m|d)\b"
+    r"|\b(?:it|that|what|there|here|he|she|who|this|where|how|let|one)[’']s\b",
+    re.IGNORECASE,
+)
+
 VOICE_MARKERS = [
     r"\bi think\b", r"\bi believe\b", r"\bi feel\b", r"\bin my (?:experience|opinion|view)\b",
     r"\bhonestly\b", r"\bfrankly\b", r"\bpersonally\b", r"\bprobably\b", r"\bmaybe\b",
@@ -127,7 +139,7 @@ def analyze_contractions(text):
             formal_count += len(matches)
             if len(formal_examples) < 3:
                 formal_examples.append(f'"{matches[0].group()}" -> {contraction}')
-    contraction_count = len(re.findall(r"\b\w+(?:'|’)\w+\b", text))
+    contraction_count = len(CONTRACTION_RE.findall(text))
     if formal_count >= 3 and contraction_count == 0 and word_count > 50:
         issues.append({"type": "contraction_avoidance", "severity": 5,
                        "detail": f'{formal_count} uncontracted forms and 0 contractions in {word_count} words. Humans contract by default in non-academic writing. Examples: {"; ".join(formal_examples)}'})
@@ -143,8 +155,16 @@ def analyze_vocabulary_diversity(text):
     if len(words) < 50:
         return issues
     window_size = min(100, len(words))
-    window = words[:window_size]
-    ttr = len(set(window)) / len(window)
+    if window_size == len(words):
+        ttr = len(set(words)) / len(words)
+    else:
+        # Moving-average TTR. Measuring only words[:100] judged a long text on its
+        # opening paragraph and ignored everything after it. Step a quarter-window
+        # so this stays linear on long inputs.
+        step = max(1, window_size // 4)
+        starts = range(0, len(words) - window_size + 1, step)
+        ratios = [len(set(words[i:i + window_size])) / window_size for i in starts]
+        ttr = sum(ratios) / len(ratios)
     if window_size < 80:
         if ttr > 0.92:
             issues.append({"type": "high_vocabulary_diversity", "severity": 3, "ttr": round(ttr, 3),
@@ -265,12 +285,14 @@ def gate(text, matches, lang):
     """Decide which matches fire and at what weight. Returns (findings, weighted_score)."""
     sent_spans = _spans(text, _SENT_RE)
     # Paragraph blocks separated by blank lines (for em-dash / tricolon density).
+    # Real separator spans: the split pattern matches 2+ newlines with optional
+    # interior whitespace, so a fixed +2 stride drifts the offsets of every later
+    # block and misassigns positions in block_of().
     blocks, pos = [], 0
-    for chunk in re.split(r"\n\s*\n", text):
-        blocks.append((pos, pos + len(chunk)))
-        pos += len(chunk) + 2
-    if not blocks:
-        blocks = [(0, len(text))]
+    for sep in re.finditer(r"\n\s*\n", text):
+        blocks.append((pos, sep.start()))
+        pos = sep.end()
+    blocks.append((pos, len(text)))
 
     def block_of(p):
         for i, (s, e) in enumerate(blocks):
@@ -500,6 +522,13 @@ def sev_label(s):
 
 
 def main():
+    # Force UTF-8 on both ends. The tool reads accented input and prints accented
+    # findings plus em-dashes, so an ascii or latin-1 locale kills the run partway
+    # through the report.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Slop detector pre-screen (EN/FR/ES)")
     parser.add_argument("--file", "-f", help="Path to text file")
     parser.add_argument("--lang", "-l", default="auto", choices=["auto", "en", "fr", "es"])
@@ -510,7 +539,13 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
 
-    text = open(args.file).read() if args.file else sys.stdin.read()
+    # Explicit UTF-8: the tool is trilingual and the locale encoding mangles
+    # accented input on non-UTF-8 systems.
+    if args.file:
+        with open(args.file, encoding="utf-8") as fh:
+            text = fh.read()
+    else:
+        text = sys.stdin.read()
     if not text.strip():
         print("Error: no input text provided.", file=sys.stderr)
         sys.exit(1)
