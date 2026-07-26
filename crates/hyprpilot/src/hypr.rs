@@ -18,6 +18,15 @@ pub struct ActiveWorkspace {
     pub name: String,
 }
 
+/// The workspace the user is on, with the monitor showing it: `session show`
+/// needs both, since a waybar click can leave the focus on an agent desktop's
+/// own headless output (§7 of the isolated design).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FocusedWorkspace {
+    pub name: String,
+    pub monitor: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Client {
@@ -237,6 +246,10 @@ pub fn monitors() -> Result<Vec<Monitor>, Error> {
 
 pub fn devices() -> Result<Devices, Error> {
     run_json_on(Ctl::Host, &["devices"])
+}
+
+pub fn focused_workspace() -> Result<FocusedWorkspace, Error> {
+    run_json_on(Ctl::Host, &["activeworkspace"])
 }
 
 /// The currently focused window, or `None`.

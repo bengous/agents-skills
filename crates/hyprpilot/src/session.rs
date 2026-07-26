@@ -114,7 +114,10 @@ pub struct Shared {
 
 /// An agent desktop: a nested Hyprland whose console window lives on the
 /// active workspace of a host headless output.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// `Clone` is what lets a command that updates one field persist the result
+/// through `save_isolated` without rebuilding the payload by hand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Isolated {
     /// Host headless output, `hyprpilot-<name>`.
     pub output: String,
@@ -133,7 +136,7 @@ pub struct Isolated {
 /// The nested compositor is acquired after the output, so the state has to
 /// describe a session whose instance does not exist yet: `teardown` must be
 /// able to clean up either stage.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "lowercase")]
 pub enum Instance {
     Pending,
@@ -149,32 +152,16 @@ pub enum Instance {
     },
 }
 
-/// A command whose isolated-mode implementation lands in a later slice of
-/// `hyprpilot-isolated-slice-plan.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pending {
-    command: &'static str,
-    slice: &'static str,
-}
+/// Why an agent desktop is the only session that can be revealed or hidden
+/// (§5): a shared session drives windows the user is already looking at.
+const AGENT_ONLY_HINT: &str = "it moves the console window of a nested agent desktop between its \
+                               hidden headless output and the user's workspace; a shared session \
+                               drives the user's own windows, which are already on their desktop";
 
-impl Pending {
-    pub const KEY: Self = Self::new("key", "S7");
-    pub const TYPE: Self = Self::new("type", "S7");
-    pub const CLICK: Self = Self::new("click", "S7");
-    pub const SCROLL: Self = Self::new("scroll", "S7");
-    pub const TARGET: Self = Self::new("target", "S9");
-    pub const WINDOWS: Self = Self::new("windows", "S9");
-    pub const STATUS: Self = Self::new("status", "S11");
-
-    const fn new(command: &'static str, slice: &'static str) -> Self {
-        Self { command, slice }
-    }
-
-    pub fn error(self) -> Error {
-        Error::IsolatedPending {
-            command: self.command,
-            slice: self.slice,
-        }
+fn agent_only(command: &'static str) -> Error {
+    Error::SharedUnsupported {
+        command,
+        hint: AGENT_ONLY_HINT,
     }
 }
 
@@ -187,13 +174,14 @@ impl Session {
     }
 
     /// Routes by mode: an isolated session never falls through to the shared
-    /// code path, which would mutate the user's desktop.
-    pub fn shared(&self, pending: Pending) -> Result<&Shared, Error> {
-        self.shared_or(|| pending.error())
+    /// code path, which would mutate the user's desktop. `command` is the one
+    /// asking, so a routing bug names itself.
+    pub fn shared(&self, command: &'static str) -> Result<&Shared, Error> {
+        self.shared_or(|| Error::ModeRouting { command })
     }
 
-    fn shared_mut(&mut self, pending: Pending) -> Result<&mut Shared, Error> {
-        self.shared_mut_or(|| pending.error())
+    fn shared_mut(&mut self, command: &'static str) -> Result<&mut Shared, Error> {
+        self.shared_mut_or(|| Error::ModeRouting { command })
     }
 
     fn shared_or(&self, error: impl FnOnce() -> Error) -> Result<&Shared, Error> {
@@ -207,6 +195,14 @@ impl Session {
         match &mut self.state {
             ModeState::Shared(shared) => Ok(shared),
             ModeState::Isolated(_) => Err(error()),
+        }
+    }
+
+    /// The agent desktop payload of a command only an agent desktop can answer.
+    fn agent_mut(&mut self, command: &'static str) -> Result<&mut Isolated, Error> {
+        match &mut self.state {
+            ModeState::Isolated(isolated) => Ok(isolated),
+            ModeState::Shared(_) => Err(agent_only(command)),
         }
     }
 }
@@ -227,6 +223,16 @@ pub struct TrackedWindow {
 pub enum Disposition {
     Restore,
     Close,
+}
+
+impl Disposition {
+    /// As `--on-teardown` spells it, so a refusal quotes the flag back.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Restore => "restore",
+            Self::Close => "close",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -665,13 +671,26 @@ pub fn load(name: &str) -> Result<Session, Error> {
     }
 }
 
+/// Persists an updated agent desktop payload. The schema version is this
+/// build's: `load` refused any other before the caller got the payload.
+pub fn save_isolated(path: &Path, name: &str, isolated: &Isolated) -> Result<(), Error> {
+    save_over(
+        path,
+        &Session {
+            schema_version: SCHEMA_VERSION,
+            name: name.to_owned(),
+            state: ModeState::Isolated(isolated.clone()),
+        },
+    )
+}
+
 /// The shared session's active window as Hyprland currently sees it.
 pub fn current_window(
     name: &str,
-    pending: Pending,
+    command: &'static str,
 ) -> Result<(CurrentSession, hypr::Client), Error> {
     let session = load(name)?;
-    shared_window(session.shared(pending)?)
+    shared_window(session.shared(command)?)
 }
 
 /// Same, for a caller that already routed by mode and holds the payload.
@@ -834,13 +853,9 @@ fn target_disposition(
     if mode == TargetMode::Switch
         && let Some(disposition) = requested
     {
-        let value = match disposition {
-            Disposition::Restore => "restore",
-            Disposition::Close => "close",
-        };
         return Err(Error::Invalid {
             what: "target option",
-            value: format!("--on-teardown {value}"),
+            value: format!("--on-teardown {}", disposition.label()),
             hint: format!("window {address} is already tracked; omit --on-teardown when switching"),
         });
     }
@@ -1340,23 +1355,20 @@ fn persist_target_before_activation(
     disposition: Disposition,
 ) -> Result<(), Error> {
     if mode == TargetMode::Adopt {
-        session
-            .shared_mut(Pending::TARGET)?
-            .windows
-            .push(TrackedWindow {
-                address: client.address.clone(),
-                title_at_adoption: client.title.clone(),
-                origin_workspace: client.workspace.name.clone(),
-                origin_at: client.at,
-                origin_size: client.size,
-                origin_floating: client.floating,
-                teardown: disposition,
-            });
+        session.shared_mut("target")?.windows.push(TrackedWindow {
+            address: client.address.clone(),
+            title_at_adoption: client.title.clone(),
+            origin_workspace: client.workspace.name.clone(),
+            origin_at: client.at,
+            origin_size: client.size,
+            origin_floating: client.floating,
+            teardown: disposition,
+        });
         save_over(path, session)?;
     }
 
     session
-        .shared_mut(Pending::TARGET)?
+        .shared_mut("target")?
         .active_address
         .clone_from(&client.address);
     save_over(path, session)
@@ -1385,13 +1397,24 @@ pub fn target(
 
     let path = session_path(name)?;
     let mut session = load(name)?;
-    // Routed before the first compositor read, so an isolated session fails on
-    // its own terms instead of on a host query that means nothing to it.
-    session.shared(Pending::TARGET)?;
+    // Routed before the first compositor read, so an isolated session resolves
+    // its target among the clients of its own instance instead of on a host
+    // query that means nothing to it (§5).
+    if let ModeState::Isolated(isolated) = &mut session.state {
+        return crate::isolated::target(
+            name,
+            &path,
+            isolated,
+            criteria,
+            untracked,
+            wait,
+            on_teardown,
+        );
+    }
     let started = Instant::now();
     let (client, mode) = loop {
         let clients = hypr::clients()?;
-        let shared = session.shared(Pending::TARGET)?;
+        let shared = session.shared("target")?;
         match target_lookup(&clients, shared, criteria, untracked, wait.is_some())? {
             TargetLookup::Ready { client, mode } => break (client.clone(), mode),
             TargetLookup::Retry => {
@@ -1417,7 +1440,7 @@ pub fn target(
     // Adoption (when needed) and the active address are persisted before the
     // first compositor command. Activation only accepts that resulting state.
     persist_target_before_activation(&path, &mut session, &client, mode, disposition)?;
-    activate_persisted_target(session.shared(Pending::TARGET)?)?;
+    activate_persisted_target(session.shared("target")?)?;
 
     Ok(format!(
         "target active — {} window {} (`{}`)",
@@ -1465,6 +1488,32 @@ pub fn resize(name: &str, size: &str) -> Result<String, Error> {
         "session resized — output {} is {}x{}, window {} repositioned",
         shared.output, effective_size[0], effective_size[1], shared.active_address
     ))
+}
+
+/// `session show` (§5): the console window of the agent desktop goes to the
+/// workspace the user is on. Shared mode gets its own refusal, not a
+/// "not implemented".
+pub fn show(name: &str) -> Result<String, Error> {
+    on_agent_desktop(name, "session show", crate::isolated::show)
+}
+
+/// `session hide` (§5): the console goes back to `agent-<name>`, which must
+/// stay the active workspace of the headless output or every later capture
+/// freezes (fact §2.2).
+pub fn hide(name: &str) -> Result<String, Error> {
+    on_agent_desktop(name, "session hide", crate::isolated::hide)
+}
+
+/// Loads a session for a command only an agent desktop can answer, and hands
+/// the payload plus the path it persists through to `act`.
+fn on_agent_desktop(
+    name: &str,
+    command: &'static str,
+    act: impl FnOnce(&str, &Path, &mut Isolated) -> Result<String, Error>,
+) -> Result<String, Error> {
+    let path = session_path(name)?;
+    let mut session = load(name)?;
+    act(name, &path, session.agent_mut(command)?)
 }
 
 /// Everything that must be refused before an app is spawned, in both modes:
@@ -2107,14 +2156,14 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
 mod tests {
     use super::{
         Criteria, DEFAULT_SESSION_NAME, Disposition, Escalation, Instance, Isolated, Mode,
-        ModeState, Pending, Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session,
-        Shared, StateLocation, Step, TargetLookup, TargetMode, TrackedWindow, WindowAction,
+        ModeState, Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session, Shared,
+        StateLocation, Step, TargetLookup, TargetMode, TrackedWindow, WindowAction,
         ambiguous_error, clear_state, effective_output_size, ensure_output_empty_for_sweep,
         find_shared_session_in, load_from, load_pre_v3_from, monitor_rule, parse_size,
         persist_target_before_activation, place, refuse_pre_v3_state_at, refuse_teardown_flags,
         report_teardown, resize_has_applied, resize_unsupported, resolve, resolve_name_from,
-        save_new_to, save_over, target_disposition, target_layout_is_verified, target_lookup,
-        teardown_plan, workspace_selector,
+        save_isolated, save_new_to, save_over, target_disposition, target_layout_is_verified,
+        target_lookup, teardown_plan, workspace_selector,
     };
     use crate::error::{Error, RestoreFailure};
     use crate::guard;
@@ -2195,7 +2244,7 @@ mod tests {
     }
 
     fn shared_of(session: &Session) -> Result<&Shared, Box<dyn StdError>> {
-        Ok(session.shared(Pending::STATUS)?)
+        Ok(session.shared("status")?)
     }
 
     fn matching_clients() -> Result<Vec<Client>, serde_json::Error> {
@@ -2828,7 +2877,7 @@ mod tests {
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
         let mut updated = sample_session();
-        updated.shared_mut(Pending::TARGET)?.active_address = "0xdef".to_owned();
+        updated.shared_mut("target")?.active_address = "0xdef".to_owned();
 
         save_over(&path, &updated)?;
 
@@ -3033,37 +3082,81 @@ mod tests {
     }
 
     #[test]
-    fn isolated_sessions_route_every_pending_command_to_its_slice() -> Result<(), Box<dyn StdError>>
+    fn an_isolated_session_never_falls_through_the_shared_accessor() -> Result<(), Box<dyn StdError>>
     {
-        // `session start --isolated`, `teardown`, `shot` and `wait` are no
-        // longer in this list: they are implemented, and `crate::isolated` owns
-        // their isolated half.
-        let pending = [
-            Pending::KEY,
-            Pending::TYPE,
-            Pending::CLICK,
-            Pending::SCROLL,
-            Pending::TARGET,
-            Pending::WINDOWS,
-            Pending::STATUS,
-        ];
+        // Every command routes by mode before its first compositor read, so this
+        // accessor is the typed backstop: reaching it with an agent desktop is a
+        // routing bug, never a fall-through onto the user's own windows.
         let session = sample_isolated("alpha", live_instance());
-        for pending in pending {
+        for command in ["key", "type", "click", "scroll", "target"] {
             let error = session
-                .shared(pending)
+                .shared(command)
                 .err()
-                .ok_or_else(|| format!("`{}` fell through to the shared path", pending.command))?
-                .to_string();
-            assert!(error.contains(pending.command), "{error}");
-            assert!(error.contains(pending.slice), "{error}");
-            assert!(error.contains("not implemented"), "{error}");
-            assert!(error.contains("no compositor state was touched"), "{error}");
+                .ok_or_else(|| format!("`{command}` fell through to the shared path"))?;
+            assert!(matches!(error, Error::ModeRouting { .. }), "{error:?}");
+            let message = error.to_string();
+            assert!(message.contains(command), "{message}");
+            assert!(
+                message.contains("no compositor state was touched"),
+                "{message}"
+            );
         }
         // The same accessor hands the payload over in shared mode.
+        assert_eq!(sample_session().shared("status")?.output, "hyprpilot");
+        Ok(())
+    }
+
+    #[test]
+    fn only_an_agent_desktop_can_be_shown_or_hidden() -> Result<(), Box<dyn StdError>> {
+        for command in ["session show", "session hide"] {
+            let error = sample_session()
+                .agent_mut(command)
+                .err()
+                .ok_or_else(|| format!("`{command}` was accepted on a shared session"))?;
+            assert!(
+                matches!(error, Error::SharedUnsupported { .. }),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(command), "{message}");
+            assert!(
+                message.contains("not supported for shared sessions"),
+                "{message}"
+            );
+            // The refusal says what shared mode does instead, not "not yet".
+            assert!(message.contains("already on their desktop"), "{message}");
+        }
         assert_eq!(
-            sample_session().shared(Pending::STATUS)?.output,
-            "hyprpilot"
+            sample_isolated("alpha", live_instance())
+                .agent_mut("session show")?
+                .workspace,
+            "agent-alpha"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_updated_agent_payload_round_trips_under_its_session_name() -> Result<(), Box<dyn StdError>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut session = sample_isolated_with("alpha", live_instance(), Some("0xapp"));
+        save_new_to(&path, &session)?;
+
+        let isolated = session.agent_mut("session show")?;
+        isolated.shown = true;
+        isolated.active_address = Some("0xdialog".to_owned());
+        save_isolated(&path, "alpha", isolated)?;
+
+        let reloaded = load_from(&path)?;
+        assert_eq!(reloaded.schema_version, SCHEMA_VERSION);
+        assert_eq!(reloaded.name, "alpha");
+        let ModeState::Isolated(state) = reloaded.state else {
+            return Err("an isolated payload came back as shared".into());
+        };
+        assert!(state.shown);
+        assert_eq!(state.active_address.as_deref(), Some("0xdialog"));
+        assert_eq!(state.output, "hyprpilot-alpha");
         Ok(())
     }
 

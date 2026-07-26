@@ -34,7 +34,9 @@ const CONSOLE_CLASS: &str = "aquamarine";
 /// The console title carries the *nested* compositor's own output name, not its
 /// Wayland socket, so it only ever confirms the window kind (fact §2.5).
 const CONSOLE_TITLE_PREFIX: &str = "aquamarine - WAYLAND-";
-const NESTED_BINARY: &str = "Hyprland";
+/// An agent desktop is a nested Hyprland (fact §2.1), so `doctor` names this
+/// binary too.
+pub const NESTED_BINARY: &str = "Hyprland";
 const NESTED_CONFIG_FILE: &str = "hyprland.conf";
 const NESTED_LOG_FILE: &str = "hyprland.log";
 /// Where teardown keeps the nested compositor's own log, next to the session's
@@ -1145,6 +1147,10 @@ fn binary_on_path(binary: &str) -> bool {
         .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
 }
 
+pub fn nested_binary_present() -> bool {
+    binary_on_path(NESTED_BINARY)
+}
+
 /// Hyprland hands the command to `sh -c`, so the paths are quoted and a path
 /// that could close a quote is refused rather than escaped.
 fn spawn_command(
@@ -1363,6 +1369,86 @@ fn window_frame<'a>(
     Ok((window, monitor))
 }
 
+/// The nested compositor an isolated command talks to, borrowed from the state
+/// that recorded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveInstance<'a> {
+    pub signature: &'a str,
+    pub wayland_display: &'a str,
+    pub pid: u32,
+    /// Host-side console window; only `show`/`hide` and teardown act on it.
+    pub console: &'a str,
+}
+
+impl<'a> LiveInstance<'a> {
+    /// Tied to the state's lifetime, not to the borrow of this value, so a
+    /// caller can keep addressing the instance after dropping it.
+    pub fn ctl(self) -> Ctl<'a> {
+        Ctl::Instance(self.signature)
+    }
+}
+
+/// The one gate every isolated command goes through (§5), so a dead agent
+/// desktop fails here instead of timing out on an instance that will never
+/// answer — or worse, falling back to the user's own desktop. `teardown` is the
+/// one command that deliberately skips it: it is what cleans a dead desktop up.
+pub fn live_instance<'a>(session: &str, isolated: &'a Isolated) -> Result<LiveInstance<'a>, Error> {
+    live_instance_in(Path::new("/proc"), session, isolated)
+}
+
+fn live_instance_in<'a>(
+    proc_root: &Path,
+    session: &str,
+    isolated: &'a Isolated,
+) -> Result<LiveInstance<'a>, Error> {
+    let Instance::Live {
+        signature,
+        wayland_display,
+        pid,
+        console_address,
+    } = &isolated.instance
+    else {
+        return Err(Error::AgentDesktopUnready {
+            session: session.to_owned(),
+            reason: format!(
+                "its nested compositor was never spawned (`session start --isolated` did not \
+                 finish) — run `hyprpilot --session {session} teardown` and start it again"
+            ),
+        });
+    };
+    // The marker is liveness *and* identity: a dead pid has no readable
+    // environment and a recycled one no longer carries this session's marker, so
+    // no command can address a stranger's process.
+    if !pid_carries_marker_in(proc_root, *pid, session) {
+        return Err(Error::AgentDesktopDead {
+            session: session.to_owned(),
+            signature: signature.clone(),
+            pid: *pid,
+        });
+    }
+    Ok(LiveInstance {
+        signature,
+        wayland_display,
+        pid: *pid,
+        console: console_address,
+    })
+}
+
+/// The window an isolated command acts on: the one the start recorded, or the
+/// one `target` last selected.
+pub fn recorded_window<'a>(session: &str, isolated: &'a Isolated) -> Result<&'a str, Error> {
+    isolated
+        .active_address
+        .as_deref()
+        .ok_or_else(|| Error::AgentDesktopUnready {
+            session: session.to_owned(),
+            reason: format!(
+                "no window is recorded for it, its app never appeared — run `hyprpilot --session \
+                 {session} teardown` and start it again"
+            ),
+        })
+}
+
 /// What a capture of an agent desktop acts on (§5): the socket grim has to talk
 /// to, the window inside the nested layout, and the output that frames it.
 pub struct AgentCapture {
@@ -1378,23 +1464,8 @@ pub fn capture_target(session: &str, isolated: &Isolated) -> Result<AgentCapture
         session: session.to_owned(),
         reason,
     };
-    let Instance::Live {
-        signature,
-        wayland_display,
-        ..
-    } = &isolated.instance
-    else {
-        return Err(unready(format!(
-            "its nested compositor was never spawned — run `hyprpilot --session {session} \
-             teardown` and start it again"
-        )));
-    };
-    let address = isolated.active_address.as_deref().ok_or_else(|| {
-        unready(format!(
-            "no window is recorded for it — run `hyprpilot --session {session} teardown` and start \
-             it again"
-        ))
-    })?;
+    let instance = live_instance(session, isolated)?;
+    let address = recorded_window(session, isolated)?;
     // Fact §2.2: a console window the host stopped compositing freezes the
     // nested compositor, and screencopy then blocks for ever. `session show`
     // moves the console to a workspace of the user's own, where the same
@@ -1411,12 +1482,12 @@ pub fn capture_target(session: &str, isolated: &Isolated) -> Result<AgentCapture
         )));
     }
 
-    let ctl = Ctl::Instance(signature);
+    let ctl = instance.ctl();
     let outputs = hypr::monitors_on(ctl)?;
     let clients = hypr::clients_on(ctl)?;
     let (window, monitor) = window_frame(&outputs, &clients, address).map_err(unready)?;
     Ok(AgentCapture {
-        wayland_display: wayland_display.clone(),
+        wayland_display: instance.wayland_display.to_owned(),
         window: window.clone(),
         monitor: monitor.clone(),
     })
@@ -1448,6 +1519,508 @@ pub fn frozen_observation(host_output: &str, workspace: &str) -> String {
             }),
         Err(error) => format!("reading `hyprctl monitors` failed: {error}"),
     }
+}
+
+/// `target` in an agent desktop (§5): the exact matcher of shared mode, run
+/// against the clients of the instance, then `focuswindow` inside it. No parking
+/// and no disposition — the parked workspace hides the *user's* other windows
+/// and the dispositions give them back at teardown, and an agent desktop has
+/// neither a user to hide windows from nor anything that outlives its teardown.
+pub fn target(
+    session: &str,
+    path: &Path,
+    isolated: &mut Isolated,
+    criteria: &session::Criteria<'_>,
+    untracked: bool,
+    wait: Option<Duration>,
+    on_teardown: Option<session::Disposition>,
+) -> Result<String, Error> {
+    refuse_disposition(on_teardown)?;
+    refuse_untracked(untracked)?;
+    let signature = live_instance(session, isolated)?.signature.to_owned();
+    let window = wait_for_instance_window(&signature, session, criteria, wait)?;
+
+    // Persisted before the dispatch, exactly as in shared mode: the recorded
+    // address is what input and captures aim at, so it has to name the new
+    // target even if the focus below fails.
+    isolated.active_address = Some(window.address.clone());
+    session::save_isolated(path, session, isolated)?;
+    focus_in_instance(&signature, &window.address)?;
+
+    Ok(format!(
+        "target active — window {} (`{}`) focused in agent desktop `{session}` (instance \
+         {signature})",
+        window.address, window.title
+    ))
+}
+
+/// §6.1: an agent desktop is destroyed whole, so a window in it has no
+/// disposition to choose between.
+fn refuse_disposition(on_teardown: Option<session::Disposition>) -> Result<(), Error> {
+    let Some(disposition) = on_teardown else {
+        return Ok(());
+    };
+    Err(Error::Invalid {
+        what: "target option",
+        value: format!("--on-teardown {}", disposition.label()),
+        hint: "`teardown` takes the whole agent desktop down, so its windows have nothing to be \
+               restored to or closed for; omit --on-teardown"
+            .to_owned(),
+    })
+}
+
+/// `--untracked` filters against the list of windows a shared session adopted;
+/// an agent desktop records one window at a time instead, so the flag is
+/// refused rather than quietly matching everything.
+fn refuse_untracked(untracked: bool) -> Result<(), Error> {
+    if !untracked {
+        return Ok(());
+    }
+    Err(Error::Invalid {
+        what: "target option",
+        value: "--untracked".to_owned(),
+        hint: "an agent desktop records one window at a time, not a list of adopted ones; select \
+               the window with --match-title, --match-class, --pid or --address"
+            .to_owned(),
+    })
+}
+
+/// No match is a retry while `--wait` lasts, several are refused with the
+/// candidates as JSON — the same contract as on the host, against the clients of
+/// the instance.
+fn instance_match<'a>(
+    clients: &'a [hypr::Client],
+    criteria: &session::Criteria<'_>,
+) -> Result<Option<&'a hypr::Client>, Error> {
+    match session::resolve(clients, criteria) {
+        session::Resolution::Unique(client) => Ok(Some(client)),
+        session::Resolution::None => Ok(None),
+        session::Resolution::Ambiguous(candidates) => {
+            Err(session::ambiguous_error(criteria, candidates))
+        }
+    }
+}
+
+fn wait_for_instance_window(
+    signature: &str,
+    session: &str,
+    criteria: &session::Criteria<'_>,
+    wait: Option<Duration>,
+) -> Result<hypr::Client, Error> {
+    let label = || {
+        format!(
+            "{} in agent desktop `{session}`",
+            session::criteria_label(criteria)
+        )
+    };
+    let started = Instant::now();
+    loop {
+        let clients = hypr::clients_on(Ctl::Instance(signature))?;
+        if let Some(window) = instance_match(&clients, criteria)? {
+            return Ok(window.clone());
+        }
+        let Some(timeout) = wait else {
+            return Err(Error::WindowNotFound(label()));
+        };
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(Error::Timeout {
+                what: format!("a window matching {}", label()),
+                after_ms: timeout.as_millis(),
+            });
+        }
+        thread::sleep(session::POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
+    }
+}
+
+/// The focus is read back from the instance: the dispatcher's `ok` only says the
+/// request was accepted.
+fn focus_in_instance(signature: &str, address: &str) -> Result<(), Error> {
+    let ctl = Ctl::Instance(signature);
+    hypr::dispatch_on(ctl, &["focuswindow", &format!("address:{address}")])?;
+    poll_until(
+        session::WINDOW_PLACE_TIMEOUT,
+        || {
+            Ok(match hypr::active_window_on(ctl)? {
+                Some(window) if window.address == address => Ok(()),
+                Some(window) => Err(format!(
+                    "{} (`{}`) is focused",
+                    window.address, window.title
+                )),
+                None => Err("no window is focused".to_owned()),
+            })
+        },
+        |observed| {
+            format!(
+                "window {address} to become the focused window of agent desktop instance \
+                 {signature} (last observed: {observed})"
+            )
+        },
+    )
+}
+
+/// What `Isolated::shown` records. Both commands decide from where the console
+/// actually is and write the flag afterwards; the flag is only the state's memory
+/// of it, and a state that drifted must not answer for reality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    Shown,
+    Hidden,
+}
+
+fn visibility(console_workspace: &str, agent_workspace: &str) -> Visibility {
+    if console_workspace == agent_workspace {
+        Visibility::Hidden
+    } else {
+        Visibility::Shown
+    }
+}
+
+/// §5: the console window of the agent desktop goes to the workspace the user is
+/// on, floating. It is the only host window this crate ever puts in front of the
+/// user; it is identified by the address recorded at spawn, nothing else on the
+/// desktop is touched, and the focus is left where the user had it — the window
+/// is focusable (`noinitialfocus` was a one-shot rule, applied when it mapped),
+/// so clicking it is theirs to decide. Rendering survives the move: a visible
+/// window keeps receiving frame callbacks (fact §2.2), which is what lets
+/// `capture_target` skip its headless-output check while `shown`.
+pub fn show(session: &str, path: &Path, isolated: &mut Isolated) -> Result<String, Error> {
+    let console_address = live_instance(session, isolated)?.console.to_owned();
+    let console = host_console(&console_address, session)?;
+    let focused = hypr::focused_workspace()?;
+    if shown_where_the_user_looks(&console.workspace.name, &focused, &isolated.output) {
+        return persist_visibility(
+            session,
+            path,
+            isolated,
+            Visibility::Shown,
+            format!(
+                "agent desktop `{session}` is already shown — console window {console_address} \
+                 sits on workspace {}, the one in front of you",
+                console.workspace.name
+            ),
+        );
+    }
+    let destination = user_workspace(&focused, session, isolated)?;
+
+    // Floating first: changing the floating mode is what drops the fullscreen
+    // state the start's one-shot rule set, and a fullscreen console would
+    // otherwise cover the user's whole monitor. The size is then pinned to what
+    // the console had, because the agent desktop renders at the size of this
+    // window: letting Hyprland pick a floating size would silently change the
+    // resolution the agent has been working in.
+    let size = console.size;
+    hypr::dispatch(&["setfloating", &window_arg(&console_address)])?;
+    resize_console(&console_address, size)?;
+    hypr::dispatch(&[
+        "movetoworkspacesilent",
+        &format!(
+            "{},address:{console_address}",
+            session::workspace_selector(&destination)
+        ),
+    ])?;
+
+    let console = settle_console(
+        &console_address,
+        &ConsoleWant {
+            workspace: &destination,
+            floating: Some(true),
+            at: None,
+        },
+    )?;
+    warn_on_console_size(session, &console, size);
+    persist_visibility(
+        session,
+        path,
+        isolated,
+        Visibility::Shown,
+        format!(
+            "agent desktop `{session}` shown — console window {console_address} is floating on \
+             workspace {destination} ({}x{}); `hyprpilot --session {session} session hide` puts it \
+             back on {}",
+            console.size[0], console.size[1], isolated.workspace
+        ),
+    )
+}
+
+/// §5: the console goes back to `agent-<name>`, at the configured size and at
+/// the origin of the headless output. Both matter: the agent desktop renders at
+/// the size of this window, and a window Hyprland does not composite stops the
+/// frame callbacks the whole design rests on (fact §2.2).
+pub fn hide(session: &str, path: &Path, isolated: &mut Isolated) -> Result<String, Error> {
+    let console_address = live_instance(session, isolated)?.console.to_owned();
+    let console = host_console(&console_address, session)?;
+    let already_hidden =
+        visibility(&console.workspace.name, &isolated.workspace) == Visibility::Hidden;
+    let size = window_size(isolated.size)?;
+
+    // Geometry is only imposed on a console that actually moved; a hide of an
+    // already hidden desktop touches nothing and only re-checks the invariant.
+    let origin = if already_hidden {
+        None
+    } else {
+        let origin = headless_origin(session, &isolated.output)?;
+        hypr::dispatch(&[
+            "movetoworkspacesilent",
+            &format!(
+                "{},address:{console_address}",
+                session::workspace_selector(&isolated.workspace)
+            ),
+        ])?;
+        resize_console(&console_address, size)?;
+        hypr::dispatch(&[
+            "movewindowpixel",
+            &format!(
+                "exact {} {},address:{console_address}",
+                origin[0], origin[1]
+            ),
+        ])?;
+        Some(origin)
+    };
+
+    let console = settle_console(
+        &console_address,
+        &ConsoleWant {
+            workspace: &isolated.workspace,
+            floating: None,
+            at: origin,
+        },
+    )?;
+    // Checked, not assumed: a console back on its workspace while that workspace
+    // is no longer the active one on the headless output freezes every later
+    // capture (fact §2.2).
+    ensure_agent_frames(session, isolated)?;
+    warn_on_console_size(session, &console, size);
+
+    let state = if already_hidden {
+        "is already hidden"
+    } else {
+        "hidden"
+    };
+    persist_visibility(
+        session,
+        path,
+        isolated,
+        Visibility::Hidden,
+        format!(
+            "agent desktop `{session}` {state} — console window {console_address} sits on \
+             workspace {}, active on output {}",
+            isolated.workspace, isolated.output
+        ),
+    )
+}
+
+/// The state's `shown` is written from where the console actually is, so it can
+/// only disagree with reality between two commands.
+fn persist_visibility(
+    session: &str,
+    path: &Path,
+    isolated: &mut Isolated,
+    visibility: Visibility,
+    message: String,
+) -> Result<String, Error> {
+    let shown = visibility == Visibility::Shown;
+    if isolated.shown != shown {
+        isolated.shown = shown;
+        session::save_isolated(path, session, isolated)?;
+    }
+    Ok(message)
+}
+
+/// The console as the host sees it. Identity is the address recorded at spawn:
+/// nothing here matches on a class or a title, which change under us.
+fn host_console(address: &str, session: &str) -> Result<hypr::Client, Error> {
+    find_client(&hypr::clients()?, address)
+        .cloned()
+        .ok_or_else(|| Error::AgentDesktopUnready {
+            session: session.to_owned(),
+            reason: format!(
+                "its console window {address} is gone from the host, so its nested compositor is \
+                 no longer mapped anywhere — run `hyprpilot --session {session} teardown`"
+            ),
+        })
+}
+
+/// `show` is idempotent only while the console sits on the workspace the user is
+/// actually looking at. `shown` on a workspace they have since switched away from
+/// means an occluded console, so it is a desktop to move, not one to report as
+/// already visible: an occluded console stops receiving frames (fact §2.2).
+fn shown_where_the_user_looks(
+    console_workspace: &str,
+    focused: &hypr::FocusedWorkspace,
+    agent_output: &str,
+) -> bool {
+    console_workspace == focused.name && focused.monitor != agent_output
+}
+
+/// The workspace `session show` moves the console to: the one the user is
+/// looking at. A waybar click focuses the agent's own headless output (§7), and
+/// moving the console onto the workspace it came from is not what was asked, so
+/// that focus is refused instead.
+fn user_workspace(
+    focused: &hypr::FocusedWorkspace,
+    session: &str,
+    isolated: &Isolated,
+) -> Result<String, Error> {
+    if focused.monitor == isolated.output || focused.name == isolated.workspace {
+        return Err(Error::Invalid {
+            what: "user workspace",
+            value: format!("{} on {}", focused.name, focused.monitor),
+            hint: format!(
+                "the focus is on the agent desktop's own headless output {} (clicking its \
+                 workspace in waybar does that); focus one of your own monitors, then run \
+                 `hyprpilot --session {session} session show` again",
+                isolated.output
+            ),
+        });
+    }
+    Ok(focused.name.clone())
+}
+
+fn window_arg(address: &str) -> String {
+    format!("address:{address}")
+}
+
+/// The configured size as window geometry. `hyprctl clients` reports sizes as
+/// signed pixels, so a configured size that cannot be one is refused instead of
+/// silently clamped.
+fn window_size(size: [u32; 2]) -> Result<[i32; 2], Error> {
+    let pixel = |value: u32| {
+        i32::try_from(value).map_err(|_| Error::Invalid {
+            what: "agent desktop size",
+            value: format!("{}x{}", size[0], size[1]),
+            hint: "each dimension must fit a signed 32-bit pixel count".to_owned(),
+        })
+    };
+    Ok([pixel(size[0])?, pixel(size[1])?])
+}
+
+fn resize_console(address: &str, size: [i32; 2]) -> Result<(), Error> {
+    hypr::dispatch(&[
+        "resizewindowpixel",
+        &format!("exact {} {},address:{address}", size[0], size[1]),
+    ])
+}
+
+/// The agent desktop renders at the size of its console window, so a size the
+/// move could not preserve changes the coordinate space the agent works in. It
+/// is reported rather than fought over: the console is where it was asked to be,
+/// and `status` shows the effective size read inside the instance.
+fn warn_on_console_size(session: &str, console: &hypr::Client, expected: [i32; 2]) {
+    if console.size == expected {
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "hyprpilot: warning: console window {} of agent desktop `{session}` is {}x{} instead of \
+         {}x{} — the agent desktop now renders at that size; check `hyprpilot --session {session} \
+         status`",
+        console.address,
+        console.size[0],
+        console.size[1],
+        expected[0],
+        expected[1],
+    );
+}
+
+/// Where the console has to land to be composited again: the origin of its
+/// headless output. A layout coordinate that is not integral is rounded rather
+/// than refused — `movewindowpixel` speaks pixels, unlike the exact conversion
+/// the shared parking path needs.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the rounded value is range-checked against i32 before the cast"
+)]
+fn headless_origin(session: &str, output: &str) -> Result<[i32; 2], Error> {
+    let monitor = hypr::monitors()?
+        .into_iter()
+        .find(|monitor| monitor.name == output)
+        .ok_or_else(|| Error::AgentDesktopUnready {
+            session: session.to_owned(),
+            reason: format!(
+                "its headless output {output} is gone — run `hyprpilot --session {session} \
+                 teardown`"
+            ),
+        })?;
+    let pixel = |value: f64, field: &str| {
+        let rounded = value.round();
+        if !rounded.is_finite() || rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+            return Err(Error::Tool {
+                command: "hyprctl monitors".to_owned(),
+                message: format!("output {output} reports unusable {field} {value}"),
+            });
+        }
+        Ok(rounded as i32)
+    };
+    Ok([pixel(monitor.x, "x")?, pixel(monitor.y, "y")?])
+}
+
+/// What a console move has to end up as. `None` means "not asked for", so a move
+/// is never verified against something it did not request.
+struct ConsoleWant<'a> {
+    workspace: &'a str,
+    floating: Option<bool>,
+    at: Option<[i32; 2]>,
+}
+
+fn console_settled(console: &hypr::Client, want: &ConsoleWant<'_>) -> Result<(), String> {
+    if console.workspace.name != want.workspace {
+        return Err(format!("on workspace {}", console.workspace.name));
+    }
+    if want.floating == Some(!console.floating) {
+        return Err(format!("floating is {}", console.floating));
+    }
+    if let Some(at) = want.at
+        && console.at != at
+    {
+        return Err(format!("at {:?}", console.at));
+    }
+    Ok(())
+}
+
+/// Bounded read-back of the console after a move: the dispatcher's `ok` only
+/// says the request was accepted.
+fn settle_console(address: &str, want: &ConsoleWant<'_>) -> Result<hypr::Client, Error> {
+    poll_until(
+        session::WINDOW_PLACE_TIMEOUT,
+        || {
+            let Some(console) = find_client(&hypr::clients()?, address).cloned() else {
+                return Err(Error::WindowGone(address.to_owned()));
+            };
+            Ok(console_settled(&console, want).map(|()| console))
+        },
+        |observed| {
+            format!(
+                "console window {address} to sit on workspace {} (last observed: {observed})",
+                want.workspace
+            )
+        },
+    )
+}
+
+/// Fact §2.2, checked at the end of `hide` rather than assumed: the nested
+/// compositor only keeps receiving frame callbacks while its console is
+/// composited, which is what an active agent workspace on the headless output
+/// guarantees.
+fn ensure_agent_frames(session: &str, isolated: &Isolated) -> Result<(), Error> {
+    poll_until(
+        session::WINDOW_PLACE_TIMEOUT,
+        || {
+            Ok(host_frames(
+                &hypr::monitors()?,
+                &isolated.output,
+                &isolated.workspace,
+            ))
+        },
+        |observed| {
+            format!(
+                "workspace {} to be the active one again on output {} — {}",
+                isolated.workspace,
+                isolated.output,
+                frozen_reason(session, &isolated.output, &isolated.workspace, observed)
+            )
+        },
+    )
 }
 
 /// Every process of an agent desktop inherits the marker, including the app the
@@ -1502,7 +2075,11 @@ fn process_carries_marker(pid: i32, session: &str) -> Result<bool, Error> {
 /// Liveness *and* identity of a recorded pid: a dead pid has no readable
 /// environment, and a recycled one no longer carries this session's marker.
 fn pid_carries_marker(pid: u32, session: &str) -> bool {
-    environ_carries_marker(&Path::new("/proc").join(pid.to_string()), session)
+    pid_carries_marker_in(Path::new("/proc"), pid, session)
+}
+
+fn pid_carries_marker_in(proc_root: &Path, pid: u32, session: &str) -> bool {
+    environ_carries_marker(&proc_root.join(pid.to_string()), session)
 }
 
 /// `SIGTERM` while the grace period lasts, then `SIGKILL`; bounded either way.
@@ -1568,16 +2145,19 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AGENT_SESSION_ENV, Exit, HostSnapshot, Keymap, Registered, TeardownPlan, active_workspaces,
-        capturable, capture_target, deviation, dir_entries, ensure_output_absent, frozen_reason,
-        is_wayland_socket, keep_instance_log, keymap_of, marked_pids_in, nested_config,
-        new_entries, output_is_configured, plain_signature, refuse_nested_marker,
-        remove_instance_dir, renameable, select_console, shell_path, spawn_command, stop_instance,
-        teardown_plan, wayland_sockets, workspace_occupants,
+        AGENT_SESSION_ENV, ConsoleWant, Exit, HostSnapshot, Keymap, LiveInstance, Registered,
+        TeardownPlan, Visibility, active_workspaces, capturable, capture_target, console_settled,
+        deviation, dir_entries, ensure_output_absent, frozen_reason, instance_match,
+        is_wayland_socket, keep_instance_log, keymap_of, live_instance_in, marked_pids_in,
+        nested_config, new_entries, output_is_configured, persist_visibility, plain_signature,
+        recorded_window, refuse_disposition, refuse_nested_marker, refuse_untracked,
+        remove_instance_dir, renameable, select_console, shell_path, shown_where_the_user_looks,
+        spawn_command, stop_instance, teardown_plan, user_workspace, visibility, wayland_sockets,
+        workspace_occupants,
     };
     use crate::error::Error;
-    use crate::hypr::{Client, Devices, Monitor};
-    use crate::session::{Escalation, Instance, Isolated};
+    use crate::hypr::{Client, Devices, FocusedWorkspace, Monitor};
+    use crate::session::{self, Escalation, Instance, Isolated};
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
     const DEVICES_JSON: &str = include_str!("../fixtures/devices.json");
@@ -2343,11 +2923,306 @@ mod tests {
         assert!(error.contains("--session alpha teardown"), "{error}");
 
         let launched_nothing = agent_state(live_instance(), None);
-        let error = capture_target("alpha", &launched_nothing)
+        let error = recorded_window("alpha", &launched_nothing)
             .err()
             .ok_or("a capture without a recorded window was accepted")?
             .to_string();
         assert!(error.contains("no window is recorded"), "{error}");
+        assert!(error.contains("--session alpha teardown"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_is_resolved_among_the_clients_of_the_instance() -> Result<(), Box<dyn StdError>> {
+        let clients = instance_clients()?;
+        let by_title = |title| session::Criteria {
+            title: Some(title),
+            ..session::Criteria::default()
+        };
+
+        assert!(
+            instance_match(&clients, &by_title("Missing title"))?.is_none(),
+            "no match is a retry, not a window"
+        );
+        let unique = instance_match(&clients, &by_title("Unique title"))?
+            .ok_or("one exact match resolves to that window")?;
+        assert_eq!(unique.address, "0xddd");
+
+        let error = instance_match(&clients, &by_title("Shared title"))
+            .err()
+            .ok_or("three matching windows were accepted")?;
+        assert!(matches!(error, Error::WindowAmbiguous { .. }), "{error:?}");
+        // Machine-readable last line, exactly as in shared mode.
+        let message = error.to_string();
+        let last_line = message.lines().next_back().ok_or("empty error message")?;
+        let candidates: Vec<serde_json::Value> = serde_json::from_str(last_line)?;
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate["address"].as_str())
+                .collect::<Vec<_>>(),
+            vec![Some("0xaaa"), Some("0xbbb"), Some("0xccc")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parking_options_of_shared_mode_are_refused_in_an_agent_desktop()
+    -> Result<(), Box<dyn StdError>> {
+        refuse_disposition(None)?;
+        for disposition in [session::Disposition::Restore, session::Disposition::Close] {
+            let error = refuse_disposition(Some(disposition))
+                .err()
+                .ok_or("--on-teardown was accepted in an agent desktop")?
+                .to_string();
+            assert!(error.contains(disposition.label()), "{error}");
+            assert!(error.contains("whole agent desktop down"), "{error}");
+        }
+
+        refuse_untracked(false)?;
+        let error = refuse_untracked(true)
+            .err()
+            .ok_or("--untracked was accepted in an agent desktop")?
+            .to_string();
+        assert!(error.contains("--untracked"), "{error}");
+        assert!(error.contains("one window at a time"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_whose_pid_lost_the_marker_is_dead() -> Result<(), Box<dyn StdError>> {
+        let root = tempfile::tempdir()?;
+        let environ = |pid: &str, variables: &[&str]| -> Result<(), Box<dyn StdError>> {
+            let dir = root.path().join(pid);
+            fs::create_dir_all(&dir)?;
+            let mut blob = Vec::new();
+            for variable in variables {
+                blob.extend_from_slice(variable.as_bytes());
+                blob.push(0);
+            }
+            fs::write(dir.join("environ"), blob)?;
+            Ok(())
+        };
+        // The live nested compositor of session `alpha` carries the marker.
+        environ("4242", &["HYPRPILOT_AGENT_SESSION=alpha", "PATH=/usr/bin"])?;
+
+        let live = agent_state(live_instance(), Some("0xapp"));
+        assert_eq!(
+            live_instance_in(root.path(), "alpha", &live)?,
+            LiveInstance {
+                signature: "beef_1700000000",
+                wayland_display: "wayland-3",
+                pid: 4242,
+                console: "0xc0ff33",
+            }
+        );
+
+        // A recycled pid: alive, but no longer this desktop's process.
+        environ("4242", &["HYPRPILOT_AGENT_SESSION=beta"])?;
+        let error = live_instance_in(root.path(), "alpha", &live)
+            .err()
+            .ok_or("a recycled pid was taken for the agent desktop")?;
+        assert!(matches!(error, Error::AgentDesktopDead { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("is dead"), "{message}");
+        assert!(message.contains("beef_1700000000"), "{message}");
+        assert!(message.contains("pid 4242"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
+
+        // A pid that is simply gone.
+        fs::remove_dir_all(root.path().join("4242"))?;
+        assert!(matches!(
+            live_instance_in(root.path(), "alpha", &live),
+            Err(Error::AgentDesktopDead { .. })
+        ));
+
+        // An unfinished start has no pid to probe at all, and says so instead.
+        let pending = agent_state(Instance::Pending, None);
+        let error = live_instance_in(root.path(), "alpha", &pending)
+            .err()
+            .ok_or("a pending instance was taken for a live one")?
+            .to_string();
+        assert!(error.contains("never spawned"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn show_and_hide_read_the_visibility_off_the_consoles_workspace() {
+        assert_eq!(visibility("agent-alpha", "agent-alpha"), Visibility::Hidden);
+        assert_eq!(visibility("2", "agent-alpha"), Visibility::Shown);
+        // A workspace whose name merely starts the same is the user's.
+        assert_eq!(visibility("agent-alpha2", "agent-alpha"), Visibility::Shown);
+    }
+
+    #[test]
+    fn a_show_is_idempotent_only_where_the_user_is_actually_looking() {
+        let focused = |name: &str, monitor: &str| FocusedWorkspace {
+            name: name.to_owned(),
+            monitor: monitor.to_owned(),
+        };
+
+        assert!(shown_where_the_user_looks(
+            "2",
+            &focused("2", "DP-3"),
+            "hyprpilot-alpha"
+        ));
+        // Shown, but on a workspace the user has switched away from: the console
+        // is occluded, so `show` has work to do (fact §2.2).
+        assert!(!shown_where_the_user_looks(
+            "2",
+            &focused("5", "DP-3"),
+            "hyprpilot-alpha"
+        ));
+        // A waybar click focused the agent desktop's own headless output (§7):
+        // the console being on that workspace is hidden, not shown.
+        assert!(!shown_where_the_user_looks(
+            "agent-alpha",
+            &focused("agent-alpha", "hyprpilot-alpha"),
+            "hyprpilot-alpha"
+        ));
+    }
+
+    #[test]
+    fn a_focus_on_the_agent_output_is_not_a_destination() -> Result<(), Box<dyn StdError>> {
+        let state = agent_state(live_instance(), Some("0xapp"));
+        assert_eq!(
+            user_workspace(
+                &FocusedWorkspace {
+                    name: "2".to_owned(),
+                    monitor: "DP-3".to_owned(),
+                },
+                "alpha",
+                &state
+            )?,
+            "2"
+        );
+
+        for (name, monitor) in [("agent-alpha", "hyprpilot-alpha"), ("3", "hyprpilot-alpha")] {
+            let error = user_workspace(
+                &FocusedWorkspace {
+                    name: name.to_owned(),
+                    monitor: monitor.to_owned(),
+                },
+                "alpha",
+                &state,
+            )
+            .err()
+            .ok_or("the agent desktop's own output was accepted as a destination")?
+            .to_string();
+            assert!(error.contains("hyprpilot-alpha"), "{error}");
+            assert!(error.contains("waybar"), "{error}");
+            assert!(error.contains("session show"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_console_move_is_verified_against_what_the_compositor_reports()
+    -> Result<(), Box<dyn StdError>> {
+        let clients: Vec<Client> = serde_json::from_str(NESTED_CLIENTS_JSON)?;
+        let console = clients.first().ok_or("empty nested clients fixture")?;
+
+        console_settled(
+            console,
+            &ConsoleWant {
+                workspace: "agent-alpha",
+                floating: Some(false),
+                at: Some([5120, 0]),
+            },
+        )?;
+        // What was not asked for is not checked.
+        console_settled(
+            console,
+            &ConsoleWant {
+                workspace: "agent-alpha",
+                floating: None,
+                at: None,
+            },
+        )?;
+
+        for (want, expected) in [
+            (
+                ConsoleWant {
+                    workspace: "2",
+                    floating: None,
+                    at: None,
+                },
+                "on workspace agent-alpha",
+            ),
+            (
+                ConsoleWant {
+                    workspace: "agent-alpha",
+                    floating: Some(true),
+                    at: None,
+                },
+                "floating is false",
+            ),
+            (
+                ConsoleWant {
+                    workspace: "agent-alpha",
+                    floating: None,
+                    at: Some([0, 0]),
+                },
+                "at [5120, 0]",
+            ),
+        ] {
+            let observed = console_settled(console, &want)
+                .err()
+                .ok_or("a console that had not moved was accepted")?;
+            assert_eq!(observed, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_shown_flag_is_written_from_reality_and_idempotent_otherwise()
+    -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut state = agent_state(live_instance(), Some("0xapp"));
+
+        // Already hidden: a success that says so, and no write.
+        let message = persist_visibility(
+            "alpha",
+            &path,
+            &mut state,
+            Visibility::Hidden,
+            "already hidden".to_owned(),
+        )?;
+        assert_eq!(message, "already hidden");
+        assert!(!state.shown);
+        assert!(
+            !path.exists(),
+            "an idempotent hide must not rewrite the state"
+        );
+
+        persist_visibility(
+            "alpha",
+            &path,
+            &mut state,
+            Visibility::Shown,
+            "shown".to_owned(),
+        )?;
+        assert!(state.shown);
+        let raw = fs::read_to_string(&path)?;
+        assert!(raw.contains("\"shown\": true"), "{raw}");
+        assert!(raw.contains("\"mode\": \"isolated\""), "{raw}");
+        assert!(raw.contains("\"name\": \"alpha\""), "{raw}");
+
+        let written = fs::metadata(&path)?.modified()?;
+        let message = persist_visibility(
+            "alpha",
+            &path,
+            &mut state,
+            Visibility::Shown,
+            "already shown".to_owned(),
+        )?;
+        assert_eq!(message, "already shown");
+        assert_eq!(
+            fs::metadata(&path)?.modified()?,
+            written,
+            "a second show must not rewrite the state"
+        );
         Ok(())
     }
 

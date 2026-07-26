@@ -1,13 +1,13 @@
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::{capture, hypr, keys, pointer, session};
+use crate::{capture, hypr, isolated, keys, pointer, session};
 
 #[derive(Parser)]
 #[command(
@@ -133,7 +133,7 @@ enum Command {
         /// Capture the entire headless output instead of the window frame
         #[arg(long)]
         full: bool,
-        /// Output directory (default: `$XDG_RUNTIME_DIR/hyprpilot/shots`)
+        /// Output directory (default: the session's own `shots/` directory)
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
     },
@@ -198,6 +198,11 @@ enum SessionCommand {
         #[arg(value_name = "WxH")]
         size: String,
     },
+    /// Agent desktops only: put the console window on the workspace you are
+    /// looking at, floating
+    Show,
+    /// Agent desktops only: send the console window back to `agent-<session>`
+    Hide,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -252,6 +257,8 @@ pub fn run() -> Result<String, Error> {
             &size,
         ),
         Command::Session(SessionCommand::Resize { size }) => session::resize(name, &size),
+        Command::Session(SessionCommand::Show) => session::show(name),
+        Command::Session(SessionCommand::Hide) => session::hide(name),
         Command::Target(TargetArgs {
             address,
             match_title,
@@ -324,9 +331,14 @@ pub fn run() -> Result<String, Error> {
     }
 }
 
+/// Whose windows `windows` is listing, and what it knows about them.
 enum WindowSession {
     Absent,
-    Valid(session::Shared),
+    Shared(session::Shared),
+    /// An agent desktop records one window at a time instead of a list of
+    /// adopted ones (§5), so the recorded window is both the tracked and the
+    /// active one.
+    Agent(Option<String>),
     Unknown,
 }
 
@@ -359,7 +371,7 @@ fn serialize_windows(
         .map(|client| {
             let (tracked, active) = match session {
                 WindowSession::Absent => (Some(false), Some(false)),
-                WindowSession::Valid(session) => (
+                WindowSession::Shared(session) => (
                     Some(
                         session
                             .windows
@@ -368,6 +380,10 @@ fn serialize_windows(
                     ),
                     Some(session.active_address == client.address),
                 ),
+                WindowSession::Agent(recorded) => {
+                    let recorded = recorded.as_deref() == Some(client.address.as_str());
+                    (Some(recorded), Some(recorded))
+                }
                 WindowSession::Unknown => (None, None),
             };
             WindowInfo {
@@ -401,8 +417,8 @@ fn windows(name: &str) -> Result<String, Error> {
     // querying the host here would print a plausible, wrong answer.
     let session = match session::load(name) {
         Ok(session) => match session.state {
-            session::ModeState::Shared(shared) => WindowSession::Valid(shared),
-            session::ModeState::Isolated(_) => return Err(session::Pending::WINDOWS.error()),
+            session::ModeState::Shared(shared) => WindowSession::Shared(shared),
+            session::ModeState::Isolated(isolated) => return agent_windows(name, &isolated),
         },
         Err(Error::NoSession) => WindowSession::Absent,
         Err(
@@ -424,10 +440,128 @@ fn windows(name: &str) -> Result<String, Error> {
     serialize_windows(&clients, focused.as_ref(), &session)
 }
 
+/// §5: the clients of the instance, with the same fields and the same
+/// annotations as on the host. `focused` comes from the instance's own active
+/// window, so it answers about the agent desktop's seat and not the user's.
+fn agent_windows(name: &str, isolated: &session::Isolated) -> Result<String, Error> {
+    let ctl = isolated::live_instance(name, isolated)?.ctl();
+    let clients = hypr::clients_on(ctl)?;
+    let focused = hypr::active_window_on(ctl)?;
+    serialize_windows(
+        &clients,
+        focused.as_ref(),
+        &WindowSession::Agent(isolated.active_address.clone()),
+    )
+}
+
 fn status(name: &str) -> Result<String, Error> {
     let session = session::load(name)?;
+    // Routed before the first compositor read: an agent desktop's geometry is
+    // read inside its own instance, never on the host (§5).
+    match &session.state {
+        session::ModeState::Shared(shared) => shared_status(&session, shared),
+        session::ModeState::Isolated(isolated) => agent_status(name, &session, isolated),
+    }
+}
+
+/// §5: mode, session, instance identity, show/hide state, the configured and
+/// effective size of the agent desktop, and the geometry of its window as the
+/// *instance* reports it. The keys are a contract, asserted by a test.
+fn agent_status(
+    name: &str,
+    session: &session::Session,
+    isolated: &session::Isolated,
+) -> Result<String, Error> {
+    let instance = isolated::live_instance(name, isolated)?;
+    let ctl = instance.ctl();
+    let host_output = session::find_output(&isolated.output)?;
+    let outputs = hypr::monitors_on(ctl)?;
+    let clients = hypr::clients_on(ctl)?;
+    let window = isolated
+        .active_address
+        .as_deref()
+        .and_then(|address| clients.iter().find(|client| client.address == address));
+    serialize_status(&agent_status_value(
+        session,
+        isolated,
+        instance,
+        // The nested config gives an agent desktop exactly one output (§4.4).
+        outputs.first(),
+        window,
+        host_output.as_ref(),
+    ))
+}
+
+fn agent_status_value(
+    session: &session::Session,
+    isolated: &session::Isolated,
+    instance: isolated::LiveInstance<'_>,
+    agent_output: Option<&hypr::Monitor>,
+    window: Option<&hypr::Client>,
+    host_output: Option<&hypr::Monitor>,
+) -> serde_json::Value {
+    let effective_size = agent_output.map(|monitor| [monitor.width, monitor.height]);
+    let size_mismatch = effective_size.map(|size| sizes_mismatch(isolated.size, size));
+
+    serde_json::json!({
+        "schema_version": session.schema_version,
+        "session": session.name,
+        "mode": session.mode(),
+        "workspace": isolated.workspace,
+        "shown": isolated.shown,
+        "instance": {
+            "signature": instance.signature,
+            "wayland_display": instance.wayland_display,
+            "pid": instance.pid,
+            "console_address": instance.console,
+        },
+        "active_address": isolated.active_address,
+        "configured_size": isolated.size,
+        "effective_size": effective_size,
+        "size_mismatch": size_mismatch,
+        "window": window.map(|window| serde_json::json!({
+            "address": window.address,
+            "title": window.title,
+            "class": window.class,
+            "at": window.at,
+            "size": window.size,
+            "workspace": window.workspace.name,
+            "floating": window.floating,
+            "monitor": window.monitor,
+            "pid": window.pid,
+        })),
+        "agent_output": agent_output.map(|monitor| serde_json::json!({
+            "name": monitor.name,
+            "width": monitor.width,
+            "height": monitor.height,
+            "scale": monitor.scale,
+            "active_workspace": monitor.active_workspace.name,
+            "special_workspace": monitor.special_workspace,
+        })),
+        // The host side of fact §2.2: captures only work while `workspace` is
+        // the active one on this output.
+        "output": host_output.map(|monitor| serde_json::json!({
+            "id": monitor.id,
+            "name": monitor.name,
+            "x": monitor.x,
+            "y": monitor.y,
+            "width": monitor.width,
+            "height": monitor.height,
+            "active_workspace": monitor.active_workspace.name,
+            "special_workspace": monitor.special_workspace,
+        })),
+    })
+}
+
+fn serialize_status(value: &serde_json::Value) -> Result<String, Error> {
+    serde_json::to_string_pretty(value).map_err(|source| Error::Json {
+        context: "serializing status".to_owned(),
+        source,
+    })
+}
+
+fn shared_status(session: &session::Session, state: &session::Shared) -> Result<String, Error> {
     let mode = session.mode();
-    let state = session.shared(session::Pending::STATUS)?;
     let clients = hypr::clients()?;
     let window = clients
         .iter()
@@ -490,10 +624,7 @@ fn status(name: &str) -> Result<String, Error> {
         "attached": state.spawned_pid.is_none(),
         "spawned_pid": state.spawned_pid,
     });
-    serde_json::to_string_pretty(&value).map_err(|source| Error::Json {
-        context: "serializing status".to_owned(),
-        source,
-    })
+    serialize_status(&value)
 }
 
 fn sizes_mismatch(configured: [u32; 2], effective: [f64; 2]) -> bool {
@@ -510,62 +641,173 @@ fn on_path(binary: &str) -> bool {
         .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
 }
 
-fn doctor() -> Result<String, Error> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut failures = 0usize;
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(".doctor-probe");
+    fs::create_dir_all(dir).is_ok()
+        && fs::write(&probe, b"probe").is_ok()
+        && fs::remove_file(&probe).is_ok()
+}
 
-    let mut check = |ok: bool, success: String, failure: String| {
+/// Accumulated `doctor` output. Only `FAIL` lines decide the exit status: a
+/// `warn` is something to know about, not a broken environment.
+#[derive(Default)]
+struct Report {
+    lines: Vec<String>,
+    failures: usize,
+}
+
+impl Report {
+    fn check(&mut self, ok: bool, success: &str, failure: &str) {
         if ok {
-            lines.push(format!("ok    {success}"));
+            self.ok(success);
         } else {
-            failures += 1;
-            lines.push(format!("FAIL  {failure}"));
+            self.fail(failure);
+        }
+    }
+
+    fn ok(&mut self, line: &str) {
+        self.lines.push(format!("ok    {line}"));
+    }
+
+    fn warn(&mut self, line: &str) {
+        self.lines.push(format!("warn  {line}"));
+    }
+
+    fn info(&mut self, line: &str) {
+        self.lines.push(format!("info  {line}"));
+    }
+
+    fn fail(&mut self, line: &str) {
+        self.failures += 1;
+        self.lines.push(format!("FAIL  {line}"));
+    }
+
+    fn finish(self) -> Result<String, Error> {
+        let report = self.lines.join("\n");
+        if self.failures == 0 {
+            Ok(report)
+        } else {
+            Err(Error::DoctorFailed {
+                report,
+                failures: self.failures,
+            })
+        }
+    }
+}
+
+/// The Hyprland version the agent desktop recipe was validated on, on
+/// 2026-07-24. Another version is a warning, not a failure: the recipe may still
+/// hold, but the console window class and the frame-callback behaviour it relies
+/// on were only ever observed on this one.
+const TESTED_HYPRLAND: &str = "0.56";
+
+/// What isolated mode needs from the environment. Read once, so the checks below
+/// stay pure — `doctor` requires no session, and neither does asserting it.
+struct AgentProbe {
+    binary: bool,
+    /// First line of `hyprctl version`, or `None` when it could not be read.
+    version: Option<String>,
+    sessions_dir: PathBuf,
+    sessions_writable: bool,
+}
+
+/// The version token of a `hyprctl version` line, e.g. `0.56.0` out of
+/// `Hyprland 0.56.0 built from branch …`.
+fn version_number(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .map(|token| token.trim_start_matches('v'))
+        .find(|token| token.contains('.') && token.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+fn agent_checks(probe: &AgentProbe, report: &mut Report) {
+    let binary = isolated::NESTED_BINARY;
+    report.check(
+        probe.binary,
+        &format!("{binary} found on PATH — an agent desktop is a nested {binary}"),
+        &format!(
+            "{binary} not found on PATH — `session start --isolated` cannot spawn an agent desktop"
+        ),
+    );
+
+    match probe.version.as_deref().and_then(version_number) {
+        Some(version) if version.starts_with(TESTED_HYPRLAND) => report.ok(&format!(
+            "Hyprland {version} is the version agent desktops were validated on"
+        )),
+        Some(version) => report.warn(&format!(
+            "Hyprland {version}: agent desktops were validated on {TESTED_HYPRLAND} — the nested \
+             spawn, the console window class and the frame-callback behaviour captures depend on \
+             may differ"
+        )),
+        None => report.warn(&format!(
+            "no version number in `hyprctl version` — agent desktops were validated on Hyprland \
+             {TESTED_HYPRLAND}"
+        )),
+    }
+
+    let dir = probe.sessions_dir.display();
+    report.check(
+        probe.sessions_writable,
+        &format!("{dir} is writable — sessions can be claimed"),
+        &format!("{dir} is not writable — no session can be claimed there"),
+    );
+}
+
+fn doctor() -> Result<String, Error> {
+    let mut report = Report::default();
+
+    let version = match hypr::version() {
+        Ok(version) => {
+            let first_line = version.lines().next().unwrap_or("unknown").to_owned();
+            report.ok(&first_line);
+            Some(first_line)
+        }
+        Err(error) => {
+            report.fail(&format!("hyprctl: {error}"));
+            None
         }
     };
 
-    match hypr::version() {
-        Ok(version) => {
-            let first_line = version.lines().next().unwrap_or("unknown").to_owned();
-            check(true, first_line, String::new());
-        }
-        Err(error) => check(false, String::new(), format!("hyprctl: {error}")),
-    }
-
-    check(
+    report.check(
         env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
-        "HYPRLAND_INSTANCE_SIGNATURE is set".to_owned(),
-        "HYPRLAND_INSTANCE_SIGNATURE is not set — not inside a Hyprland session?".to_owned(),
+        "HYPRLAND_INSTANCE_SIGNATURE is set",
+        "HYPRLAND_INSTANCE_SIGNATURE is not set — not inside a Hyprland session?",
     );
 
-    check(
+    report.check(
         on_path("grim"),
-        "grim found on PATH".to_owned(),
-        "grim not found on PATH — install grim for captures".to_owned(),
+        "grim found on PATH",
+        "grim not found on PATH — install grim for captures",
     );
 
     match session::runtime_dir() {
-        Ok(dir) => {
-            let probe = dir.join(".doctor-probe");
-            let writable = fs::create_dir_all(&dir).is_ok()
-                && fs::write(&probe, b"probe").is_ok()
-                && fs::remove_file(&probe).is_ok();
-            check(
-                writable,
-                format!("{} is writable", dir.display()),
-                format!("{} is not writable", dir.display()),
-            );
-        }
-        Err(error) => check(false, String::new(), error.to_string()),
+        Ok(dir) => report.check(
+            writable(&dir),
+            &format!("{} is writable", dir.display()),
+            &format!("{} is not writable", dir.display()),
+        ),
+        Err(error) => report.fail(&error.to_string()),
+    }
+
+    match session::sessions_dir() {
+        Ok(sessions_dir) => agent_checks(
+            &AgentProbe {
+                binary: isolated::nested_binary_present(),
+                version,
+                sessions_writable: writable(&sessions_dir),
+                sessions_dir,
+            },
+            &mut report,
+        ),
+        Err(error) => report.fail(&error.to_string()),
     }
 
     match pointer::probe_virtual_pointer() {
-        Ok(present) => check(
+        Ok(present) => report.check(
             present,
-            "zwlr_virtual_pointer_manager_v1 is available".to_owned(),
-            "compositor does not expose zwlr_virtual_pointer_manager_v1 — `click` will not work"
-                .to_owned(),
+            "zwlr_virtual_pointer_manager_v1 is available",
+            "compositor does not expose zwlr_virtual_pointer_manager_v1 — `click` will not work",
         ),
-        Err(error) => check(false, String::new(), error.to_string()),
+        Err(error) => report.fail(&error.to_string()),
     }
 
     match hypr::devices() {
@@ -574,24 +816,16 @@ fn doctor() -> Result<String, Error> {
                 || ("unknown".to_owned(), "unknown".to_owned()),
                 |k| (k.layout.clone(), k.active_keymap.clone()),
             );
-            lines.push(format!(
-                "info  main keyboard layout `{layout}` (active keymap `{keymap}`) — `type` \
-                 maps characters through US shift pairs; accented characters need a keymap \
-                 exposing them (e.g. fr)"
+            report.info(&format!(
+                "main keyboard layout `{layout}` (active keymap `{keymap}`) — `type` maps \
+                 characters through US shift pairs; accented characters need a keymap exposing \
+                 them (e.g. fr)"
             ));
         }
-        Err(error) => {
-            failures += 1;
-            lines.push(format!("FAIL  hyprctl devices: {error}"));
-        }
+        Err(error) => report.fail(&format!("hyprctl devices: {error}")),
     }
 
-    let report = lines.join("\n");
-    if failures == 0 {
-        Ok(report)
-    } else {
-        Err(Error::DoctorFailed { report, failures })
-    }
+    report.finish()
 }
 
 #[cfg(test)]
@@ -601,14 +835,65 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, SessionCommand, WindowSession, serialize_windows, sizes_mismatch};
-    use crate::hypr::Client;
-    use crate::session::{self, Disposition, Shared, TrackedWindow};
+    use super::{
+        AgentProbe, Cli, Command, Report, SessionCommand, TESTED_HYPRLAND, WindowSession,
+        agent_checks, agent_status_value, serialize_windows, sizes_mismatch, version_number,
+    };
+    use crate::error::Error;
+    use crate::hypr::{Client, Monitor};
+    use crate::isolated::LiveInstance;
+    use crate::session::{
+        self, Disposition, Instance, Isolated, ModeState, Session, Shared, TrackedWindow,
+    };
+    use std::path::PathBuf;
 
     const CLIENTS_JSON: &str = include_str!("../fixtures/clients.json");
+    const INSTANCE_CLIENTS_JSON: &str = include_str!("../fixtures/clients-ambiguous.json");
+    const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
 
     fn clients() -> Result<Vec<Client>, serde_json::Error> {
         serde_json::from_str(CLIENTS_JSON)
+    }
+
+    fn instance_clients() -> Result<Vec<Client>, serde_json::Error> {
+        serde_json::from_str(INSTANCE_CLIENTS_JSON)
+    }
+
+    fn monitors() -> Result<Vec<Monitor>, serde_json::Error> {
+        serde_json::from_str(MONITORS_JSON)
+    }
+
+    fn agent_state(active: Option<&str>) -> Isolated {
+        Isolated {
+            output: "hyprpilot-alpha".to_owned(),
+            workspace: "agent-alpha".to_owned(),
+            size: [1920, 1080],
+            shown: false,
+            active_address: active.map(str::to_owned),
+            instance: Instance::Live {
+                signature: "beef_1700000000".to_owned(),
+                wayland_display: "wayland-3".to_owned(),
+                pid: 4242,
+                console_address: "0xc0ff33".to_owned(),
+            },
+        }
+    }
+
+    fn agent_session(isolated: &Isolated) -> Session {
+        Session {
+            schema_version: session::SCHEMA_VERSION,
+            name: "alpha".to_owned(),
+            state: ModeState::Isolated(isolated.clone()),
+        }
+    }
+
+    fn agent_instance() -> LiveInstance<'static> {
+        LiveInstance {
+            signature: "beef_1700000000",
+            wayland_display: "wayland-3",
+            pid: 4242,
+            console: "0xc0ff33",
+        }
     }
 
     fn tracked(client: &Client) -> TrackedWindow {
@@ -863,7 +1148,7 @@ mod tests {
     fn windows_with_valid_session_marks_tracked_and_active_addresses()
     -> Result<(), Box<dyn StdError>> {
         let clients = clients()?;
-        let session = WindowSession::Valid(valid_session(&clients));
+        let session = WindowSession::Shared(valid_session(&clients));
         let raw = serialize_windows(&clients, None, &session)?;
         let rows: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
 
@@ -897,5 +1182,274 @@ mod tests {
     fn windows_without_clients_is_an_empty_json_array() -> Result<(), Box<dyn StdError>> {
         assert_eq!(serialize_windows(&[], None, &WindowSession::Absent)?, "[]");
         Ok(())
+    }
+
+    #[test]
+    fn agent_windows_keep_the_shared_fields_and_annotate_the_recorded_window()
+    -> Result<(), Box<dyn StdError>> {
+        let clients = instance_clients()?;
+        let host = clients_rows(&clients, Some(&clients[1]), &WindowSession::Absent)?;
+        let agent = clients_rows(
+            &clients,
+            // `focused` comes from the *instance's* active window (§5).
+            Some(&clients[3]),
+            &WindowSession::Agent(Some(clients[1].address.clone())),
+        )?;
+
+        assert_eq!(keys_of(&host[0])?, keys_of(&agent[0])?);
+        assert_eq!(
+            agent
+                .iter()
+                .map(|row| (
+                    row["address"].as_str(),
+                    row["tracked"].as_bool(),
+                    row["active"].as_bool(),
+                    row["focused"].as_bool(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("0xaaa"), Some(false), Some(false), Some(false)),
+                // The recorded window is the tracked one and the active one.
+                (Some("0xbbb"), Some(true), Some(true), Some(false)),
+                (Some("0xccc"), Some(false), Some(false), Some(false)),
+                (Some("0xddd"), Some(false), Some(false), Some(true)),
+            ]
+        );
+
+        // A start that recorded nothing yet annotates every client as untracked.
+        let empty = clients_rows(&clients, None, &WindowSession::Agent(None))?;
+        assert!(
+            empty
+                .iter()
+                .all(|row| row["tracked"] == false && row["active"] == false),
+            "{empty:?}"
+        );
+        Ok(())
+    }
+
+    fn clients_rows(
+        clients: &[Client],
+        focused: Option<&Client>,
+        session: &WindowSession,
+    ) -> Result<Vec<serde_json::Value>, Box<dyn StdError>> {
+        Ok(serde_json::from_str(&serialize_windows(
+            clients, focused, session,
+        )?)?)
+    }
+
+    fn keys_of(row: &serde_json::Value) -> Result<BTreeSet<&str>, Box<dyn StdError>> {
+        Ok(row
+            .as_object()
+            .ok_or("window row is not an object")?
+            .keys()
+            .map(String::as_str)
+            .collect())
+    }
+
+    #[test]
+    fn session_show_and_hide_parse_with_the_session_flag_on_either_side()
+    -> Result<(), Box<dyn StdError>> {
+        for args in [
+            ["hyprpilot", "--session", "alpha", "session", "show"],
+            ["hyprpilot", "session", "show", "--session", "alpha"],
+        ] {
+            let cli = Cli::try_parse_from(args)?;
+            assert_eq!(cli.session.as_deref(), Some("alpha"), "{args:?}");
+            assert!(
+                matches!(cli.command, Command::Session(SessionCommand::Show)),
+                "{args:?}"
+            );
+        }
+        for args in [
+            ["hyprpilot", "--session", "beta", "session", "hide"],
+            ["hyprpilot", "session", "hide", "--session", "beta"],
+        ] {
+            let cli = Cli::try_parse_from(args)?;
+            assert_eq!(cli.session.as_deref(), Some("beta"), "{args:?}");
+            assert!(
+                matches!(cli.command, Command::Session(SessionCommand::Hide)),
+                "{args:?}"
+            );
+        }
+        // Neither takes an argument: a stray one is a parse error, not a session
+        // name.
+        assert!(Cli::try_parse_from(["hyprpilot", "session", "show", "alpha"]).is_err());
+        assert!(Cli::try_parse_from(["hyprpilot", "session", "hide", "alpha"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_status_holds_exactly_these_keys() -> Result<(), Box<dyn StdError>> {
+        let isolated = agent_state(Some("0xbbb"));
+        let session = agent_session(&isolated);
+        let monitors = monitors()?;
+        let clients = instance_clients()?;
+        let window = clients
+            .iter()
+            .find(|client| client.address == "0xbbb")
+            .ok_or("instance fixture lost 0xbbb")?;
+
+        let value = agent_status_value(
+            &session,
+            &isolated,
+            agent_instance(),
+            Some(&monitors[1]),
+            Some(window),
+            Some(&monitors[1]),
+        );
+        let object = value.as_object().ok_or("status is not an object")?;
+
+        assert_eq!(
+            object.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            [
+                "schema_version",
+                "session",
+                "mode",
+                "workspace",
+                "shown",
+                "instance",
+                "active_address",
+                "configured_size",
+                "effective_size",
+                "size_mismatch",
+                "window",
+                "agent_output",
+                "output",
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            keys_of(&value["instance"])?,
+            ["signature", "wayland_display", "pid", "console_address"]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            keys_of(&value["window"])?,
+            [
+                "address",
+                "title",
+                "class",
+                "at",
+                "size",
+                "workspace",
+                "floating",
+                "monitor",
+                "pid"
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        );
+
+        assert_eq!(value["mode"], "isolated");
+        assert_eq!(value["session"], "alpha");
+        assert_eq!(value["workspace"], "agent-alpha");
+        assert_eq!(value["shown"], false);
+        assert_eq!(value["instance"]["signature"], "beef_1700000000");
+        assert_eq!(value["instance"]["wayland_display"], "wayland-3");
+        assert_eq!(value["instance"]["pid"], 4242);
+        assert_eq!(value["instance"]["console_address"], "0xc0ff33");
+        assert_eq!(value["active_address"], "0xbbb");
+        // The geometry is the instance's, and the fixture headless output is
+        // 1600x1000 against a configured 1920x1080: the drift is reported.
+        assert_eq!(value["window"]["at"], serde_json::json!([30, 40]));
+        assert_eq!(value["configured_size"], serde_json::json!([1920, 1080]));
+        assert_eq!(value["effective_size"], serde_json::json!([1600.0, 1000.0]));
+        assert_eq!(value["size_mismatch"], true);
+        // The host side of fact §2.2 is readable from `output` alone.
+        assert_eq!(value["output"]["name"], "headless-ci");
+        assert_eq!(value["output"]["active_workspace"], "proto");
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_status_keeps_its_keys_when_no_window_is_recorded() {
+        let isolated = agent_state(None);
+        let value = agent_status_value(
+            &agent_session(&isolated),
+            &isolated,
+            agent_instance(),
+            None,
+            None,
+            None,
+        );
+
+        assert!(value["active_address"].is_null());
+        assert!(value["window"].is_null());
+        assert!(value["agent_output"].is_null());
+        assert!(value["output"].is_null());
+        assert!(value["effective_size"].is_null());
+        assert!(value["size_mismatch"].is_null());
+        assert_eq!(value["configured_size"], serde_json::json!([1920, 1080]));
+    }
+
+    #[test]
+    fn doctor_checks_the_isolated_mode_without_a_session() -> Result<(), Box<dyn StdError>> {
+        let probe = |binary, version: Option<&str>, writable| AgentProbe {
+            binary,
+            version: version.map(str::to_owned),
+            sessions_dir: PathBuf::from("/run/user/1000/hyprpilot/sessions"),
+            sessions_writable: writable,
+        };
+        let lines = |probe: &AgentProbe| {
+            let mut report = Report::default();
+            agent_checks(probe, &mut report);
+            report.finish()
+        };
+
+        let report = lines(&probe(
+            true,
+            Some("Hyprland 0.56.0 built from branch main at commit abc"),
+            true,
+        ))?;
+        assert!(report.contains("ok    Hyprland found on PATH"), "{report}");
+        assert!(
+            report.contains("ok    Hyprland 0.56.0 is the version"),
+            "{report}"
+        );
+        assert!(
+            report.contains("ok    /run/user/1000/hyprpilot/sessions is writable"),
+            "{report}"
+        );
+
+        // Another version is a warning, not a failure.
+        let report = lines(&probe(
+            true,
+            Some("Hyprland 0.49.0 built from branch"),
+            true,
+        ))?;
+        assert!(report.contains("warn  Hyprland 0.49.0"), "{report}");
+        assert!(report.contains(TESTED_HYPRLAND), "{report}");
+        let report = lines(&probe(true, None, true))?;
+        assert!(report.contains("warn  no version number"), "{report}");
+
+        // A missing binary or an unwritable session directory is a failure.
+        let error = lines(&probe(false, Some("Hyprland 0.56.0"), false))
+            .err()
+            .ok_or("a broken environment passed doctor")?;
+        assert!(
+            matches!(error, Error::DoctorFailed { failures: 2, .. }),
+            "{error:?}"
+        );
+        let report = error.to_string();
+        assert!(
+            report.contains("FAIL  Hyprland not found on PATH"),
+            "{report}"
+        );
+        assert!(report.contains("session start --isolated"), "{report}");
+        assert!(report.contains("is not writable"), "{report}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_version_number_is_read_out_of_the_hyprctl_line() {
+        assert_eq!(
+            version_number("Hyprland 0.56.0 built from branch main at commit deadbeef"),
+            Some("0.56.0")
+        );
+        assert_eq!(version_number("Hyprland, v0.45.2"), Some("0.45.2"));
+        assert_eq!(version_number("Hyprland built from source"), None);
+        assert_eq!(version_number(""), None);
     }
 }

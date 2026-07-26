@@ -24,7 +24,8 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 use crate::error::Error;
 use crate::guard;
 use crate::hypr::{self, Ctl};
-use crate::session::{self, Instance, Isolated, ModeState};
+use crate::isolated;
+use crate::session::{self, Isolated, ModeState};
 
 const VIRTUAL_POINTER_INTERFACE: &str = "zwlr_virtual_pointer_manager_v1";
 const BUTTON_GAP: Duration = Duration::from_millis(30);
@@ -271,35 +272,34 @@ struct AgentTarget {
 }
 
 impl AgentTarget {
+    /// `isolated::live_instance` is the one gate for a dead or unfinished agent
+    /// desktop, so no pointer created here can land on the user's seat.
     fn resolve(name: &str, isolated: &Isolated, runtime_dir: &Path) -> Result<Self, Error> {
-        let Instance::Live {
-            signature,
-            wayland_display,
-            ..
-        } = &isolated.instance
-        else {
-            return Err(instance_pending(name));
-        };
-        let address = isolated
-            .active_address
-            .clone()
-            .ok_or_else(|| no_target(name))?;
-        Ok(Self {
-            signature: signature.clone(),
-            socket: socket_path(runtime_dir, wayland_display),
-            address,
-        })
+        let instance = isolated::live_instance(name, isolated)?;
+        Ok(Self::of(
+            instance,
+            isolated::recorded_window(name, isolated)?,
+            runtime_dir,
+        ))
+    }
+
+    fn of(instance: isolated::LiveInstance<'_>, address: &str, runtime_dir: &Path) -> Self {
+        Self {
+            signature: instance.signature.to_owned(),
+            socket: socket_path(runtime_dir, instance.wayland_display),
+            address: address.to_owned(),
+        }
     }
 }
 
 impl Route {
-    fn resolve(name: &str, pending: session::Pending) -> Result<Self, Error> {
+    fn resolve(name: &str, command: &'static str) -> Result<Self, Error> {
         match session::load(name)?.state {
             // Shared mode goes through `session::current_window`, which re-reads
             // the state and stays the single definition of the window a session
             // drives on the user's desktop.
             ModeState::Shared(_) => {
-                let (_, window) = session::current_window(name, pending)?;
+                let (_, window) = session::current_window(name, command)?;
                 Ok(Self::Shared { window })
             }
             ModeState::Isolated(isolated) => {
@@ -366,30 +366,6 @@ fn agent_window(target: &AgentTarget) -> Result<hypr::Client, Error> {
         .ok_or_else(|| Error::WindowGone(target.address.clone()))
 }
 
-/// An interrupted `session start --isolated` leaves a state with no nested
-/// compositor: refuse it, never fall back to the user's seat.
-fn instance_pending(name: &str) -> Error {
-    Error::Invalid {
-        what: "agent desktop",
-        value: name.to_owned(),
-        hint: format!(
-            "its nested compositor was never spawned (`session start --isolated` did not \
-             finish); run `hyprpilot --session {name} teardown`"
-        ),
-    }
-}
-
-fn no_target(name: &str) -> Error {
-    Error::Invalid {
-        what: "agent desktop",
-        value: name.to_owned(),
-        hint: format!(
-            "no window is tracked in it, its app never appeared; run \
-             `hyprpilot --session {name} teardown`"
-        ),
-    }
-}
-
 pub fn click(
     name: &str,
     x: i32,
@@ -399,7 +375,7 @@ pub fn click(
     absolute: bool,
     focus: bool,
 ) -> Result<String, Error> {
-    let route = Route::resolve(name, session::Pending::CLICK)?;
+    let route = Route::resolve(name, "click")?;
     let (gx, gy) = resolve_target(route.window(), x, y, absolute)?;
     let note = at_target(&route, gx, gy, focus, |pointer| {
         if double {
@@ -425,7 +401,7 @@ pub fn scroll(
     focus: bool,
 ) -> Result<String, Error> {
     let plan = detent_plan(dx, dy)?;
-    let route = Route::resolve(name, session::Pending::SCROLL)?;
+    let route = Route::resolve(name, "scroll")?;
     let (gx, gy) = resolve_target(route.window(), x, y, absolute)?;
     let note = at_target(&route, gx, gy, focus, |pointer| pointer.scroll(&plan))?;
     let mut amounts = Vec::new();
@@ -557,6 +533,7 @@ mod tests {
     use std::error::Error as StdError;
 
     use super::*;
+    use crate::session::Instance;
 
     const SIGNATURE: &str = "abcdef_1730000000";
     const RUNTIME_DIR: &str = "/run/user/1000";
@@ -616,18 +593,21 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_target_carries_the_instance_signature_socket_and_window()
-    -> Result<(), Box<dyn StdError>> {
-        let state = agent_state(live(), Some("0xdead"));
+    fn an_agent_target_carries_the_instance_signature_socket_and_window() {
+        let instance = isolated::LiveInstance {
+            signature: SIGNATURE,
+            wayland_display: "wayland-2",
+            pid: 4242,
+            console: "0xc0ff33",
+        };
         assert_eq!(
-            AgentTarget::resolve("alpha", &state, Path::new(RUNTIME_DIR))?,
+            AgentTarget::of(instance, "0xdead", Path::new(RUNTIME_DIR)),
             AgentTarget {
                 signature: SIGNATURE.to_owned(),
                 socket: PathBuf::from("/run/user/1000/wayland-2"),
                 address: "0xdead".to_owned(),
             }
         );
-        Ok(())
     }
 
     #[test]
@@ -660,13 +640,7 @@ mod tests {
             return Err("a pending instance has no seat to act on".into());
         };
         assert!(
-            matches!(
-                error,
-                Error::Invalid {
-                    what: "agent desktop",
-                    ..
-                }
-            ),
+            matches!(error, Error::AgentDesktopUnready { .. }),
             "{error:?}"
         );
         let message = error.to_string();
@@ -676,13 +650,18 @@ mod tests {
     }
 
     #[test]
-    fn a_live_instance_without_a_tracked_window_is_refused() -> Result<(), Box<dyn StdError>> {
-        let state = agent_state(live(), None);
+    fn a_dead_instance_is_refused_instead_of_reaching_the_users_seat()
+    -> Result<(), Box<dyn StdError>> {
+        // Pid 4242 does not carry this session's marker in the real `/proc`,
+        // which is exactly what a crashed nested compositor looks like; the probe
+        // itself is asserted against a fake `/proc` in `isolated`.
+        let state = agent_state(live(), Some("0xdead"));
         let Err(error) = AgentTarget::resolve("alpha", &state, Path::new(RUNTIME_DIR)) else {
-            return Err("no window address means no target".into());
+            return Err("a dead instance has no seat to act on".into());
         };
+        assert!(matches!(error, Error::AgentDesktopDead { .. }), "{error:?}");
         let message = error.to_string();
-        assert!(message.contains("no window is tracked"), "{message}");
+        assert!(message.contains("is dead"), "{message}");
         assert!(message.contains("--session alpha teardown"), "{message}");
         Ok(())
     }

@@ -49,13 +49,20 @@ pub enum Error {
         path: PathBuf,
         found: Option<u32>,
     },
-    /// Isolated mode is routed away from the shared code path until the slice
-    /// that implements it lands.
-    IsolatedPending {
+    /// A shared-mode-only code path reached with an isolated session. Every
+    /// command routes by mode before its first compositor read, so this is a
+    /// routing bug — typed, rather than a silent fall-through that would drive
+    /// the user's own windows.
+    ModeRouting {
         command: &'static str,
-        slice: &'static str,
     },
     IsolatedUnsupported {
+        command: &'static str,
+        hint: &'static str,
+    },
+    /// The mirror of `IsolatedUnsupported`: a command only an agent desktop can
+    /// answer, asked of a shared session.
+    SharedUnsupported {
         command: &'static str,
         hint: &'static str,
     },
@@ -75,6 +82,14 @@ pub enum Error {
     AgentDesktopUnready {
         session: String,
         reason: String,
+    },
+    /// The recorded nested compositor is gone (crash, or killed by hand): every
+    /// isolated command refuses here instead of timing out on an instance that
+    /// will never answer, or falling back to the user's desktop.
+    AgentDesktopDead {
+        session: String,
+        signature: String,
+        pid: u32,
     },
     /// Teardown removed everything it owns but one restoration step failed; the
     /// summary still says what was cleaned, so the session is known to be gone.
@@ -161,15 +176,13 @@ impl fmt::Display for Error {
             Self::UnsupportedSessionVersion { path, found } => {
                 write_unsupported_version(f, path, *found)
             }
-            Self::IsolatedPending { command, slice } => write!(
-                f,
-                "`{command}` is not implemented for isolated sessions yet (slice {slice}); no \
-                 compositor state was touched"
-            ),
-            Self::IsolatedUnsupported { command, hint } => write!(
-                f,
-                "`{command}` is not supported for isolated sessions — {hint}"
-            ),
+            Self::ModeRouting { command } => write_mode_routing(f, command),
+            Self::IsolatedUnsupported { command, hint } => {
+                write_unsupported(f, command, "isolated", hint)
+            }
+            Self::SharedUnsupported { command, hint } => {
+                write_unsupported(f, command, "shared", hint)
+            }
             Self::NestedRefused { session } => write_nested_refused(f, session),
             Self::AgentDesktopAlive { session, detail } => {
                 write_agent_desktop_alive(f, session, detail)
@@ -177,6 +190,11 @@ impl fmt::Display for Error {
             Self::AgentDesktopUnready { session, reason } => {
                 write!(f, "agent desktop `{session}` is not ready: {reason}")
             }
+            Self::AgentDesktopDead {
+                session,
+                signature,
+                pid,
+            } => write_agent_desktop_dead(f, session, signature, *pid),
             Self::TeardownIncomplete { summary, failures } => {
                 write!(f, "{summary}")?;
                 write_restore_failures(f, "but the desktop was not fully restored:", failures)
@@ -234,6 +252,27 @@ impl fmt::Display for Error {
     }
 }
 
+fn write_mode_routing(f: &mut fmt::Formatter<'_>, command: &str) -> fmt::Result {
+    write!(
+        f,
+        "internal error: `{command}` reached the shared-mode path with an agent desktop session; \
+         no compositor state was touched — every command routes by mode before its first \
+         compositor read, so this is a bug worth reporting"
+    )
+}
+
+fn write_unsupported(
+    f: &mut fmt::Formatter<'_>,
+    command: &str,
+    mode: &str,
+    hint: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "`{command}` is not supported for {mode} sessions — {hint}"
+    )
+}
+
 fn write_nested_refused(f: &mut fmt::Formatter<'_>, session: &str) -> fmt::Result {
     write!(
         f,
@@ -289,6 +328,20 @@ fn write_agent_desktop_alive(
         "agent desktop `{session}` still has live processes ({detail}) — refusing to remove its \
          headless output, since its console window would land on the user's desktop; run \
          `hyprpilot --session {session} teardown` again"
+    )
+}
+
+fn write_agent_desktop_dead(
+    f: &mut fmt::Formatter<'_>,
+    session: &str,
+    signature: &str,
+    pid: u32,
+) -> fmt::Result {
+    write!(
+        f,
+        "agent desktop `{session}` is dead: its nested compositor (instance {signature}, pid \
+         {pid}) is gone, so nothing was sent anywhere — run `hyprpilot --session {session} \
+         teardown` to remove its headless output and state, then start it again"
     )
 }
 

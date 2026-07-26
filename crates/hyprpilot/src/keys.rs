@@ -17,7 +17,8 @@ use std::time::Duration;
 use crate::error::Error;
 use crate::guard;
 use crate::hypr::{self, Ctl};
-use crate::session::{self, Instance, Isolated, ModeState};
+use crate::isolated;
+use crate::session::{self, Isolated, ModeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Modifier {
@@ -178,13 +179,13 @@ enum Route {
 }
 
 impl Route {
-    fn resolve(name: &str, pending: session::Pending) -> Result<Self, Error> {
+    fn resolve(name: &str, command: &'static str) -> Result<Self, Error> {
         match session::load(name)?.state {
             // Shared mode goes through `session::current_window`, which re-reads
             // the state and stays the single definition of the window a session
             // drives on the user's desktop.
             ModeState::Shared(_) => {
-                let (_, window) = session::current_window(name, pending)?;
+                let (_, window) = session::current_window(name, command)?;
                 Ok(Self::Shared {
                     address: window.address,
                 })
@@ -195,18 +196,15 @@ impl Route {
 
     /// The target of an agent desktop: the signature of its nested compositor
     /// and the window address recorded when the app was launched inside it.
+    /// `isolated::live_instance` is the one gate for a dead or unfinished
+    /// desktop, so no dispatch here can go looking for the user's own windows.
     fn agent(name: &str, isolated: &Isolated) -> Result<Self, Error> {
-        let Instance::Live { signature, .. } = &isolated.instance else {
-            return Err(instance_pending(name));
-        };
-        let address = isolated
-            .active_address
-            .clone()
-            .ok_or_else(|| no_target(name))?;
-        ensure_window(signature, &address)?;
+        let instance = isolated::live_instance(name, isolated)?;
+        let address = isolated::recorded_window(name, isolated)?;
+        ensure_window(instance.signature, address)?;
         Ok(Self::Isolated {
-            signature: signature.clone(),
-            address,
+            signature: instance.signature.to_owned(),
+            address: address.to_owned(),
         })
     }
 
@@ -268,30 +266,6 @@ impl Route {
     }
 }
 
-/// An interrupted `session start --isolated` leaves a state with no nested
-/// compositor: refuse it, never fall back to the user's desktop.
-fn instance_pending(name: &str) -> Error {
-    Error::Invalid {
-        what: "agent desktop",
-        value: name.to_owned(),
-        hint: format!(
-            "its nested compositor was never spawned (`session start --isolated` did not \
-             finish); run `hyprpilot --session {name} teardown`"
-        ),
-    }
-}
-
-fn no_target(name: &str) -> Error {
-    Error::Invalid {
-        what: "agent desktop",
-        value: name.to_owned(),
-        hint: format!(
-            "no window is tracked in it, its app never appeared; run \
-             `hyprpilot --session {name} teardown`"
-        ),
-    }
-}
-
 /// The window is read back from the instance before anything is dispatched, so
 /// a stale address fails here with the same error as in shared mode instead of
 /// depending on what the dispatcher answers for a window it cannot find.
@@ -338,7 +312,7 @@ pub fn send_keys(
     delay_ms: u64,
     focus: bool,
 ) -> Result<String, Error> {
-    let route = Route::resolve(name, session::Pending::KEY)?;
+    let route = Route::resolve(name, "key")?;
     let chords = raw_chords
         .iter()
         .map(|raw| parse_chord(raw))
@@ -352,7 +326,7 @@ pub fn send_keys(
 }
 
 pub fn type_text(name: &str, text: &str, delay_ms: u64, focus: bool) -> Result<String, Error> {
-    let route = Route::resolve(name, session::Pending::TYPE)?;
+    let route = Route::resolve(name, "type")?;
     let chords = text
         .chars()
         .map(|c| {
@@ -375,10 +349,9 @@ pub fn type_text(name: &str, text: &str, delay_ms: u64, focus: bool) -> Result<S
 mod tests {
     use std::error::Error as StdError;
 
-    use super::{
-        Chord, Ctl, Instance, Isolated, Modifier, Route, char_to_keysym, parse_chord, shortcut_arg,
-    };
+    use super::{Chord, Ctl, Isolated, Modifier, Route, char_to_keysym, parse_chord, shortcut_arg};
     use crate::error::Error;
+    use crate::session::Instance;
 
     const SIGNATURE: &str = "abcdef_1730000000";
 
@@ -455,13 +428,7 @@ mod tests {
             return Err("a pending instance has no compositor to send to".into());
         };
         assert!(
-            matches!(
-                error,
-                Error::Invalid {
-                    what: "agent desktop",
-                    ..
-                }
-            ),
+            matches!(error, Error::AgentDesktopUnready { .. }),
             "{error:?}"
         );
         let message = error.to_string();
@@ -471,13 +438,17 @@ mod tests {
     }
 
     #[test]
-    fn a_live_instance_without_a_tracked_window_is_refused() -> Result<(), Box<dyn StdError>> {
-        let state = agent_state(live(), None);
+    fn a_dead_instance_is_refused_instead_of_reaching_the_host() -> Result<(), Box<dyn StdError>> {
+        // Pid 4242 does not carry this session's marker in the real `/proc`,
+        // which is exactly what a crashed nested compositor looks like; the probe
+        // itself is asserted against a fake `/proc` in `isolated`.
+        let state = agent_state(live(), Some("0xdead"));
         let Err(error) = Route::agent("alpha", &state) else {
-            return Err("no window address means no target".into());
+            return Err("a dead instance has no compositor to send chords to".into());
         };
+        assert!(matches!(error, Error::AgentDesktopDead { .. }), "{error:?}");
         let message = error.to_string();
-        assert!(message.contains("no window is tracked"), "{message}");
+        assert!(message.contains("is dead"), "{message}");
         assert!(message.contains("--session alpha teardown"), "{message}");
         Ok(())
     }
