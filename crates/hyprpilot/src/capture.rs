@@ -129,8 +129,8 @@ fn ensure_capture_visible(expected_workspace: &str, monitor: &hypr::Monitor) -> 
 }
 
 impl Frame {
-    fn for_session(full: bool) -> Result<Self, Error> {
-        let (session, window) = session::current_window()?;
+    fn for_session(name: &str, pending: session::Pending, full: bool) -> Result<Self, Error> {
+        let (session, window) = session::current_window(name, pending)?;
         let monitor = session::find_output(&session.output)?.ok_or_else(|| Error::Tool {
             command: "hyprctl monitors".to_owned(),
             message: format!("session output {} no longer exists", session.output),
@@ -178,8 +178,13 @@ fn next_shot_name(dir: &Path) -> u32 {
     max + 1
 }
 
-pub fn shot(name: Option<&str>, full: bool, out_dir: Option<&Path>) -> Result<String, Error> {
-    let frame = Frame::for_session(full)?;
+pub fn shot(
+    session_name: &str,
+    name: Option<&str>,
+    full: bool,
+    out_dir: Option<&Path>,
+) -> Result<String, Error> {
+    let frame = Frame::for_session(session_name, session::Pending::SHOT, full)?;
 
     let dir = out_dir.map_or_else(
         || session::runtime_dir().map(|dir| dir.join("shots")),
@@ -240,8 +245,8 @@ pub fn parse_timeout(raw: &str) -> Result<Duration, Error> {
     Ok(Duration::from_secs_f64(value))
 }
 
-pub fn wait(mode: &WaitMode, timeout: Duration) -> Result<String, Error> {
-    let frame = Frame::for_session(false)?;
+pub fn wait(session_name: &str, mode: &WaitMode, timeout: Duration) -> Result<String, Error> {
+    let frame = Frame::for_session(session_name, session::Pending::WAIT, false)?;
     let dir = session::runtime_dir()?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io {
         context: format!("creating {}", dir.display()),

@@ -17,6 +17,9 @@ use crate::{capture, hypr, keys, pointer, session};
              without touching the user's desktop"
 )]
 struct Cli {
+    /// Session to act on; defaults to `$HYPRPILOT_SESSION`, else `default`
+    #[arg(long, global = true, value_name = "NAME")]
+    session: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -168,6 +171,10 @@ enum Command {
 enum SessionCommand {
     /// Attach to (or launch) the app and park it on a headless output
     Start {
+        /// Give this session its own nested Hyprland (agent desktop) instead
+        /// of driving the user's windows
+        #[arg(long)]
+        isolated: bool,
         /// Command to launch if no window matches yet
         #[arg(long, value_name = "CMD")]
         app: Option<String>,
@@ -222,19 +229,25 @@ impl From<ButtonArg> for pointer::MouseButton {
 }
 
 pub fn run() -> Result<String, Error> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let session_name = session::resolve_name(cli.session.as_deref())?;
+    let name = session_name.as_str();
+    match cli.command {
         Command::Session(SessionCommand::Start {
+            isolated,
             app,
             match_title,
             match_class,
             size,
         }) => session::start(
+            name,
+            isolated,
             app.as_deref(),
             match_title.as_deref(),
             match_class.as_deref(),
             &size,
         ),
-        Command::Session(SessionCommand::Resize { size }) => session::resize(&size),
+        Command::Session(SessionCommand::Resize { size }) => session::resize(name, &size),
         Command::Target(TargetArgs {
             address,
             match_title,
@@ -245,11 +258,15 @@ pub fn run() -> Result<String, Error> {
             on_teardown,
         }) => {
             let wait = wait.as_deref().map(capture::parse_timeout).transpose()?;
-            session::target(
-                address.as_deref(),
-                match_title.as_deref(),
-                match_class.as_deref(),
+            let criteria = session::Criteria {
+                address: address.as_deref(),
+                title: match_title.as_deref(),
+                class: match_class.as_deref(),
                 pid,
+            };
+            session::target(
+                name,
+                &criteria,
                 untracked,
                 wait,
                 on_teardown.map(Into::into),
@@ -259,12 +276,12 @@ pub fn run() -> Result<String, Error> {
             keys,
             delay_ms,
             focus,
-        } => crate::keys::send_keys(&keys, delay_ms, focus),
+        } => crate::keys::send_keys(name, &keys, delay_ms, focus),
         Command::Type {
             text,
             delay_ms,
             focus,
-        } => keys::type_text(&text, delay_ms, focus),
+        } => keys::type_text(name, &text, delay_ms, focus),
         Command::Click {
             x,
             y,
@@ -272,7 +289,7 @@ pub fn run() -> Result<String, Error> {
             double,
             absolute,
             focus,
-        } => pointer::click(x, y, button.into(), double, absolute, focus),
+        } => pointer::click(name, x, y, button.into(), double, absolute, focus),
         Command::Scroll {
             x,
             y,
@@ -280,8 +297,12 @@ pub fn run() -> Result<String, Error> {
             dx,
             absolute,
             focus,
-        } => pointer::scroll(x, y, dx, dy, absolute, focus),
-        Command::Shot { name, full, out } => capture::shot(name.as_deref(), full, out.as_deref()),
+        } => pointer::scroll(name, x, y, dx, dy, absolute, focus),
+        Command::Shot {
+            name: file_name,
+            full,
+            out,
+        } => capture::shot(name, file_name.as_deref(), full, out.as_deref()),
         Command::Wait {
             changed_from,
             timeout,
@@ -290,18 +311,18 @@ pub fn run() -> Result<String, Error> {
             let mode =
                 changed_from.map_or(capture::WaitMode::Stable, capture::WaitMode::ChangedFrom);
             let timeout = capture::parse_timeout(&timeout)?;
-            capture::wait(&mode, timeout)
+            capture::wait(name, &mode, timeout)
         }
-        Command::Status => status(),
-        Command::Windows => windows(),
+        Command::Status => status(name),
+        Command::Windows => windows(name),
         Command::Doctor => doctor(),
-        Command::Teardown { kill, close } => session::teardown(kill, close),
+        Command::Teardown { kill, close } => session::teardown(name, kill, close),
     }
 }
 
 enum WindowSession {
     Absent,
-    Valid(session::Session),
+    Valid(session::Shared),
     Unknown,
 }
 
@@ -370,16 +391,20 @@ fn serialize_windows(
     })
 }
 
-fn windows() -> Result<String, Error> {
-    let clients = hypr::clients()?;
-    let focused = hypr::active_window()?;
-    let session = match session::load() {
-        Ok(session) => WindowSession::Valid(session),
+fn windows(name: &str) -> Result<String, Error> {
+    // The session is resolved before the first compositor read: an isolated
+    // session lists the clients of its own instance, not the user's, so
+    // querying the host here would print a plausible, wrong answer.
+    let session = match session::load(name) {
+        Ok(session) => match session.state {
+            session::ModeState::Shared(shared) => WindowSession::Valid(shared),
+            session::ModeState::Isolated(_) => return Err(session::Pending::WINDOWS.error()),
+        },
         Err(Error::NoSession) => WindowSession::Absent,
         Err(
             error @ (Error::Json { .. }
             | Error::CorruptSession { .. }
-            | Error::UnsupportedSessionVersion(_)),
+            | Error::UnsupportedSessionVersion { .. }),
         ) => {
             let _ = writeln!(
                 std::io::stderr(),
@@ -390,11 +415,15 @@ fn windows() -> Result<String, Error> {
         }
         Err(error) => return Err(error),
     };
+    let clients = hypr::clients()?;
+    let focused = hypr::active_window()?;
     serialize_windows(&clients, focused.as_ref(), &session)
 }
 
-fn status() -> Result<String, Error> {
-    let state = session::load()?;
+fn status(name: &str) -> Result<String, Error> {
+    let session = session::load(name)?;
+    let mode = session.mode();
+    let state = session.shared(session::Pending::STATUS)?;
     let clients = hypr::clients()?;
     let window = clients
         .iter()
@@ -419,7 +448,9 @@ fn status() -> Result<String, Error> {
     let size_mismatch = effective_size.map(|size| sizes_mismatch(state.size, size));
 
     let value = serde_json::json!({
-        "schema_version": state.schema_version,
+        "schema_version": session.schema_version,
+        "session": session.name,
+        "mode": mode,
         "windows": &state.windows,
         "active_address": &state.active_address,
         "parked_windows": parked_windows,
@@ -568,7 +599,7 @@ mod tests {
 
     use super::{Cli, Command, SessionCommand, WindowSession, serialize_windows, sizes_mismatch};
     use crate::hypr::Client;
-    use crate::session::{Disposition, Session, TrackedWindow};
+    use crate::session::{self, Disposition, Shared, TrackedWindow};
 
     const CLIENTS_JSON: &str = include_str!("../fixtures/clients.json");
 
@@ -588,9 +619,8 @@ mod tests {
         }
     }
 
-    fn valid_session(clients: &[Client]) -> Session {
-        Session {
-            schema_version: 2,
+    fn valid_session(clients: &[Client]) -> Shared {
+        Shared {
             output: "hyprpilot".to_owned(),
             output_created: true,
             active_workspace: "hyprpilot".to_owned(),
@@ -615,7 +645,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["hyprpilot", "target", "--untracked"]),
             Ok(Cli {
-                command: Command::Target(_)
+                command: Command::Target(_),
+                ..
             })
         ));
     }
@@ -624,12 +655,63 @@ mod tests {
     fn session_resize_parses_size_with_existing_parser() -> Result<(), Box<dyn StdError>> {
         let Cli {
             command: Command::Session(SessionCommand::Resize { size }),
+            ..
         } = Cli::try_parse_from(["hyprpilot", "session", "resize", "1200x800"])?
         else {
             return Err("session resize did not parse".into());
         };
 
-        assert_eq!(crate::session::parse_size(&size)?, (1200, 800));
+        assert_eq!(session::parse_size(&size)?, (1200, 800));
+        Ok(())
+    }
+
+    #[test]
+    fn session_flag_parses_before_and_after_the_subcommand() -> Result<(), Box<dyn StdError>> {
+        for args in [
+            ["hyprpilot", "--session", "alpha", "shot"],
+            ["hyprpilot", "shot", "--session", "alpha"],
+        ] {
+            let cli = Cli::try_parse_from(args)?;
+            assert_eq!(cli.session.as_deref(), Some("alpha"), "{args:?}");
+        }
+        assert_eq!(Cli::try_parse_from(["hyprpilot", "shot"])?.session, None);
+        Ok(())
+    }
+
+    #[test]
+    fn session_start_parses_isolated_flag() -> Result<(), Box<dyn StdError>> {
+        let Cli {
+            command: Command::Session(SessionCommand::Start { isolated, size, .. }),
+            session,
+        } = Cli::try_parse_from([
+            "hyprpilot",
+            "--session",
+            "agent-1",
+            "session",
+            "start",
+            "--isolated",
+            "--app",
+            "my-app",
+            "--match-title",
+            "My App",
+        ])?
+        else {
+            return Err("session start --isolated did not parse".into());
+        };
+
+        assert!(isolated);
+        assert_eq!(session.as_deref(), Some("agent-1"));
+        assert_eq!(session::parse_size(&size)?, (1600, 1000));
+        assert!(
+            !matches!(
+                Cli::try_parse_from(["hyprpilot", "session", "start", "--match-title", "T"]),
+                Ok(Cli {
+                    command: Command::Session(SessionCommand::Start { isolated: true, .. }),
+                    ..
+                })
+            ),
+            "shared start must not be isolated by default"
+        );
         Ok(())
     }
 
@@ -659,7 +741,8 @@ mod tests {
                 "close",
             ]),
             Ok(Cli {
-                command: Command::Target(_)
+                command: Command::Target(_),
+                ..
             })
         ));
     }
@@ -669,25 +752,29 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["hyprpilot", "key", "--focus", "Return"]),
             Ok(Cli {
-                command: Command::Key { focus: true, .. }
+                command: Command::Key { focus: true, .. },
+                ..
             })
         ));
         assert!(matches!(
             Cli::try_parse_from(["hyprpilot", "type", "--focus", "text"]),
             Ok(Cli {
-                command: Command::Type { focus: true, .. }
+                command: Command::Type { focus: true, .. },
+                ..
             })
         ));
         assert!(matches!(
             Cli::try_parse_from(["hyprpilot", "click", "--focus", "20", "20"]),
             Ok(Cli {
-                command: Command::Click { focus: true, .. }
+                command: Command::Click { focus: true, .. },
+                ..
             })
         ));
         assert!(matches!(
             Cli::try_parse_from(["hyprpilot", "scroll", "--focus", "20", "20", "--dy", "1",]),
             Ok(Cli {
-                command: Command::Scroll { focus: true, .. }
+                command: Command::Scroll { focus: true, .. },
+                ..
             })
         ));
     }

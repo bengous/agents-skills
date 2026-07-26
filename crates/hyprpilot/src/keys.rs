@@ -184,8 +184,13 @@ fn enrich_key_error(error: Error, chord: &Chord) -> Error {
     }
 }
 
-pub fn send_keys(raw_chords: &[String], delay_ms: u64, focus: bool) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
+pub fn send_keys(
+    name: &str,
+    raw_chords: &[String],
+    delay_ms: u64,
+    focus: bool,
+) -> Result<String, Error> {
+    let (_, window) = session::current_window(name, session::Pending::KEY)?;
     let chords = raw_chords
         .iter()
         .map(|raw| parse_chord(raw))
@@ -216,8 +221,8 @@ pub fn send_keys(raw_chords: &[String], delay_ms: u64, focus: bool) -> Result<St
     ))
 }
 
-pub fn type_text(text: &str, delay_ms: u64, focus: bool) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
+pub fn type_text(name: &str, text: &str, delay_ms: u64, focus: bool) -> Result<String, Error> {
+    let (_, window) = session::current_window(name, session::Pending::TYPE)?;
     let chords = text
         .chars()
         .map(|c| {

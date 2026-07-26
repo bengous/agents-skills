@@ -30,12 +30,35 @@ pub enum Error {
     },
     Env(&'static str),
     NoSession,
-    SessionExists(PathBuf),
+    SessionExists {
+        name: String,
+        path: PathBuf,
+    },
+    /// The shared output is a singleton, so a second shared session is refused
+    /// whatever its name.
+    SharedSessionExists {
+        name: String,
+    },
     CorruptSession {
         path: PathBuf,
         message: String,
     },
-    UnsupportedSessionVersion(u32),
+    /// `found` is `None` for the unversioned pre-v2 format, or when the file
+    /// cannot be parsed far enough to tell.
+    UnsupportedSessionVersion {
+        path: PathBuf,
+        found: Option<u32>,
+    },
+    /// Isolated mode is routed away from the shared code path until the slice
+    /// that implements it lands.
+    IsolatedPending {
+        command: &'static str,
+        slice: &'static str,
+    },
+    IsolatedUnsupported {
+        command: &'static str,
+        hint: &'static str,
+    },
     SweepRefused {
         output: String,
         reason: String,
@@ -84,10 +107,18 @@ impl fmt::Display for Error {
             Self::NoSession => {
                 write!(f, "no active session — run `hyprpilot session start` first")
             }
-            Self::SessionExists(path) => write!(
+            Self::SessionExists { name, path } => write!(
                 f,
-                "a session is already active ({}) — run `hyprpilot teardown` first",
+                "session `{name}` is already active ({}) — run \
+                 `hyprpilot --session {name} teardown` first",
                 path.display()
+            ),
+            Self::SharedSessionExists { name } => write!(
+                f,
+                "shared session `{name}` is already active and the shared output \
+                 `{}` is a singleton — run `hyprpilot --session {name} teardown` first, or start \
+                 an agent desktop with `--isolated`",
+                crate::session::OUTPUT_NAME
             ),
             Self::CorruptSession { path, message } => {
                 write!(
@@ -97,14 +128,18 @@ impl fmt::Display for Error {
                 )?;
                 write_session_recovery(f)
             }
-            Self::UnsupportedSessionVersion(version) => {
-                write!(
-                    f,
-                    "session schema version {version} is unsupported (expected 2); no output was \
-                     removed. "
-                )?;
-                write_session_recovery(f)
+            Self::UnsupportedSessionVersion { path, found } => {
+                write_unsupported_version(f, path, *found)
             }
+            Self::IsolatedPending { command, slice } => write!(
+                f,
+                "`{command}` is not implemented for isolated sessions yet (slice {slice}); no \
+                 compositor state was touched"
+            ),
+            Self::IsolatedUnsupported { command, hint } => write!(
+                f,
+                "`{command}` is not supported for isolated sessions — {hint}"
+            ),
             Self::SweepRefused { output, reason } => write!(
                 f,
                 "refusing to remove orphan output {output}: {reason}; no output was removed"
@@ -159,6 +194,33 @@ impl fmt::Display for Error {
             }
         }
     }
+}
+
+fn write_unsupported_version(
+    f: &mut fmt::Formatter<'_>,
+    path: &std::path::Path,
+    found: Option<u32>,
+) -> fmt::Result {
+    let expected = crate::session::SCHEMA_VERSION;
+    let path = path.display();
+    match found {
+        Some(version) => write!(
+            f,
+            "session state {path} has schema version {version}, this build expects {expected}"
+        )?,
+        None => write!(
+            f,
+            "session state {path} is unversioned (pre-v2 format), this build expects schema \
+             version {expected}"
+        )?,
+    }
+    write!(
+        f,
+        " — no output was removed. `hyprpilot teardown` still clears a pre-v3 session left at \
+         $XDG_RUNTIME_DIR/hyprpilot/session.json; a state file anywhere else has to be removed by \
+         hand, once no window depends on it. "
+    )?;
+    write_session_recovery(f)
 }
 
 fn write_session_recovery(f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -210,6 +210,7 @@ fn f64_to_u32(value: f64) -> u32 {
 }
 
 pub fn click(
+    name: &str,
     x: i32,
     y: i32,
     button: MouseButton,
@@ -217,7 +218,7 @@ pub fn click(
     absolute: bool,
     focus: bool,
 ) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
+    let (_, window) = session::current_window(name, session::Pending::CLICK)?;
     let (gx, gy) = resolve_target(&window, x, y, absolute)?;
     let focus_address = focus.then_some(window.address.as_str());
     let (cursor_note, focus_note) = at_target(gx, gy, focus_address, |pointer| {
@@ -235,6 +236,7 @@ pub fn click(
 }
 
 pub fn scroll(
+    name: &str,
     x: i32,
     y: i32,
     dx: i32,
@@ -243,7 +245,7 @@ pub fn scroll(
     focus: bool,
 ) -> Result<String, Error> {
     let plan = detent_plan(dx, dy)?;
-    let (_, window) = session::current_window()?;
+    let (_, window) = session::current_window(name, session::Pending::SCROLL)?;
     let (gx, gy) = resolve_target(&window, x, y, absolute)?;
     let focus_address = focus.then_some(window.address.as_str());
     let (cursor_note, focus_note) =

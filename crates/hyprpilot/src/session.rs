@@ -1,7 +1,9 @@
-//! Session state: tracked windows driven on a dedicated headless output.
-//! State lives in `$XDG_RUNTIME_DIR/hyprpilot/session.json`; creating it with
-//! `create_new` is the single-session lock, and it is written **before** any
-//! compositor side effect so a failed start stays recoverable via `teardown`.
+//! Session state: one named session per agent, `shared` (drive the user's own
+//! windows on a headless output) or `isolated` (a whole nested agent desktop).
+//! State lives in `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/session.json`;
+//! creating it with `create_new` is the per-name lock, and it is written
+//! **before** any compositor side effect so a failed start stays recoverable
+//! via `teardown`.
 
 use std::env;
 use std::fs;
@@ -16,10 +18,16 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::hypr;
 
+/// Shared mode drives the user's windows on this single output; it is a
+/// singleton, unlike the per-session `hyprpilot-<name>` outputs of isolated
+/// mode.
 pub const OUTPUT_NAME: &str = "hyprpilot";
 pub const WORKSPACE_NAME: &str = "hyprpilot";
 const PARKING_WORKSPACE_NAME: &str = "special:hyprpilot-parked";
-const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
+pub const DEFAULT_SESSION_NAME: &str = "default";
+const SESSION_ENV: &str = "HYPRPILOT_SESSION";
+const SESSION_NAME_MAX: usize = 32;
 const WINDOW_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 const WINDOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const WINDOW_PLACE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -29,6 +37,29 @@ const VERIFIED_PLACEMENT_READS: u8 = 2;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub schema_version: u32,
+    pub name: String,
+    /// Flattened so the mode payload sits at the top level of `session.json`,
+    /// tagged by `"mode"`.
+    #[serde(flatten)]
+    pub state: ModeState,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ModeState {
+    Shared(Shared),
+    Isolated(Isolated),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Shared,
+    Isolated,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Shared {
     pub output: String,
     /// False when an output with our name already existed and was reused —
     /// teardown then leaves it in place.
@@ -44,6 +75,106 @@ pub struct Session {
     pub primary_address: String,
     pub active_address: String,
     pub windows: Vec<TrackedWindow>,
+}
+
+/// An agent desktop: a nested Hyprland whose console window lives on the
+/// active workspace of a host headless output.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Isolated {
+    /// Host headless output, `hyprpilot-<name>`.
+    pub output: String,
+    /// Workspace renamed on that output, `agent-<name>`.
+    pub workspace: String,
+    pub size: [u32; 2],
+    /// True while the console window sits on the user's workspace
+    /// (`session show`).
+    pub shown: bool,
+    pub instance: Instance,
+}
+
+/// The nested compositor is acquired after the output, so the state has to
+/// describe a session whose instance does not exist yet: `teardown` must be
+/// able to clean up either stage.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "lowercase")]
+pub enum Instance {
+    Pending,
+    Live {
+        /// `HYPRLAND_INSTANCE_SIGNATURE` of the nested compositor.
+        signature: String,
+        /// Wayland socket the nested compositor serves.
+        wayland_display: String,
+        pid: u32,
+        /// Host-side address of the nested compositor's console window
+        /// (class `aquamarine`).
+        console_address: String,
+    },
+}
+
+/// A command whose isolated-mode implementation lands in a later slice of
+/// `hyprpilot-isolated-slice-plan.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pending {
+    command: &'static str,
+    slice: &'static str,
+}
+
+impl Pending {
+    pub const START: Self = Self::new("session start --isolated", "S3–S6");
+    pub const TEARDOWN: Self = Self::new("teardown", "S5");
+    pub const KEY: Self = Self::new("key", "S7");
+    pub const TYPE: Self = Self::new("type", "S7");
+    pub const CLICK: Self = Self::new("click", "S7");
+    pub const SCROLL: Self = Self::new("scroll", "S7");
+    pub const SHOT: Self = Self::new("shot", "S8");
+    pub const WAIT: Self = Self::new("wait", "S8");
+    pub const TARGET: Self = Self::new("target", "S9");
+    pub const WINDOWS: Self = Self::new("windows", "S9");
+    pub const STATUS: Self = Self::new("status", "S11");
+
+    const fn new(command: &'static str, slice: &'static str) -> Self {
+        Self { command, slice }
+    }
+
+    pub fn error(self) -> Error {
+        Error::IsolatedPending {
+            command: self.command,
+            slice: self.slice,
+        }
+    }
+}
+
+impl Session {
+    pub fn mode(&self) -> Mode {
+        match self.state {
+            ModeState::Shared(_) => Mode::Shared,
+            ModeState::Isolated(_) => Mode::Isolated,
+        }
+    }
+
+    /// Routes by mode: an isolated session never falls through to the shared
+    /// code path, which would mutate the user's desktop.
+    pub fn shared(&self, pending: Pending) -> Result<&Shared, Error> {
+        self.shared_or(|| pending.error())
+    }
+
+    fn shared_mut(&mut self, pending: Pending) -> Result<&mut Shared, Error> {
+        self.shared_mut_or(|| pending.error())
+    }
+
+    fn shared_or(&self, error: impl FnOnce() -> Error) -> Result<&Shared, Error> {
+        match &self.state {
+            ModeState::Shared(shared) => Ok(shared),
+            ModeState::Isolated(_) => Err(error()),
+        }
+    }
+
+    fn shared_mut_or(&mut self, error: impl FnOnce() -> Error) -> Result<&mut Shared, Error> {
+        match &mut self.state {
+            ModeState::Shared(shared) => Ok(shared),
+            ModeState::Isolated(_) => Err(error()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,9 +283,13 @@ pub fn place(window: Rect, output: Rect) -> Placement {
     )
 }
 
+/// Read before the full parse so an old file fails with the version it holds
+/// instead of a serde field error. Both fields are optional: a pre-v3 file has
+/// neither, and reporting that is the point.
 #[derive(Deserialize)]
-struct SessionVersion {
-    schema_version: u32,
+struct SessionHeader {
+    schema_version: Option<u32>,
+    mode: Option<Mode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,8 +301,9 @@ struct LegacySession {
     spawned_pid: Option<u32>,
 }
 
-enum TeardownSession {
-    V2(Session),
+/// State at the old unnamed location, readable by `teardown` only.
+enum PreV3Session {
+    V2(Shared),
     Legacy(LegacySession),
 }
 
@@ -187,8 +323,51 @@ pub fn runtime_dir() -> Result<PathBuf, Error> {
     Ok(PathBuf::from(base).join("hyprpilot"))
 }
 
-pub fn session_path() -> Result<PathBuf, Error> {
+pub fn sessions_dir() -> Result<PathBuf, Error> {
+    Ok(runtime_dir()?.join("sessions"))
+}
+
+pub fn session_dir(name: &str) -> Result<PathBuf, Error> {
+    Ok(sessions_dir()?.join(name))
+}
+
+pub fn session_path(name: &str) -> Result<PathBuf, Error> {
+    Ok(session_dir(name)?.join("session.json"))
+}
+
+/// Where v2 and the unversioned format kept their single session.
+fn pre_v3_session_path() -> Result<PathBuf, Error> {
     Ok(runtime_dir()?.join("session.json"))
+}
+
+/// `--session NAME`, else `$HYPRPILOT_SESSION`, else `default`. The name ends
+/// up in a filesystem path, so it is validated on every command, not just at
+/// start.
+pub fn resolve_name(flag: Option<&str>) -> Result<String, Error> {
+    let from_env = env::var_os(SESSION_ENV).map(|value| value.to_string_lossy().into_owned());
+    resolve_name_from(flag, from_env.as_deref())
+}
+
+fn resolve_name_from(flag: Option<&str>, from_env: Option<&str>) -> Result<String, Error> {
+    let (name, source) = match (flag, from_env) {
+        (Some(name), _) => (name, "--session"),
+        (None, Some(name)) => (name, SESSION_ENV),
+        (None, None) => (DEFAULT_SESSION_NAME, "the default"),
+    };
+    validate_name(name, source)?;
+    Ok(name.to_owned())
+}
+
+fn validate_name(name: &str, source: &str) -> Result<(), Error> {
+    let allowed = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-';
+    if !name.is_empty() && name.len() <= SESSION_NAME_MAX && name.bytes().all(allowed) {
+        return Ok(());
+    }
+    Err(Error::Invalid {
+        what: "session name",
+        value: name.to_owned(),
+        hint: format!("expected [a-z0-9-]{{1,{SESSION_NAME_MAX}}} (from {source})"),
+    })
 }
 
 fn read_from(path: &Path) -> Result<String, Error> {
@@ -219,48 +398,141 @@ fn parse_json_value<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn load_from(path: &Path) -> Result<Session, Error> {
-    let raw = read_from(path)?;
-    let version: SessionVersion = parse_json(&raw, path)?;
-    if version.schema_version != SCHEMA_VERSION {
-        return Err(Error::UnsupportedSessionVersion(version.schema_version));
+fn unsupported_version(path: &Path, found: Option<u32>) -> Error {
+    Error::UnsupportedSessionVersion {
+        path: path.to_path_buf(),
+        found,
     }
-    parse_json(&raw, path)
 }
 
-// Legacy parsing stays separate so no command except teardown can accept the
-// old, unversioned format.
-fn load_for_teardown_from(path: &Path) -> Result<TeardownSession, Error> {
+fn load_from(path: &Path) -> Result<Session, Error> {
+    let raw = read_from(path)?;
+    let header: SessionHeader = parse_json(&raw, path)?;
+    if header.schema_version != Some(SCHEMA_VERSION) {
+        return Err(unsupported_version(path, header.schema_version));
+    }
+    let session: Session = parse_json(&raw, path)?;
+    if let ModeState::Shared(shared) = &session.state {
+        check_primary(shared, path)?;
+    }
+    Ok(session)
+}
+
+fn check_primary(shared: &Shared, path: &Path) -> Result<(), Error> {
+    if shared
+        .windows
+        .iter()
+        .filter(|window| window.address == shared.primary_address)
+        .count()
+        == 1
+    {
+        return Ok(());
+    }
+    Err(Error::CorruptSession {
+        path: path.to_path_buf(),
+        message: "primary_address must identify exactly one tracked window".to_owned(),
+    })
+}
+
+/// Refuses to run on state left behind by an older build: the v3 layout moved,
+/// so a caller that only checked the new path would silently ignore a live
+/// pre-v3 session still parked on the shared output.
+fn refuse_pre_v3_state_at(path: &Path) -> Result<(), Error> {
+    match fs::read_to_string(path) {
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            context: format!("reading session file {}", path.display()),
+            source,
+        }),
+        // Best effort on the version: an unparseable file reports none, and the
+        // message says so.
+        Ok(raw) => Err(unsupported_version(
+            path,
+            serde_json::from_str::<SessionHeader>(&raw)
+                .ok()
+                .and_then(|header| header.schema_version),
+        )),
+    }
+}
+
+fn refuse_pre_v3_state() -> Result<(), Error> {
+    refuse_pre_v3_state_at(&pre_v3_session_path()?)
+}
+
+// Pre-v3 parsing stays separate so no command except teardown can accept the
+// old location and its formats.
+fn load_pre_v3_from(path: &Path) -> Result<PreV3Session, Error> {
     let raw = read_from(path)?;
     let corrupt = |error: Error| Error::CorruptSession {
         path: path.to_path_buf(),
         message: error.to_string(),
     };
     let value: serde_json::Value = parse_json(&raw, path).map_err(&corrupt)?;
-    if value.get("schema_version").is_some() {
-        let version: SessionVersion = parse_json_value(value.clone(), path).map_err(&corrupt)?;
-        if version.schema_version != SCHEMA_VERSION {
-            return Err(Error::UnsupportedSessionVersion(version.schema_version));
-        }
-        let session: Session = parse_json_value(value, path).map_err(&corrupt)?;
-        if session
-            .windows
-            .iter()
-            .filter(|window| window.address == session.primary_address)
-            .count()
-            != 1
-        {
-            return Err(Error::CorruptSession {
-                path: path.to_path_buf(),
-                message: "primary_address must identify exactly one tracked window".to_owned(),
+    let Some(version) = value.get("schema_version") else {
+        return parse_json_value(value, path)
+            .map(PreV3Session::Legacy)
+            .map_err(corrupt);
+    };
+    if version.as_u64() != Some(2) {
+        return Err(unsupported_version(
+            path,
+            version.as_u64().and_then(|found| u32::try_from(found).ok()),
+        ));
+    }
+    let shared: Shared = parse_json_value(value, path).map_err(&corrupt)?;
+    check_primary(&shared, path)?;
+    Ok(PreV3Session::V2(shared))
+}
+
+/// The shared output is a singleton, so a second shared session is refused
+/// whatever its name.
+fn find_shared_session_in(dir: &Path, exclude: &str) -> Result<Option<String>, Error> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Io {
+                context: format!("listing {}", dir.display()),
+                source,
             });
         }
-        Ok(TeardownSession::V2(session))
-    } else {
-        parse_json_value(value, path)
-            .map(TeardownSession::Legacy)
-            .map_err(corrupt)
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io {
+            context: format!("listing {}", dir.display()),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == exclude {
+            continue;
+        }
+        let path = entry.path().join("session.json");
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(Error::Io {
+                    context: format!("reading session file {}", path.display()),
+                    source,
+                });
+            }
+        };
+        let header: SessionHeader = parse_json(&raw, &path)?;
+        if header.schema_version != Some(SCHEMA_VERSION) {
+            return Err(unsupported_version(&path, header.schema_version));
+        }
+        match header.mode {
+            Some(Mode::Shared) => return Ok(Some(name)),
+            Some(Mode::Isolated) => {}
+            None => {
+                return Err(Error::CorruptSession {
+                    path,
+                    message: "missing mode".to_owned(),
+                });
+            }
+        }
     }
+    Ok(None)
 }
 
 fn serialize(session: &Session) -> Result<String, Error> {
@@ -287,7 +559,10 @@ fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
     {
         Ok(file) => file,
         Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::SessionExists(path.to_path_buf()));
+            return Err(Error::SessionExists {
+                name: session.name.clone(),
+                path: path.to_path_buf(),
+            });
         }
         Err(source) => {
             return Err(Error::Io {
@@ -346,22 +621,32 @@ pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
     write_result
 }
 
-pub fn load() -> Result<Session, Error> {
-    load_from(&session_path()?)
+pub fn load(name: &str) -> Result<Session, Error> {
+    match load_from(&session_path(name)?) {
+        Err(Error::NoSession) => {
+            refuse_pre_v3_state()?;
+            Err(Error::NoSession)
+        }
+        result => result,
+    }
 }
 
-/// The session's active window as Hyprland currently sees it.
-pub fn current_window() -> Result<(CurrentSession, hypr::Client), Error> {
-    let session = load()?;
+/// The shared session's active window as Hyprland currently sees it.
+pub fn current_window(
+    name: &str,
+    pending: Pending,
+) -> Result<(CurrentSession, hypr::Client), Error> {
+    let session = load(name)?;
+    let shared = session.shared(pending)?;
     let clients = hypr::clients()?;
     let window = clients
         .into_iter()
-        .find(|c| c.address == session.active_address)
-        .ok_or_else(|| Error::WindowGone(session.active_address.clone()))?;
+        .find(|c| c.address == shared.active_address)
+        .ok_or_else(|| Error::WindowGone(shared.active_address.clone()))?;
     Ok((
         CurrentSession {
-            output: session.output,
-            workspace: session.active_workspace,
+            output: shared.output.clone(),
+            workspace: shared.active_workspace.clone(),
         },
         window,
     ))
@@ -453,7 +738,7 @@ fn ambiguous_error(criteria: &Criteria<'_>, candidates: Vec<&hypr::Client>) -> E
 
 fn resolve_target<'a>(
     clients: &'a [hypr::Client],
-    session: &Session,
+    session: &Shared,
     criteria: &Criteria<'_>,
     untracked: bool,
 ) -> Resolution<'a> {
@@ -474,7 +759,7 @@ fn resolve_target<'a>(
 
 fn target_lookup<'a>(
     clients: &'a [hypr::Client],
-    session: &Session,
+    session: &Shared,
     criteria: &Criteria<'_>,
     untracked: bool,
     wait: bool,
@@ -888,7 +1173,7 @@ fn place_session_window(
 }
 
 fn target_layout_is_verified(
-    session: &Session,
+    session: &Shared,
     clients: &[hypr::Client],
     monitors: &[hypr::Monitor],
 ) -> Result<bool, Error> {
@@ -931,7 +1216,7 @@ fn target_layout_is_verified(
     Ok(true)
 }
 
-fn wait_for_target_layout(session: &Session) -> Result<(), Error> {
+fn wait_for_target_layout(session: &Shared) -> Result<(), Error> {
     let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
     loop {
         let clients = hypr::clients()?;
@@ -952,7 +1237,7 @@ fn wait_for_target_layout(session: &Session) -> Result<(), Error> {
     }
 }
 
-fn activate_persisted_target(session: &Session) -> Result<(), Error> {
+fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
     hypr::keyword_workspace(&session.parking_workspace, &session.output)?;
 
     let clients = hypr::clients()?;
@@ -989,7 +1274,7 @@ fn activate_persisted_target(session: &Session) -> Result<(), Error> {
     place_active_target(session)
 }
 
-fn place_active_target(session: &Session) -> Result<(), Error> {
+fn place_active_target(session: &Shared) -> Result<(), Error> {
     if matches!(
         place_session_window(
             &session.active_address,
@@ -1017,35 +1302,39 @@ fn persist_target_before_activation(
     disposition: Disposition,
 ) -> Result<(), Error> {
     if mode == TargetMode::Adopt {
-        session.windows.push(TrackedWindow {
-            address: client.address.clone(),
-            title_at_adoption: client.title.clone(),
-            origin_workspace: client.workspace.name.clone(),
-            origin_at: client.at,
-            origin_size: client.size,
-            origin_floating: client.floating,
-            teardown: disposition,
-        });
+        session
+            .shared_mut(Pending::TARGET)?
+            .windows
+            .push(TrackedWindow {
+                address: client.address.clone(),
+                title_at_adoption: client.title.clone(),
+                origin_workspace: client.workspace.name.clone(),
+                origin_at: client.at,
+                origin_size: client.size,
+                origin_floating: client.floating,
+                teardown: disposition,
+            });
         save_over(path, session)?;
     }
 
-    session.active_address.clone_from(&client.address);
+    session
+        .shared_mut(Pending::TARGET)?
+        .active_address
+        .clone_from(&client.address);
     save_over(path, session)
 }
 
 pub fn target(
-    address: Option<&str>,
-    match_title: Option<&str>,
-    match_class: Option<&str>,
-    pid: Option<i32>,
+    name: &str,
+    criteria: &Criteria<'_>,
     untracked: bool,
     wait: Option<Duration>,
     on_teardown: Option<Disposition>,
 ) -> Result<String, Error> {
-    if address.is_none()
-        && match_title.is_none()
-        && match_class.is_none()
-        && pid.is_none()
+    if criteria.address.is_none()
+        && criteria.title.is_none()
+        && criteria.class.is_none()
+        && criteria.pid.is_none()
         && !untracked
     {
         return Err(Error::Invalid {
@@ -1056,29 +1345,27 @@ pub fn target(
         });
     }
 
-    let path = session_path()?;
-    let mut session = load_from(&path)?;
-    let criteria = Criteria {
-        address,
-        title: match_title,
-        class: match_class,
-        pid,
-    };
+    let path = session_path(name)?;
+    let mut session = load(name)?;
+    // Routed before the first compositor read, so an isolated session fails on
+    // its own terms instead of on a host query that means nothing to it.
+    session.shared(Pending::TARGET)?;
     let started = Instant::now();
     let (client, mode) = loop {
         let clients = hypr::clients()?;
-        match target_lookup(&clients, &session, &criteria, untracked, wait.is_some())? {
+        let shared = session.shared(Pending::TARGET)?;
+        match target_lookup(&clients, shared, criteria, untracked, wait.is_some())? {
             TargetLookup::Ready { client, mode } => break (client.clone(), mode),
             TargetLookup::Retry => {
                 let timeout = wait.ok_or_else(|| {
-                    Error::WindowNotFound(target_criteria_label(&criteria, untracked))
+                    Error::WindowNotFound(target_criteria_label(criteria, untracked))
                 })?;
                 let elapsed = started.elapsed();
                 if elapsed >= timeout {
                     return Err(Error::Timeout {
                         what: format!(
                             "a window matching {}",
-                            target_criteria_label(&criteria, untracked)
+                            target_criteria_label(criteria, untracked)
                         ),
                         after_ms: timeout.as_millis(),
                     });
@@ -1092,7 +1379,7 @@ pub fn target(
     // Adoption (when needed) and the active address are persisted before the
     // first compositor command. Activation only accepts that resulting state.
     persist_target_before_activation(&path, &mut session, &client, mode, disposition)?;
-    activate_persisted_target(&session)?;
+    activate_persisted_target(session.shared(Pending::TARGET)?)?;
 
     Ok(format!(
         "target active — {} window {} (`{}`)",
@@ -1105,36 +1392,73 @@ pub fn target(
     ))
 }
 
-pub fn resize(size: &str) -> Result<String, Error> {
+/// Out of scope for this cycle, by spec: resizing an agent desktop means
+/// mode-setting the headless output and resizing the nested console.
+fn resize_unsupported() -> Error {
+    Error::IsolatedUnsupported {
+        command: "session resize",
+        hint: "an agent desktop keeps the size it was started with; run \
+               `teardown` then `session start --isolated --size WxH`",
+    }
+}
+
+pub fn resize(name: &str, size: &str) -> Result<String, Error> {
     let (width, height) = parse_size(size)?;
     let requested_size = [width, height];
-    let path = session_path()?;
-    let mut session = load_from(&path)?;
-    let output = find_output(&session.output)?.ok_or_else(|| Error::Tool {
+    let path = session_path(name)?;
+    let mut session = load(name)?;
+    let shared = session.shared_or(resize_unsupported)?;
+    let output = find_output(&shared.output)?.ok_or_else(|| Error::Tool {
         command: "hyprctl monitors".to_owned(),
-        message: format!("session output {} is missing", session.output),
+        message: format!("session output {} is missing", shared.output),
     })?;
     let previous_size = effective_output_size(&output)?;
+    let output_name = shared.output.clone();
 
     resize_monitor(&output, width, height)?;
 
-    let effective_size = wait_for_effective_resize(&session.output, previous_size, requested_size)?;
-    session.size = effective_size;
+    let effective_size = wait_for_effective_resize(&output_name, previous_size, requested_size)?;
+    session.shared_mut_or(resize_unsupported)?.size = effective_size;
     save_over(&path, &session)?;
-    place_active_target(&session)?;
+    let shared = session.shared_or(resize_unsupported)?;
+    place_active_target(shared)?;
 
     Ok(format!(
         "session resized — output {} is {}x{}, window {} repositioned",
-        session.output, effective_size[0], effective_size[1], session.active_address
+        shared.output, effective_size[0], effective_size[1], shared.active_address
     ))
 }
 
+/// Everything that must be refused before an app is spawned: state left by an
+/// older build, a claim already held under this name, and a second shared
+/// session. The atomic `save_new_to` below stays the authoritative lock.
+fn claim_preflight(name: &str, path: &Path) -> Result<(), Error> {
+    refuse_pre_v3_state()?;
+    if path.exists() {
+        return Err(Error::SessionExists {
+            name: name.to_owned(),
+            path: path.to_path_buf(),
+        });
+    }
+    if let Some(other) = find_shared_session_in(&sessions_dir()?, name)? {
+        return Err(Error::SharedSessionExists { name: other });
+    }
+    Ok(())
+}
+
 pub fn start(
+    name: &str,
+    isolated: bool,
     app: Option<&str>,
     match_title: Option<&str>,
     match_class: Option<&str>,
     size: &str,
 ) -> Result<String, Error> {
+    // Refused before the session is claimed and before any compositor call, so
+    // no agent desktop is half-created while the slices land.
+    if isolated {
+        return Err(Pending::START.error());
+    }
     if match_title.is_none() && match_class.is_none() {
         return Err(Error::Invalid {
             what: "match criteria",
@@ -1143,12 +1467,8 @@ pub fn start(
         });
     }
     let (width, height) = parse_size(size)?;
-    let path = session_path()?;
-    // Courtesy fast path so we do not spawn an app just to kill it; the
-    // atomic `save_new_to` below remains the authoritative lock.
-    if path.exists() {
-        return Err(Error::SessionExists(path));
-    }
+    let path = session_path(name)?;
+    claim_preflight(name, &path)?;
 
     // Captured before any side effect, so status/teardown can reason about
     // what the user had.
@@ -1193,29 +1513,32 @@ pub fn start(
     let teardown = spawned_pid.map_or(Disposition::Restore, |_| Disposition::Close);
     let session = Session {
         schema_version: SCHEMA_VERSION,
-        output: OUTPUT_NAME.to_owned(),
-        output_created,
-        active_workspace: WORKSPACE_NAME.to_owned(),
-        parking_workspace: PARKING_WORKSPACE_NAME.to_owned(),
-        size: [width, height],
-        spawned_pid,
-        initial_user_focus,
-        primary_address: window.address.clone(),
-        active_address: window.address.clone(),
-        windows: vec![TrackedWindow {
-            address: window.address.clone(),
-            title_at_adoption: window.title.clone(),
-            origin_workspace: window.workspace.name.clone(),
-            origin_at: window.at,
-            origin_size: window.size,
-            origin_floating: window.floating,
-            teardown,
-        }],
+        name: name.to_owned(),
+        state: ModeState::Shared(Shared {
+            output: OUTPUT_NAME.to_owned(),
+            output_created,
+            active_workspace: WORKSPACE_NAME.to_owned(),
+            parking_workspace: PARKING_WORKSPACE_NAME.to_owned(),
+            size: [width, height],
+            spawned_pid,
+            initial_user_focus,
+            primary_address: window.address.clone(),
+            active_address: window.address.clone(),
+            windows: vec![TrackedWindow {
+                address: window.address.clone(),
+                title_at_adoption: window.title.clone(),
+                origin_workspace: window.workspace.name.clone(),
+                origin_at: window.at,
+                origin_size: window.size,
+                origin_floating: window.floating,
+                teardown,
+            }],
+        }),
     };
     // Lock + persist before touching the compositor: if anything below
     // fails, `hyprpilot teardown` can still clean up from this state.
     if let Err(error) = save_new_to(&path, &session) {
-        if let (Error::SessionExists(_), Some(pid)) = (&error, spawned_pid) {
+        if let (Error::SessionExists { .. }, Some(pid)) = (&error, spawned_pid) {
             let _ = kill_process_group(pid);
         }
         return Err(error);
@@ -1239,7 +1562,8 @@ pub fn start(
     }
 
     Ok(format!(
-        "session ready — window {} (`{}`) parked on output {OUTPUT_NAME} ({width}x{height}), workspace {WORKSPACE_NAME}",
+        "session `{name}` ready — window {} (`{}`) parked on output {OUTPUT_NAME} \
+         ({width}x{height}), workspace {WORKSPACE_NAME}",
         window.address, window.title
     ))
 }
@@ -1317,7 +1641,7 @@ fn validate_teardown_flags(spawned_pid: Option<u32>, kill: bool, close: bool) ->
 }
 
 fn teardown_plan(
-    session: &Session,
+    session: &Shared,
     kill: bool,
     close: bool,
 ) -> Result<Vec<(&TrackedWindow, WindowAction)>, Error> {
@@ -1384,7 +1708,7 @@ fn restore_window(window: &TrackedWindow) -> Result<(), Error> {
     Ok(())
 }
 
-fn teardown_v2(session: &Session, kill: bool, close: bool) -> Result<Vec<String>, Error> {
+fn teardown_shared(session: &Shared, kill: bool, close: bool) -> Result<Vec<String>, Error> {
     let mut notes = Vec::new();
     for (window, action) in teardown_plan(session, kill, close)? {
         if !window_exists(&window.address)? {
@@ -1496,8 +1820,26 @@ fn sweep_orphan_output() -> Result<String, Error> {
     ))
 }
 
+enum StateLocation {
+    /// v3: the whole `sessions/<name>/` directory goes away.
+    Session(PathBuf),
+    /// Pre-v3: a single file at the old, unnamed location.
+    PreV3(PathBuf),
+}
+
+fn clear_state(location: &StateLocation) -> Result<(), Error> {
+    let (path, result) = match location {
+        StateLocation::Session(dir) => (dir, fs::remove_dir_all(dir)),
+        StateLocation::PreV3(file) => (file, fs::remove_file(file)),
+    };
+    result.map_err(|source| Error::Io {
+        context: format!("removing session state {}", path.display()),
+        source,
+    })
+}
+
 fn finish_teardown(
-    path: &Path,
+    location: &StateLocation,
     output_name: &str,
     output_created: bool,
     mut notes: Vec<String>,
@@ -1511,30 +1853,49 @@ fn finish_teardown(
         notes.push(format!("output {output_name} already absent"));
     }
 
-    fs::remove_file(path).map_err(|source| Error::Io {
-        context: format!("removing session file {}", path.display()),
-        source,
-    })?;
+    clear_state(location)?;
     notes.push("session state cleared".to_owned());
     Ok(format!("teardown done — {}", notes.join(", ")))
 }
 
-pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
-    let path = session_path()?;
-    let session = match load_for_teardown_from(&path) {
-        Ok(session) => session,
+pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
+    match load_from(&session_path(name)?) {
+        Ok(session) => {
+            let shared = session.shared(Pending::TEARDOWN)?;
+            let notes = teardown_shared(shared, kill, close)?;
+            finish_teardown(
+                &StateLocation::Session(session_dir(name)?),
+                &shared.output,
+                shared.output_created,
+                notes,
+            )
+        }
+        // The v3 layout moved, so teardown stays the one command that can still
+        // clean up what an older build left at the old location.
+        Err(Error::NoSession) => teardown_pre_v3(kill, close),
+        Err(error) => Err(error),
+    }
+}
+
+fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
+    let path = pre_v3_session_path()?;
+    let state = match load_pre_v3_from(&path) {
+        Ok(state) => state,
         Err(Error::NoSession) => return sweep_orphan_output(),
         Err(error) => return Err(error),
     };
-
-    match session {
-        TeardownSession::V2(session) => {
-            let notes = teardown_v2(&session, kill, close)?;
-            finish_teardown(&path, &session.output, session.output_created, notes)
+    let location = StateLocation::PreV3(path.clone());
+    let migrated = format!("cleaned pre-v3 state at {}", path.display());
+    match state {
+        PreV3Session::V2(shared) => {
+            let mut notes = vec![migrated];
+            notes.extend(teardown_shared(&shared, kill, close)?);
+            finish_teardown(&location, &shared.output, shared.output_created, notes)
         }
-        TeardownSession::Legacy(session) => {
-            let notes = teardown_legacy(&session, kill, close)?;
-            finish_teardown(&path, &session.output, session.output_created, notes)
+        PreV3Session::Legacy(legacy) => {
+            let mut notes = vec![migrated];
+            notes.extend(teardown_legacy(&legacy, kill, close)?);
+            finish_teardown(&location, &legacy.output, legacy.output_created, notes)
         }
     }
 }
@@ -1542,11 +1903,13 @@ pub fn teardown(kill: bool, close: bool) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Criteria, Disposition, Placement, Rect, Resolution, Session, TargetLookup, TargetMode,
-        TeardownSession, TrackedWindow, WindowAction, ambiguous_error, effective_output_size,
-        ensure_output_empty_for_sweep, load_for_teardown_from, load_from, monitor_rule, parse_size,
-        persist_target_before_activation, place, resize_has_applied, resolve, save_new_to,
-        save_over, target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
+        Criteria, DEFAULT_SESSION_NAME, Disposition, Instance, Isolated, Mode, ModeState, Pending,
+        Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session, Shared, TargetLookup,
+        TargetMode, TrackedWindow, WindowAction, ambiguous_error, effective_output_size,
+        ensure_output_empty_for_sweep, find_shared_session_in, load_from, load_pre_v3_from,
+        monitor_rule, parse_size, persist_target_before_activation, place, refuse_pre_v3_state_at,
+        resize_has_applied, resize_unsupported, resolve, resolve_name_from, save_new_to, save_over,
+        target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
         workspace_selector,
     };
     use crate::error::Error;
@@ -1561,9 +1924,8 @@ mod tests {
     const SWEEP_MINUS_ONE_JSON: &str =
         include_str!("../fixtures/sweep-clients-monitor-minus-one.json");
 
-    fn sample_session() -> Session {
-        Session {
-            schema_version: 2,
+    fn sample_shared() -> Shared {
+        Shared {
             output: "hyprpilot".to_owned(),
             output_created: true,
             active_workspace: "hyprpilot".to_owned(),
@@ -1583,6 +1945,45 @@ mod tests {
                 teardown: Disposition::Close,
             }],
         }
+    }
+
+    fn named_session(name: &str) -> Session {
+        Session {
+            schema_version: SCHEMA_VERSION,
+            name: name.to_owned(),
+            state: ModeState::Shared(sample_shared()),
+        }
+    }
+
+    fn sample_session() -> Session {
+        named_session(DEFAULT_SESSION_NAME)
+    }
+
+    fn sample_isolated(name: &str, instance: Instance) -> Session {
+        Session {
+            schema_version: SCHEMA_VERSION,
+            name: name.to_owned(),
+            state: ModeState::Isolated(Isolated {
+                output: format!("hyprpilot-{name}"),
+                workspace: format!("agent-{name}"),
+                size: [1920, 1080],
+                shown: false,
+                instance,
+            }),
+        }
+    }
+
+    fn live_instance() -> Instance {
+        Instance::Live {
+            signature: "abcdef_1730000000".to_owned(),
+            wayland_display: "wayland-2".to_owned(),
+            pid: 4242,
+            console_address: "0xc0ff33".to_owned(),
+        }
+    }
+
+    fn shared_of(session: &Session) -> Result<&Shared, Box<dyn StdError>> {
+        Ok(session.shared(Pending::STATUS)?)
     }
 
     fn matching_clients() -> Result<Vec<Client>, serde_json::Error> {
@@ -1680,7 +2081,7 @@ mod tests {
                 for wait in [false, true] {
                     for untracked in [false, true] {
                         let clients = &all_clients[..count];
-                        let mut session = sample_session();
+                        let mut session = sample_shared();
                         if tracked {
                             session.windows.extend(clients.iter().map(tracked_client));
                         }
@@ -1731,7 +2132,7 @@ mod tests {
             candidates,
         }) = target_lookup(
             &all_clients,
-            &sample_session(),
+            &sample_shared(),
             &Criteria::default(),
             true,
             false,
@@ -1787,6 +2188,7 @@ mod tests {
         )?;
 
         let persisted = load_from(&path)?;
+        let persisted = shared_of(&persisted)?;
         assert_eq!(persisted.active_address, "0xddd");
         assert_eq!(persisted.windows.len(), 2);
         assert_eq!(persisted.windows[1].address, "0xddd");
@@ -1807,7 +2209,7 @@ mod tests {
         clients[1].workspace.name = "special:hyprpilot-parked".to_owned();
         clients[1].monitor = 1;
         let mut monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
-        let mut session = sample_session();
+        let mut session = sample_shared();
         session.output = "headless-ci".to_owned();
         session.active_workspace = "proto".to_owned();
         session.active_address.clone_from(&clients[0].address);
@@ -1961,7 +2363,7 @@ mod tests {
 
     #[test]
     fn teardown_flag_matrix_matches_session_ownership() -> Result<(), Box<dyn StdError>> {
-        let spawned = sample_session();
+        let spawned = sample_shared();
         assert_eq!(
             teardown_plan(&spawned, false, false)
                 .ok()
@@ -1979,7 +2381,7 @@ mod tests {
             .ok_or("--close accepted a spawned session")?;
         assert!(spawned_close.to_string().contains("attached primary"));
 
-        let mut attached = sample_session();
+        let mut attached = sample_shared();
         attached.spawned_pid = None;
         attached.windows[0].teardown = Disposition::Restore;
         assert_eq!(
@@ -2005,7 +2407,7 @@ mod tests {
 
     #[test]
     fn teardown_plan_processes_windows_in_reverse_order() -> Result<(), Box<dyn StdError>> {
-        let mut session = sample_session();
+        let mut session = sample_shared();
         session.windows.push(TrackedWindow {
             address: "0xaux".to_owned(),
             title_at_adoption: "Auxiliary".to_owned(),
@@ -2030,7 +2432,10 @@ mod tests {
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
         let loaded = load_from(&path)?;
-        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.schema_version, SCHEMA_VERSION);
+        assert_eq!(loaded.name, DEFAULT_SESSION_NAME);
+        assert_eq!(loaded.mode(), Mode::Shared);
+        let loaded = shared_of(&loaded)?;
         assert_eq!(loaded.primary_address, "0xabc");
         assert_eq!(loaded.active_address, "0xabc");
         assert_eq!(loaded.size, [1600, 1000]);
@@ -2046,16 +2451,73 @@ mod tests {
     }
 
     #[test]
+    fn isolated_session_round_trips_at_both_instance_stages() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        for (label, instance) in [("pending", Instance::Pending), ("live", live_instance())] {
+            let path = dir.path().join(label).join("session.json");
+            save_new_to(&path, &sample_isolated("alpha", instance))?;
+
+            let loaded = load_from(&path)?;
+            assert_eq!(loaded.schema_version, SCHEMA_VERSION, "{label}");
+            assert_eq!(loaded.name, "alpha", "{label}");
+            assert_eq!(loaded.mode(), Mode::Isolated, "{label}");
+            let ModeState::Isolated(isolated) = &loaded.state else {
+                return Err(format!("{label}: isolated state loaded as shared").into());
+            };
+            assert_eq!(isolated.output, "hyprpilot-alpha", "{label}");
+            assert_eq!(isolated.workspace, "agent-alpha", "{label}");
+            assert_eq!(isolated.size, [1920, 1080], "{label}");
+            assert!(!isolated.shown, "{label}");
+            match (&isolated.instance, label) {
+                (Instance::Pending, "pending") => {}
+                (
+                    Instance::Live {
+                        signature,
+                        wayland_display,
+                        pid,
+                        console_address,
+                    },
+                    "live",
+                ) => {
+                    assert_eq!(signature, "abcdef_1730000000");
+                    assert_eq!(wayland_display, "wayland-2");
+                    assert_eq!(*pid, 4242);
+                    assert_eq!(console_address, "0xc0ff33");
+                }
+                (instance, label) => {
+                    return Err(format!("{label}: unexpected stage {instance:?}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn session_json_keeps_the_mode_payload_flat_and_tagged() -> Result<(), Box<dyn StdError>> {
+        let shared = serde_json::to_value(sample_session())?;
+        assert_eq!(shared["mode"], serde_json::json!("shared"));
+        assert_eq!(shared["output"], serde_json::json!("hyprpilot"));
+        assert!(shared.get("state").is_none());
+
+        let isolated = serde_json::to_value(sample_isolated("alpha", live_instance()))?;
+        assert_eq!(isolated["mode"], serde_json::json!("isolated"));
+        assert_eq!(isolated["output"], serde_json::json!("hyprpilot-alpha"));
+        assert_eq!(isolated["instance"]["stage"], serde_json::json!("live"));
+        assert_eq!(isolated["instance"]["pid"], serde_json::json!(4242));
+        Ok(())
+    }
+
+    #[test]
     fn session_overwrite_replaces_atomically() -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
         let mut updated = sample_session();
-        updated.active_address = "0xdef".to_owned();
+        updated.shared_mut(Pending::TARGET)?.active_address = "0xdef".to_owned();
 
         save_over(&path, &updated)?;
 
-        assert_eq!(load_from(&path)?.active_address, "0xdef");
+        assert_eq!(shared_of(&load_from(&path)?)?.active_address, "0xdef");
         assert!(
             !dir.path()
                 .join(format!("session.json.{}.tmp", std::process::id()))
@@ -2065,17 +2527,61 @@ mod tests {
     }
 
     #[test]
-    fn second_session_is_rejected_atomically() -> Result<(), Box<dyn StdError>> {
+    fn claim_is_atomic_per_session_name() -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("session.json");
-        save_new_to(&path, &sample_session())?;
-        let second = save_new_to(&path, &sample_session());
-        assert!(matches!(second, Err(Error::SessionExists(_))));
+        let path = |name: &str| dir.path().join("sessions").join(name).join("session.json");
+        save_new_to(&path("alpha"), &named_session("alpha"))?;
+        save_new_to(&path("beta"), &named_session("beta"))?;
+
+        assert_eq!(load_from(&path("alpha"))?.name, "alpha");
+        assert_eq!(load_from(&path("beta"))?.name, "beta");
+
+        let error = save_new_to(&path("alpha"), &named_session("alpha"))
+            .err()
+            .ok_or("a second claim on the same name was accepted")?;
+        assert!(matches!(&error, Error::SessionExists { .. }));
+        let message = error.to_string();
+        assert!(message.contains("session `alpha`"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
         Ok(())
     }
 
     #[test]
-    fn legacy_session_is_only_accepted_for_teardown() -> Result<(), Box<dyn StdError>> {
+    fn shared_session_singleton_is_refused_under_any_other_name() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let sessions = dir.path().join("sessions");
+        let path = |name: &str| sessions.join(name).join("session.json");
+        assert_eq!(find_shared_session_in(&sessions, "alpha")?, None);
+
+        save_new_to(&path("alpha"), &named_session("alpha"))?;
+        save_new_to(&path("beta"), &sample_isolated("beta", Instance::Pending))?;
+        std::fs::create_dir_all(sessions.join("stale"))?;
+
+        // The shared output is a singleton: only the session that holds it may
+        // start.
+        assert_eq!(
+            find_shared_session_in(&sessions, "beta")?,
+            Some("alpha".to_owned())
+        );
+        assert_eq!(
+            find_shared_session_in(&sessions, "gamma")?.as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(find_shared_session_in(&sessions, "alpha")?, None);
+
+        let error = Error::SharedSessionExists {
+            name: "alpha".to_owned(),
+        }
+        .to_string();
+        assert!(error.contains("singleton"), "{error}");
+        assert!(error.contains("--session alpha teardown"), "{error}");
+        assert!(error.contains("--isolated"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn pre_v3_state_is_refused_outside_teardown_and_read_by_teardown()
+    -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
         std::fs::write(
@@ -2093,8 +2599,22 @@ mod tests {
             }))?,
         )?;
 
-        assert!(matches!(load_from(&path), Err(Error::Json { .. })));
-        let TeardownSession::Legacy(legacy) = load_for_teardown_from(&path)? else {
+        let error = refuse_pre_v3_state_at(&path)
+            .err()
+            .ok_or("unversioned state was accepted")?;
+        assert!(matches!(
+            &error,
+            Error::UnsupportedSessionVersion { found: None, .. }
+        ));
+        let message = error.to_string();
+        assert!(message.contains("unversioned"), "{message}");
+        assert!(message.contains("hyprpilot teardown"), "{message}");
+        assert!(matches!(
+            load_from(&path),
+            Err(Error::UnsupportedSessionVersion { found: None, .. })
+        ));
+
+        let PreV3Session::Legacy(legacy) = load_pre_v3_from(&path)? else {
             return Err("legacy file loaded as v2".into());
         };
         assert_eq!(legacy.window_address, "0xabc");
@@ -2104,23 +2624,145 @@ mod tests {
     }
 
     #[test]
+    fn v2_state_reports_found_version_expected_version_and_exit_command()
+    -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut value = serde_json::to_value(sample_shared())?;
+        value["schema_version"] = serde_json::json!(2);
+        std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+
+        let error = load_from(&path)
+            .err()
+            .ok_or("a v2 state was accepted by a v3 build")?;
+        assert!(matches!(
+            &error,
+            Error::UnsupportedSessionVersion { found: Some(2), .. }
+        ));
+        let message = error.to_string();
+        assert!(message.contains("schema version 2"), "{message}");
+        assert!(message.contains("expects 3"), "{message}");
+        assert!(message.contains("hyprpilot teardown"), "{message}");
+        assert!(message.contains("no output was removed"), "{message}");
+        assert!(message.contains("hyprpilot windows"), "{message}");
+
+        // Teardown is the one command that still reads it, from the old
+        // location only.
+        assert!(matches!(load_pre_v3_from(&path)?, PreV3Session::V2(_)));
+        assert!(refuse_pre_v3_state_at(&path).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn unknown_session_version_is_rejected_explicitly() -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
         let mut value = serde_json::to_value(sample_session())?;
-        value["schema_version"] = serde_json::json!(3);
+        value["schema_version"] = serde_json::json!(4);
         std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
         let Err(error) = load_from(&path) else {
             return Err("unknown schema was accepted".into());
         };
-        assert!(matches!(&error, Error::UnsupportedSessionVersion(3)));
+        assert!(matches!(
+            &error,
+            Error::UnsupportedSessionVersion { found: Some(4), .. }
+        ));
         assert!(error.to_string().contains("no output was removed"));
         assert!(error.to_string().contains("hyprpilot windows"));
         assert!(matches!(
-            load_for_teardown_from(&path),
-            Err(Error::UnsupportedSessionVersion(3))
+            load_pre_v3_from(&path),
+            Err(Error::UnsupportedSessionVersion { found: Some(4), .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn session_name_is_validated_against_the_path_safe_alphabet() {
+        for name in ["a", "default", "agent-1", "a".repeat(32).as_str()] {
+            assert!(
+                resolve_name_from(Some(name), None).is_ok(),
+                "rejected valid name {name}"
+            );
+        }
+        for name in [
+            "",
+            "Agent",
+            "agent_1",
+            "agent.1",
+            "../etc",
+            "a/b",
+            "a".repeat(33).as_str(),
+        ] {
+            let error = resolve_name_from(Some(name), None)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("session name"), "accepted {name:?}");
+            assert!(error.contains("--session"), "{error}");
+        }
+    }
+
+    #[test]
+    fn session_name_resolution_prefers_flag_then_env_then_default() -> Result<(), Box<dyn StdError>>
+    {
+        assert_eq!(resolve_name_from(Some("alpha"), Some("beta"))?, "alpha");
+        assert_eq!(resolve_name_from(None, Some("beta"))?, "beta");
+        assert_eq!(resolve_name_from(None, None)?, DEFAULT_SESSION_NAME);
+        let error = resolve_name_from(None, Some(""))
+            .err()
+            .ok_or("an empty HYPRPILOT_SESSION was accepted")?
+            .to_string();
+        assert!(error.contains("HYPRPILOT_SESSION"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_sessions_route_every_pending_command_to_its_slice() -> Result<(), Box<dyn StdError>>
+    {
+        let pending = [
+            Pending::START,
+            Pending::TEARDOWN,
+            Pending::KEY,
+            Pending::TYPE,
+            Pending::CLICK,
+            Pending::SCROLL,
+            Pending::SHOT,
+            Pending::WAIT,
+            Pending::TARGET,
+            Pending::WINDOWS,
+            Pending::STATUS,
+        ];
+        let session = sample_isolated("alpha", live_instance());
+        for pending in pending {
+            let error = session
+                .shared(pending)
+                .err()
+                .ok_or_else(|| format!("`{}` fell through to the shared path", pending.command))?
+                .to_string();
+            assert!(error.contains(pending.command), "{error}");
+            assert!(error.contains(pending.slice), "{error}");
+            assert!(error.contains("not implemented"), "{error}");
+            assert!(error.contains("no compositor state was touched"), "{error}");
+        }
+        // The same accessor hands the payload over in shared mode.
+        assert_eq!(
+            sample_session().shared(Pending::STATUS)?.output,
+            "hyprpilot"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_resize_is_refused_as_out_of_cycle() -> Result<(), Box<dyn StdError>> {
+        let error = sample_isolated("alpha", live_instance())
+            .shared_or(resize_unsupported)
+            .err()
+            .ok_or("isolated resize fell through to the shared path")?
+            .to_string();
+        assert!(error.contains("session resize"), "{error}");
+        assert!(error.contains("not supported"), "{error}");
+        assert!(error.contains("--isolated --size"), "{error}");
         Ok(())
     }
 
@@ -2136,7 +2778,7 @@ mod tests {
         let path = dir.path().join("session.json");
         std::fs::write(&path, b"{broken")?;
 
-        let error = load_for_teardown_from(&path)
+        let error = load_pre_v3_from(&path)
             .err()
             .ok_or("corrupt session unexpectedly loaded")?;
         assert!(matches!(&error, Error::CorruptSession { .. }));
