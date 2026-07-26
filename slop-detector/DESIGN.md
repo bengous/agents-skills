@@ -82,14 +82,9 @@ slop-detector/
 
 ## 4. Triggering Strategy
 
-The description field was designed for the model's scanning pass, not for human readability. It includes:
+`disable-model-invocation: true`. The trigger-phrase description it replaced ("check this for slop", "ça fait IA", "suena a IA") was loaded into every agent's context on every turn, including the sessions that never audit prose.
 
-- **Action phrases the user would actually type**: "check this for slop", "does this sound AI", "rewrite this", "make this sound human"
-- **Genre-specific triggers**: "edit my LinkedIn post", "fix my cover letter"
-- **Colloquial variants**: "deslop", "voice check", "too much fluff", "sounds like ChatGPT"
-- **Agent-to-agent trigger**: "reviewing any text output from another agent or skill that will be published" — this lets other skills in a pipeline invoke slop-detector as a quality gate
-
-The scope and non-scope sections prevent false triggers. "Grammar-only proofreading" and "code review" are explicitly excluded so the skill doesn't activate for tasks where a different tool is more appropriate.
+Cost of the switch: no pipeline reaches slop-detector through the Skill tool anymore. A skill wanting a voice pass on its own output has to inline the check.
 
 ---
 
