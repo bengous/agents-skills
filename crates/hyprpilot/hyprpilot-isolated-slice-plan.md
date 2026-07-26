@@ -498,6 +498,40 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
     main sur la souris explique ces trois assertions aussi bien que le code.
     Re-run souris et clavier immobiles avant toute correction : corriger sur ce
     signal-là réécrirait la gestion du curseur pour rien.
+- **Runs 2 à 4 du gate, même soirée** : 26/29, puis 27/29, puis les trois
+  scénarios visés au vert. Ce que ces runs ont tranché :
+  - les deux rouges du run 1 soupçonnés d'être une main sur la souris
+    (`isolated_spawn`, `isolated_start_match_failure`) passent souris immobile.
+    Ne pas recâbler `deviation` sur le curseur était donc le bon choix : le
+    champ `cursor` de `HostSnapshot` reste un repli de rollback, pas un
+    invariant. La leçon de méthode : une assertion « l'hôte n'a pas bougé »
+    jouée sur une machine qu'un humain utilise mesure aussi cet humain.
+  - `isolated_show_occluded` : défaut du scénario, pas du crate. Il déplaçait le
+    curseur hors centre, prenait sa référence, puis basculait le workspace de
+    l'utilisateur pour occulter la console — et revenir sur ce workspace y
+    refocalise sa fenêtre, ce qui fait warper le curseur par Hyprland en son
+    centre. Sur le 5120x1440 de la machine de test, (3200, 733) est exactement
+    ce centre, 733 étant la moitié de la hauteur utile sous une barre de 26 px.
+    Le premier correctif tenté (renvoyer la console sur le workspace de l'agent
+    avant de tuer son compositeur) n'a rien changé au rouge, ce qui a écarté
+    l'hypothèse du refocus à la mort de la console ; il est conservé parce qu'il
+    supprime une vraie perturbation, mesurée nulle part ailleurs.
+  - `isolated_target` : `target` prouve le focus dans l'instance, jamais qu'une
+    frame l'ait présenté, et les deux toplevels sont empilés à la même
+    géométrie. Aucune API ne prouve qu'un nouvel empilement a été présenté ;
+    seule une capture qui change le prouve, et seul l'appelant détient l'image
+    d'avant. C'est donc `wait --changed-from`, côté appelant, dit dans SKILL.md.
+  - `start_offscreen` au run 2 : son préflight exige cinq lectures identiques du
+    focus et du curseur en 3 s, mis en échec par un mouvement de souris à la
+    seconde du lancement. Vert aux runs suivants. Une récidive souris immobile
+    accuserait la tolérance du préflight, pas le crate.
+  - `isolated_show_hide` au run 3 : `session start` a expiré, console jamais
+    mappée (« 3 host windows, none of them ours ») alors que l'instance avait
+    bien été trouvée par marqueur. Vert 3 fois sur 4, dont deux d'affilée
+    ensuite : flake de timing, non reproduit, non corrigé. Rendu diagnosticable
+    en revanche — le rollback effaçait le répertoire de session, donc le log du
+    nested que le message d'échec citait, et ses 20 dernières lignes partent
+    maintenant sur stderr avant la suppression.
 - **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 ✅ (`f2b6f7d` +
   `12bbf53`, G1 81 tests) · S2 S3 S4 S6 ✅ (`3593d9d`, 96 tests) · S5 S8 ✅
   (`5f55739`) · S7 ✅ (`1b721cd`) · S9 S10 S11 ✅ (`2793fcb`, 142 tests) ·

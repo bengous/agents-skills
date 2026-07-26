@@ -641,6 +641,12 @@ impl Start<'_> {
     /// user's desktop, and reports the original failure alongside whatever the
     /// rollback could not undo.
     fn rolled_back(&self, error: Error, acquired: &Acquired, host: &HostSnapshot) -> Error {
+        // The rollback is about to remove the session directory the failure message
+        // points at, so the tail of the nested compositor's log is emitted here or
+        // lost with it. Without it a start that fails leaves nothing to diagnose,
+        // which is exactly how a console window that never mapped stayed
+        // unexplained on the third gate run.
+        warn_with_nested_log_tail(&self.dir);
         let restore = self.rollback(acquired, host);
         if restore.is_empty() {
             error
@@ -1211,6 +1217,38 @@ fn clear_runtime_dir(
 /// lives in the directory step 3 removes, so it is copied next to the session's
 /// own log first: that copy is what a teardown failing after this point leaves
 /// behind.
+/// Enough to carry a compositor's own explanation of why it never got as far as
+/// mapping its console, and short enough to stay readable in a command's stderr.
+const NESTED_LOG_TAIL_LINES: usize = 20;
+
+fn warn_with_nested_log_tail(dir: &Path) {
+    let path = dir.join(NESTED_LOG_FILE);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let tail: Vec<&str> = text
+        .lines()
+        .rev()
+        .take(NESTED_LOG_TAIL_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if tail.is_empty() {
+        return;
+    }
+    let mut stderr = std::io::stderr();
+    let _ = writeln!(
+        stderr,
+        "hyprpilot: warning: last {} lines of {} before the rollback removed it:",
+        tail.len(),
+        path.display()
+    );
+    for line in tail {
+        let _ = writeln!(stderr, "hyprpilot:   {line}");
+    }
+}
+
 fn keep_instance_log(instance_dir: &Path, session_dir: &Path) -> String {
     let source = instance_dir.join(NESTED_LOG_FILE);
     if !source.is_file() {
