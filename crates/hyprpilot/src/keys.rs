@@ -368,6 +368,7 @@ mod tests {
         Isolated {
             output: "hyprpilot-alpha".to_owned(),
             workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
             size: [1600, 1000],
             shown: false,
             active_address: active_address.map(str::to_owned),

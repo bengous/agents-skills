@@ -206,6 +206,10 @@ enum Blocked {
         session: String,
         host_output: String,
         workspace: String,
+        /// The console address while the desktop is shown: the invariant then
+        /// holds on the user's own workspace, not on the headless output, and a
+        /// diagnosis pointing at the headless one would name the wrong place.
+        shown_console: Option<String>,
     },
 }
 
@@ -220,12 +224,17 @@ impl Blocked {
                 session,
                 host_output,
                 workspace,
-            } => isolated::frozen_reason(
-                session,
-                host_output,
-                workspace,
-                &isolated::frozen_observation(host_output, workspace),
-            ),
+                shown_console,
+            } => {
+                let site = shown_console.as_deref().map_or(
+                    isolated::FrameSite::Headless {
+                        output: host_output,
+                        workspace,
+                    },
+                    |console| isolated::FrameSite::Shown { console },
+                );
+                isolated::frames_reason(session, &site, &isolated::frames_observation(&site))
+            }
         }
     }
 }
@@ -321,6 +330,7 @@ impl Frame {
                 session: name.to_owned(),
                 host_output: isolated.output.clone(),
                 workspace: isolated.workspace.clone(),
+                shown_console: isolated.shown.then(|| target.console.clone()),
             },
         })
     }
@@ -438,7 +448,28 @@ pub fn parse_timeout(raw: &str) -> Result<Duration, Error> {
     Ok(Duration::from_secs_f64(value))
 }
 
+/// §4.7 of the isolated design: `ready` means the window is capturable, so an
+/// agent desktop start proves it with a real capture through the socket it just
+/// recorded rather than inferring it from what the compositors answer. The image
+/// is thrown away — what it proves is that grim reached that `WAYLAND_DISPLAY`
+/// and got a frame out of it, which is what a socket attributed to the wrong
+/// instance fails at.
+pub fn probe(session_name: &str) -> Result<(), Error> {
+    let frame = Frame::for_session(session_name, false)?;
+    let dir = session::session_dir(session_name)?;
+    fs::create_dir_all(&dir).map_err(|source| Error::Io {
+        context: format!("creating {}", dir.display()),
+        source,
+    })?;
+    let path = dir.join("ready.png");
+    let captured = frame.capture(&path).and_then(|()| read_png(&path));
+    let _ = fs::remove_file(&path);
+    captured.map(|_| ())
+}
+
 pub fn wait(session_name: &str, mode: &WaitMode, timeout: Duration) -> Result<String, Error> {
+    // Resolved once here so a session that cannot be captured at all fails before
+    // anything is written; the loop resolves it again on every iteration.
     let frame = Frame::for_session(session_name, false)?;
     let dir = session::session_dir(session_name)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io {
@@ -448,7 +479,7 @@ pub fn wait(session_name: &str, mode: &WaitMode, timeout: Duration) -> Result<St
     let poll_paths = scratch_paths(&dir);
 
     let started = Instant::now();
-    let result = wait_loop(&frame, mode, timeout, &poll_paths, started);
+    let result = wait_loop(session_name, frame, mode, timeout, &poll_paths, started);
     for path in &poll_paths {
         // Best-effort scratch cleanup; the wait result is what matters.
         let _ = fs::remove_file(path);
@@ -456,8 +487,37 @@ pub fn wait(session_name: &str, mode: &WaitMode, timeout: Duration) -> Result<St
     result
 }
 
+/// Two captures only mean something about the same window when they were framed
+/// the same way. A freshly mapped window emits late events and resizes, which is
+/// exactly what `wait --stable` is used on right after a start: comparing through
+/// a stale crop would call a frame stable once the wallpaper around the window
+/// stopped moving.
+#[derive(Default)]
+struct Stability {
+    framing: Option<String>,
+    previous: Option<Image>,
+}
+
+impl Stability {
+    fn observe(&mut self, framing: Option<String>, current: Image) -> bool {
+        let reframed = self.framing != framing;
+        self.framing = framing;
+        if reframed {
+            self.previous = Some(current);
+            return false;
+        }
+        let stable = self
+            .previous
+            .as_ref()
+            .is_some_and(|previous| previous.identical(&current));
+        self.previous = Some(current);
+        stable
+    }
+}
+
 fn wait_loop(
-    frame: &Frame,
+    session_name: &str,
+    first: Frame,
     mode: &WaitMode,
     timeout: Duration,
     poll_paths: &[PathBuf; 2],
@@ -468,11 +528,15 @@ fn wait_loop(
         WaitMode::ChangedFrom(path) => Some(read_png(path)?),
     };
 
-    let mut previous: Option<Image> = None;
+    let mut frame = first;
+    let mut stability = Stability::default();
     let mut captures: u32 = 0;
     loop {
         if captures > 0 {
             thread::sleep(WAIT_POLL_INTERVAL);
+            // The window may have moved or resized since the last capture, so the
+            // crop is read again rather than reused.
+            frame = Frame::for_session(session_name, false)?;
         }
         if started.elapsed() > timeout {
             let what = match mode {
@@ -499,14 +563,11 @@ fn wait_loop(
                     started.elapsed().as_millis()
                 ));
             }
-        } else {
-            if previous.is_some_and(|p| p.identical(&current)) {
-                return Ok(format!(
-                    "stable after {}ms ({captures} capture(s))",
-                    started.elapsed().as_millis()
-                ));
-            }
-            previous = Some(current);
+        } else if stability.observe(frame.geometry.clone(), current) {
+            return Ok(format!(
+                "stable after {}ms ({captures} capture(s))",
+                started.elapsed().as_millis()
+            ));
         }
     }
 }
@@ -514,8 +575,8 @@ fn wait_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        Blocked, Image, Ran, crop_geometry, ensure_capture_visible, output_dir, parse_timeout,
-        read_png, run_bounded, scratch_paths,
+        Blocked, Image, Ran, Stability, crop_geometry, ensure_capture_visible, output_dir,
+        parse_timeout, read_png, run_bounded, scratch_paths,
     };
     use crate::error::Error;
     use crate::hypr::Monitor;
@@ -710,6 +771,37 @@ mod tests {
         // Two agent desktops driven in parallel share no file.
         assert_ne!(scratch_paths(alpha), scratch_paths(beta));
         assert_ne!(output_dir(alpha, None), output_dir(beta, None));
+    }
+
+    #[test]
+    fn stability_only_compares_captures_framed_the_same_way() {
+        let image = |byte: u8| Image {
+            width: 2,
+            height: 1,
+            data: vec![byte, byte, byte, 255, byte, byte, byte, 255],
+        };
+        let crop = |geometry: &str| Some(geometry.to_owned());
+        let mut stability = Stability::default();
+
+        // One capture is never stable, two identical ones through the same crop are.
+        assert!(!stability.observe(crop("0,0 800x600"), image(1)));
+        assert!(stability.observe(crop("0,0 800x600"), image(1)));
+
+        // A window that moved or resized between two captures: the frames may well
+        // be byte-identical (a window on a uniform background, shifted) while the
+        // crop now covers something else, so the comparison starts over instead of
+        // reporting a window that has not settled as stable.
+        let mut settling = Stability::default();
+        assert!(!settling.observe(crop("0,0 800x600"), image(1)));
+        assert!(!settling.observe(crop("10,10 800x600"), image(1)));
+        assert!(!settling.observe(crop("10,10 820x600"), image(1)));
+        assert!(settling.observe(crop("10,10 820x600"), image(1)));
+
+        // A frame that changed under an unchanged crop is not stable either.
+        let mut animating = Stability::default();
+        assert!(!animating.observe(crop("0,0 800x600"), image(1)));
+        assert!(!animating.observe(crop("0,0 800x600"), image(2)));
+        assert!(animating.observe(crop("0,0 800x600"), image(2)));
     }
 
     #[test]

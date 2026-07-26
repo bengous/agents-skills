@@ -276,9 +276,11 @@ fn write_unsupported(
 fn write_nested_refused(f: &mut fmt::Formatter<'_>, session: &str) -> fmt::Result {
     write!(
         f,
-        "{} is set (agent desktop `{session}`): a headless output created inside a nested Hyprland \
-         stays 0x0, so an agent desktop cannot be built from inside another one — run this from \
-         the user's session",
+        "{} is set, so this command is running inside agent desktop `{session}`, where `hyprctl` \
+         answers for the nested compositor: a headless output created there stays 0x0 and its \
+         captures come back blank, and every process of this desktop carries that marker — the \
+         shell this command was typed in included — so a sweep from in here could take the caller \
+         down with it; run hyprpilot from the user's session instead",
         crate::isolated::AGENT_SESSION_ENV
     )
 }

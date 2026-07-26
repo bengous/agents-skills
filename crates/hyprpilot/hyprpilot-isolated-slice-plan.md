@@ -409,6 +409,14 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
   nom de binaire). Contrainte pratique relevée : `sun_path` est limité à 108
   octets et `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/bus.sock` passe. À
   proposer comme cycle suivant, pas à glisser dans celui-ci.
+- **Résidu connu, documenté plutôt que corrigé** : si le process hyprpilot est
+  tué brutalement entre le spawn du nested et la persistance de son stade
+  `Live`, l'état reste `Pending` sans signature. Le nested lui-même est
+  rattrapable (le nonce d'instance vit dans `Isolated`, donc le balayage du
+  teardown le trouve), mais `$XDG_RUNTIME_DIR/hypr/<sig>/` ne peut plus être
+  nommé : litière inerte en tmpfs, effacée au reboot. Le fermer proprement
+  demanderait un troisième stade d'`Instance`, donc une forme de schéma de plus
+  pour un cas qui n'arrive que sur mort brutale de l'outil : disproportionné.
 - **Effet de bord à surveiller** (S0) : sur un run du probe, un client GTK4 de
   l'hôte a SIGSEGV à la milliseconde du `output create headless`, dans
   `libgtk-4.so.1`. Non systématique, rien ne le rattache à un défaut de la
@@ -422,5 +430,22 @@ Chaîne complète start → app → type/key/click/scroll → shot → wait → 
   une instance) a été posée par l'orchestrateur avant S2, puisque toutes les
   slices isolées en dépendent.
 - **Suivi des slices** : S0 ✅ (`d5369d4`, UNSUPPORTED) · S1 ✅ (`f2b6f7d` +
-  `12bbf53`, G1 81 tests) · S2 · S3 · CP-A · S4 · S5 · CP-B · S6 · S7 · S8 ·
-  CP-C · S9 · S10 · S11 · CP-D · S12
+  `12bbf53`, G1 81 tests) · S2 S3 S4 S6 ✅ (`3593d9d`, 96 tests) · S5 S8 ✅
+  (`5f55739`) · S7 ✅ (`1b721cd`) · S9 S10 S11 ✅ (`2793fcb`, 142 tests) ·
+  S12 ✅ (`8449c81`) · scénarios G2 ✅ (`40a1bda`) · **CP-A à CP-D non joués**.
+- **Écart d'exécution assumé** : les slices ont été livrées en quatre vagues
+  d'agents en parallèle sur fichiers disjoints, pas une par une avec son
+  checkpoint. Les gates G1 ont tourné après chaque vague, mais les checkpoints
+  G2 n'ont pas pu s'intercaler : le classifieur de permissions de
+  l'orchestrateur refuse l'exécution de `scripts/hyprland-gate.sh`, qui pilote
+  le compositeur vivant. Conséquence à retenir avant toute confiance dans ce
+  code : **aucune ligne du mode isolé n'a jamais tourné contre un compositeur
+  réel**. Les 29 scénarios existent, aucun n'a été joué.
+- **Round de revue adversariale** (en remplacement partiel du G2 manquant) :
+  16 défauts confirmés sur le diff des quatre vagues, dont 5 faisant atterrir
+  la console d'un bureau agent sur le bureau utilisateur (rollback et teardown
+  retirant l'output avant le reap de la console, échec de mode-set laissant un
+  output orphelin sans état, balayage par variable d'environnement héritable
+  tuant le shell appelant, capture faisant confiance au drapeau `shown` au lieu
+  d'observer la composition). Corrigés dans un commit dédié, avec les scénarios
+  d'échec de start qui les rendent observables — le gate n'en avait aucun.

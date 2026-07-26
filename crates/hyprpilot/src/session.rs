@@ -124,6 +124,11 @@ pub struct Isolated {
     /// Workspace renamed on that output, `agent-<name>`.
     pub workspace: String,
     pub size: [u32; 2],
+    /// Nonce of the start that built this desktop, injected into every one of
+    /// its processes next to the session marker. The session marker alone is
+    /// inheritable — a shell that exported it carries it too — so it names a
+    /// desktop, never a process this tool owns; both together do.
+    pub instance_nonce: String,
     /// True while the console window sits on the user's workspace
     /// (`session show`).
     pub shown: bool,
@@ -358,9 +363,18 @@ pub struct CurrentSession {
     pub workspace: String,
 }
 
+/// `$XDG_RUNTIME_DIR` itself: the Wayland sockets and the `hypr/` instance
+/// directories of every compositor live directly in there, next to this crate's
+/// own subdirectory. One accessor for the whole crate, so no module invents a
+/// second way to read that variable.
+pub fn runtime_root() -> Result<PathBuf, Error> {
+    env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .ok_or(Error::Env("XDG_RUNTIME_DIR"))
+}
+
 pub fn runtime_dir() -> Result<PathBuf, Error> {
-    let base = env::var_os("XDG_RUNTIME_DIR").ok_or(Error::Env("XDG_RUNTIME_DIR"))?;
-    Ok(PathBuf::from(base).join("hyprpilot"))
+    Ok(runtime_root()?.join("hyprpilot"))
 }
 
 pub fn sessions_dir() -> Result<PathBuf, Error> {
@@ -713,6 +727,14 @@ pub fn find_output(name: &str) -> Result<Option<hypr::Monitor>, Error> {
     Ok(hypr::monitors()?.into_iter().find(|m| m.name == name))
 }
 
+/// Whether an executable of that name is reachable through `PATH`. One
+/// implementation for the crate: `doctor` and the agent-desktop preflight ask
+/// the same question of `grim` and of `Hyprland`.
+pub fn binary_on_path(binary: &str) -> bool {
+    env::var_os("PATH")
+        .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
+}
+
 pub fn parse_size(raw: &str) -> Result<(u32, u32), Error> {
     let invalid = || Error::Invalid {
         what: "size",
@@ -958,34 +980,20 @@ fn effective_output_size(output: &hypr::Monitor) -> Result<[u32; 2], Error> {
     ])
 }
 
-fn monitor_rule(output: &hypr::Monitor, width: u32, height: u32) -> Result<String, Error> {
-    let x = exact_layout_integer(output.x, "x", &output.name)?;
-    let y = exact_layout_integer(output.y, "y", &output.name)?;
-    Ok(format!(
-        "{},{width}x{height}@60,{x}x{y},{}",
-        output.name, output.scale
-    ))
-}
-
+/// Through `hypr`, like every other `hyprctl` call of the crate: a `Command` of
+/// its own here would be the one path able to address a compositor the `Ctl`
+/// layer never routed (see the `hypr` module note).
 fn resize_monitor(output: &hypr::Monitor, width: u32, height: u32) -> Result<(), Error> {
-    let rule = monitor_rule(output, width, height)?;
-    let command = format!("hyprctl keyword monitor {rule}");
-    let result = Command::new("hyprctl")
-        .args(["keyword", "monitor", &rule])
-        .output()
-        .map_err(|source| Error::Io {
-            context: format!("running `{command}`"),
-            source,
-        })?;
-    let stdout = String::from_utf8_lossy(&result.stdout).trim().to_owned();
-    if result.status.success() && stdout == "ok" {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
-    Err(Error::Tool {
-        command,
-        message: if stderr.is_empty() { stdout } else { stderr },
-    })
+    hypr::keyword_monitor_at(
+        &output.name,
+        width,
+        height,
+        (
+            exact_layout_integer(output.x, "x", &output.name)?,
+            exact_layout_integer(output.y, "y", &output.name)?,
+        ),
+        output.scale,
+    )
 }
 
 fn resize_has_applied(
@@ -996,6 +1004,11 @@ fn resize_has_applied(
     requested_size == previous_size || effective_size != previous_size
 }
 
+// TODO: this loop and the five below it (`wait_for_window`,
+// `wait_for_session_workspace`, `wait_for_verified_placement`,
+// `wait_for_target_layout`, `wait_window_gone`) each re-implement the bounded
+// "poll, then report the last observation" loop that `isolated::poll_until`
+// already provides; fold them into that one helper.
 fn wait_for_effective_resize(
     output_name: &str,
     previous_size: [u32; 2],
@@ -2159,7 +2172,7 @@ mod tests {
         ModeState, Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session, Shared,
         StateLocation, Step, TargetLookup, TargetMode, TrackedWindow, WindowAction,
         ambiguous_error, clear_state, effective_output_size, ensure_output_empty_for_sweep,
-        find_shared_session_in, load_from, load_pre_v3_from, monitor_rule, parse_size,
+        exact_layout_integer, find_shared_session_in, load_from, load_pre_v3_from, parse_size,
         persist_target_before_activation, place, refuse_pre_v3_state_at, refuse_teardown_flags,
         report_teardown, resize_has_applied, resize_unsupported, resolve, resolve_name_from,
         save_isolated, save_new_to, save_over, target_disposition, target_layout_is_verified,
@@ -2170,7 +2183,7 @@ mod tests {
     use std::error::Error as StdError;
     use std::time::Duration;
 
-    use crate::hypr::{Client, Monitor};
+    use crate::hypr::{self, Client, Monitor};
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
     const AMBIGUOUS_CLIENTS_JSON: &str = include_str!("../fixtures/clients-ambiguous.json");
@@ -2222,6 +2235,7 @@ mod tests {
             state: ModeState::Isolated(Isolated {
                 output: format!("hyprpilot-{name}"),
                 workspace: format!("agent-{name}"),
+                instance_nonce: "4242-1700000000000000000".to_owned(),
                 size: [1920, 1080],
                 shown: false,
                 active_address: active.map(str::to_owned),
@@ -2530,9 +2544,19 @@ mod tests {
     #[test]
     fn monitor_rule_preserves_position_and_scale() -> Result<(), Box<dyn StdError>> {
         let monitors: Vec<Monitor> = serde_json::from_str(MONITORS_JSON)?;
+        let output = &monitors[1];
 
         assert_eq!(
-            monitor_rule(&monitors[1], 1200, 800)?,
+            hypr::monitor_rule_at(
+                &output.name,
+                1200,
+                800,
+                (
+                    exact_layout_integer(output.x, "x", &output.name)?,
+                    exact_layout_integer(output.y, "y", &output.name)?,
+                ),
+                output.scale,
+            ),
             "headless-ci,1200x800@60,5120x0,1"
         );
         Ok(())
@@ -2829,6 +2853,13 @@ mod tests {
             };
             assert_eq!(isolated.output, "hyprpilot-alpha", "{label}");
             assert_eq!(isolated.workspace, "agent-alpha", "{label}");
+            // Persisted from the pending stage on: a teardown of a start that never
+            // reached a live instance still has to know which processes are this
+            // desktop's, and one marker is not an identity.
+            assert_eq!(
+                isolated.instance_nonce, "4242-1700000000000000000",
+                "{label}"
+            );
             assert_eq!(isolated.size, [1920, 1080], "{label}");
             assert!(!isolated.shown, "{label}");
             assert_eq!(isolated.active_address.as_deref(), active, "{label}");

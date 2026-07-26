@@ -1,5 +1,6 @@
 //! Thin wrapper around `hyprctl` plus the serde types for its JSON output.
 
+use std::collections::BTreeSet;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -244,6 +245,18 @@ pub fn monitors() -> Result<Vec<Monitor>, Error> {
     monitors_on(Ctl::Host)
 }
 
+/// Every workspace the host knows, by name. The isolated start snapshots this
+/// before it creates its output: a workspace that already existed belongs to the
+/// user, whatever it holds, so only one the new output brought with it may be
+/// renamed (§12.1 of the isolated design).
+pub fn workspace_names() -> Result<BTreeSet<String>, Error> {
+    let workspaces: Vec<WorkspaceRef> = run_json_on(Ctl::Host, &["workspaces"])?;
+    Ok(workspaces
+        .into_iter()
+        .map(|workspace| workspace.name)
+        .collect())
+}
+
 pub fn devices() -> Result<Devices, Error> {
     run_json_on(Ctl::Host, &["devices"])
 }
@@ -315,6 +328,28 @@ pub fn keyword_monitor(name: &str, width: u32, height: u32) -> Result<(), Error>
         "keyword",
         "monitor",
         &headless_monitor_rule(name, width, height),
+    ])
+}
+
+/// Mode-set rule for an output that already sits in the layout: its position and
+/// scale are handed back unchanged, because resizing an output must neither move
+/// it nor rescale it.
+pub fn monitor_rule_at(name: &str, width: u32, height: u32, at: (i32, i32), scale: f64) -> String {
+    let (x, y) = at;
+    format!("{name},{width}x{height}@60,{x}x{y},{scale}")
+}
+
+pub fn keyword_monitor_at(
+    name: &str,
+    width: u32,
+    height: u32,
+    at: (i32, i32),
+    scale: f64,
+) -> Result<(), Error> {
+    expect_ok(&[
+        "keyword",
+        "monitor",
+        &monitor_rule_at(name, width, height, at, scale),
     ])
 }
 

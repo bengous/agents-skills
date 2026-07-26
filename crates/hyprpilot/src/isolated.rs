@@ -16,18 +16,26 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::capture;
 use crate::error::{Error, RestoreFailure};
 use crate::hypr::{self, Ctl};
 use crate::session::{self, Instance, Isolated, ModeState, Session};
 
-/// Injected into the nested compositor's environment at spawn and refused at
-/// the top of `start`: an output created *inside* a nested Hyprland stays 0x0
+/// Injected into the nested compositor's environment at spawn and refused at the
+/// top of every command: an output created *inside* a nested Hyprland stays 0x0
 /// (fact §2.7), so this machinery must only ever run on the user's session.
-/// Every process of an agent desktop inherits it, which is also how a failed
-/// start knows what to kill.
+/// Every process of an agent desktop inherits it, which is how it names a
+/// desktop — but only a desktop: a shell that exported it, and anything launched
+/// from inside one, carries it too, so it never identifies a process this tool
+/// owns.
 pub const AGENT_SESSION_ENV: &str = "HYPRPILOT_AGENT_SESSION";
+/// Injected next to it at spawn, carrying a nonce only that one start knows, and
+/// persisted in its state. A process is this desktop's only when it carries
+/// **both**: an inherited or hand-exported session marker then selects nothing,
+/// which is what keeps a sweep from signalling the caller's own shell.
+pub const AGENT_INSTANCE_ENV: &str = "HYPRPILOT_AGENT_INSTANCE";
 /// Class of the window an aquamarine-backed nested Hyprland maps on the host
 /// (fact §2.5). Its pid is the nested compositor's pid.
 const CONSOLE_CLASS: &str = "aquamarine";
@@ -47,9 +55,9 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a rolled-back agent desktop gets to exit on `dispatch exit` and
 /// `SIGTERM` before `SIGKILL`.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
-const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// §6.2, on the registered pid: `dispatch exit` first, then `SIGTERM`, then
-/// `SIGKILL`, then the teardown refuses to remove the output.
+/// §6.2, on the registered pid and on the marker sweep alike: `dispatch exit`
+/// first, then `SIGTERM`, then `SIGKILL`, then the teardown refuses to remove the
+/// output.
 const EXIT_ESCALATION: session::Escalation = session::Escalation {
     polite: EXIT_GRACE,
     term: EXIT_GRACE,
@@ -115,6 +123,9 @@ struct Start<'a> {
     path: PathBuf,
     output: String,
     workspace: String,
+    /// Nonce injected at spawn and persisted, so every later command and every
+    /// sweep identifies this desktop's processes by both markers.
+    nonce: String,
     size: [u32; 2],
     command: &'a str,
     criteria: session::Criteria<'a>,
@@ -144,6 +155,11 @@ impl Live {
 #[derive(Default)]
 struct Acquired {
     output: bool,
+    /// Kept as soon as the spawn's runtime directory is discovered, before the
+    /// console is identified: the nested compositor leaves that directory behind
+    /// (fact §2.9), and a start that fails between the two must still be able to
+    /// address it and remove it.
+    signature: Option<String>,
     instance: Option<Live>,
 }
 
@@ -152,6 +168,10 @@ struct Acquired {
 /// `output remove` has to warp back to (fact §2.8).
 struct HostSnapshot {
     workspaces: BTreeMap<String, String>,
+    /// Every workspace name that existed before this start created its output.
+    /// One of them is the user's, whatever it holds and wherever it is: only a
+    /// workspace the new output brought with it may be renamed (§12.1).
+    workspace_names: BTreeSet<String>,
     active_window: Option<String>,
     cursor: (i32, i32),
 }
@@ -174,7 +194,7 @@ pub fn start(
     match_class: Option<&str>,
     size: &str,
 ) -> Result<String, Error> {
-    refuse_nested_marker(agent_session_marker().as_deref())?;
+    refuse_when_nested()?;
     let command = app.ok_or_else(|| Error::Invalid {
         what: "session start --isolated",
         value: "(no --app)".to_owned(),
@@ -197,6 +217,7 @@ pub fn start(
         path: session::session_path(name)?,
         output: output_name(name),
         workspace: workspace_name(name),
+        nonce: instance_nonce()?,
         size,
         command,
         criteria: session::Criteria {
@@ -223,14 +244,13 @@ pub fn start(
 impl Start<'_> {
     /// Steps 2 to 7 of §4, each persisting what it acquired before moving on.
     fn build(&self, acquired: &mut Acquired, host: &HostSnapshot) -> Result<String, Error> {
-        self.create_output()?;
-        acquired.output = true;
+        self.create_output(acquired)?;
         self.persist(Instance::Pending, None)?;
 
         self.rename_workspace(host)?;
         let config = self.write_config()?;
 
-        let live = self.spawn_instance(&config)?;
+        let live = self.spawn_instance(&config, acquired)?;
         acquired.instance = Some(live.clone());
         self.persist(live.instance(), None)?;
 
@@ -239,6 +259,11 @@ impl Start<'_> {
         let window = self.launch_app(&live.signature)?;
         self.persist(live.instance(), Some(window.address.clone()))?;
         self.wait_until_ready(&live, &window.address)?;
+        // §4.7: `ready` = the window is capturable, so the start proves it with a
+        // real capture through the socket it recorded instead of inferring it
+        // from what the compositors answer. A socket handed to the wrong instance
+        // — the risk of a concurrent start — fails exactly here.
+        capture::probe(self.name)?;
         self.warn_on_nested_size(&live);
 
         Ok(format!(
@@ -264,6 +289,7 @@ impl Start<'_> {
             state: ModeState::Isolated(Isolated {
                 output: self.output.clone(),
                 workspace: self.workspace.clone(),
+                instance_nonce: self.nonce.clone(),
                 size: self.size,
                 shown: false,
                 active_address,
@@ -284,8 +310,13 @@ impl Start<'_> {
 
     /// §4.2. Resolution *and* scale are imposed: a headless output otherwise
     /// inherits a non-trivial scale (fact §2.10).
-    fn create_output(&self) -> Result<(), Error> {
+    fn create_output(&self, acquired: &mut Acquired) -> Result<(), Error> {
         hypr::output_create_headless(&self.output)?;
+        // The output exists from this line on, whether or not the mode-set below
+        // applies and whether or not the check ever passes: the rollback has to
+        // remove it either way, or it stays in the user's layout with no session
+        // state left to find it (§4.1).
+        acquired.output = true;
         hypr::keyword_monitor(&self.output, self.size[0], self.size[1])?;
         let [width, height] = self.size;
         poll_until(
@@ -348,7 +379,12 @@ impl Start<'_> {
                     self.workspace, self.output
                 )
             },
-        )
+        )?;
+        // Bound to its output, like the parked workspace of shared mode: if this
+        // workspace is destroyed while the console is shown, `hide` recreates it
+        // with `movetoworkspacesilent`, and without the rule that recreation
+        // lands on the monitor the console currently sits on — the user's.
+        hypr::keyword_workspace(&self.workspace, &self.output)
     }
 
     /// §4.4. The keymap is the only dynamic part, so it is read from the host,
@@ -368,11 +404,11 @@ impl Start<'_> {
     /// §4.5. The one-shot window rules keep the spawn from stealing focus
     /// (fact §2.4); discovery then identifies the instance by diffing what the
     /// spawn created.
-    fn spawn_instance(&self, config: &Path) -> Result<Live, Error> {
+    fn spawn_instance(&self, config: &Path, acquired: &mut Acquired) -> Result<Live, Error> {
         let log = self.dir.join(NESTED_LOG_FILE);
-        let command = spawn_command(self.name, &self.workspace, config, &log)?;
+        let command = spawn_command(&self.marker(), &self.workspace, config, &log)?;
         let instances = instances_dir()?;
-        let runtime = runtime_root()?;
+        let runtime = session::runtime_root()?;
         let signatures_before = dir_entries(&instances)?;
         let sockets_before = wayland_sockets(&runtime)?;
         let windows_before = hypr::clients()?
@@ -389,6 +425,10 @@ impl Start<'_> {
             "a new Hyprland instance",
             &log,
         )?;
+        // Kept before the console is looked for: from here on the compositor has
+        // a runtime directory to exit politely and to remove (fact §2.9), and a
+        // failure below must not throw that away.
+        acquired.signature = Some(signature.clone());
         let console = self.wait_for_console(&windows_before, &log)?;
         let wayland_display = wait_for_new_entry(
             &runtime,
@@ -421,11 +461,12 @@ impl Start<'_> {
         before: &BTreeSet<String>,
         log: &Path,
     ) -> Result<hypr::Client, Error> {
+        let marker = self.marker();
         poll_until(
             session::WINDOW_APPEAR_TIMEOUT,
             || {
                 let clients = hypr::clients()?;
-                let ours = |pid: i32| process_carries_marker(pid, self.name);
+                let ours = |pid: i32| process_carries_marker(pid, &marker);
                 let console = select_console(&clients, before, &ours)?;
                 Ok(console
                     .cloned()
@@ -434,9 +475,11 @@ impl Start<'_> {
             |observed| {
                 format!(
                     "the console window of agent desktop `{name}` (class {CONSOLE_CLASS}, \
-                     {AGENT_SESSION_ENV}={name}) (last observed: {observed}); nested log: {}",
+                     {AGENT_SESSION_ENV}={name}, {AGENT_INSTANCE_ENV}={nonce}) (last observed: \
+                     {observed}); nested log: {}",
                     log.display(),
                     name = self.name,
+                    nonce = self.nonce,
                 )
             },
         )
@@ -568,6 +611,13 @@ impl Start<'_> {
             .find(|monitor| monitor.name == self.output))
     }
 
+    fn marker(&self) -> Marker<'_> {
+        Marker {
+            session: self.name,
+            instance: &self.nonce,
+        }
+    }
+
     /// Undoes what exists, in the order that never drops a live window onto the
     /// user's desktop, and reports the original failure alongside whatever the
     /// rollback could not undo.
@@ -591,6 +641,32 @@ impl Start<'_> {
             return vec![failure];
         }
         let mut failures = Vec::new();
+        // Fact §2.9: what the nested compositor left in $XDG_RUNTIME_DIR/hypr is
+        // ours to remove, even when the start never got as far as recording a live
+        // instance in its state — a `Pending` state has no signature to name that
+        // directory with, so this is the only place that can. Hence before the
+        // console wait, which is about another resource and may time out. The log
+        // stays where the spawn redirected it.
+        if let Some(signature) = &acquired.signature {
+            let (_, failure) = clear_instance_runtime(signature, None);
+            failures.extend(failure);
+        }
+        // The compositor is dead, but the console is a *host* window and the host
+        // reaps it asynchronously: `output remove` before that hands it to one of
+        // the user's monitors for as long as it survives. Same wait, same reason,
+        // as the teardown path.
+        if let Err(error) = wait_console_reaped(&self.output, console_of(acquired)) {
+            failures.push(RestoreFailure {
+                what: "agent console window",
+                expected: format!(
+                    "reaped by the host before output {} is removed",
+                    self.output
+                ),
+                actual: error.to_string(),
+            });
+            // The output stays where it is, and so does the state `teardown` needs.
+            return failures;
+        }
         if acquired.output {
             // Same cursor-preserving removal as either mode's teardown
             // (fact §2.8); the snapshot is the fallback if `cursorpos` cannot be
@@ -598,11 +674,14 @@ impl Start<'_> {
             match session::remove_output_restoring_cursor(&self.output, Some(host.cursor)) {
                 Ok(removal) => failures.extend(removal.failure),
                 Err(error) => {
-                    return vec![RestoreFailure {
+                    // The state has to survive for `teardown`, so the session
+                    // directory below is left alone.
+                    failures.push(RestoreFailure {
                         what: "agent output",
                         expected: format!("{} removed", self.output),
                         actual: error.to_string(),
-                    }];
+                    });
+                    return failures;
                 }
             }
         }
@@ -616,15 +695,40 @@ impl Start<'_> {
         failures
     }
 
+    /// The same ladder as §6.2, not an immediate sweep: `dispatch exit` first,
+    /// then a grace period, then `SIGTERM`, then `SIGKILL`. The grace is what
+    /// lets the nested compositor exit on its own and clean up its runtime
+    /// directory (fact §2.9); the marker sweep is what proves the desktop is
+    /// gone, including a compositor spawned but never identified.
     fn terminate(&self, acquired: &Acquired) -> Result<(), RestoreFailure> {
-        if let Some(live) = &acquired.instance {
-            // Politeness first; the marker sweep below is what guarantees the
-            // desktop is gone, including a compositor spawned but never
-            // identified.
-            let _ = hypr::dispatch_on(Ctl::Instance(&live.signature), &["exit"]);
+        if let Some(signature) = &acquired.signature {
+            let _ = hypr::dispatch_on(Ctl::Instance(signature), &["exit"]);
         }
-        terminate_marked(self.name)
+        terminate_marked(&self.marker()).map(|_| ())
     }
+}
+
+/// The console of a start that got far enough to identify one: its address plus
+/// the pid that owns it, since an address alone is a reusable pointer.
+fn console_of(acquired: &Acquired) -> Option<Console<'_>> {
+    acquired.instance.as_ref().map(|live| Console {
+        address: &live.console_address,
+        pid: live.pid,
+    })
+}
+
+/// Unique to this start on this machine, and not a secret: it only has to be
+/// something no inherited environment already carries, which the pid of the
+/// process doing the start plus the current nanoseconds cover without a new
+/// dependency.
+fn instance_nonce() -> Result<String, Error> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| Error::Tool {
+            command: "clock".to_owned(),
+            message: format!("the system clock is before the Unix epoch ({error})"),
+        })?;
+    Ok(format!("{}-{}", std::process::id(), since_epoch.as_nanos()))
 }
 
 /// What a teardown of an agent desktop brought down, and what it could not.
@@ -685,6 +789,10 @@ fn teardown_plan(isolated: &Isolated) -> TeardownPlan<'_> {
 /// so an `Instance::Pending` state cleans up as well as a live one.
 pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
     let plan = teardown_plan(isolated);
+    let marker = Marker {
+        session,
+        instance: &isolated.instance_nonce,
+    };
     let mut notes = Vec::new();
     let mut failures = Vec::new();
 
@@ -694,55 +802,120 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
             if let Some(address) = plan.close {
                 notes.push(close_app(instance.signature, address));
             }
-            notes.extend(stop_registered(&instance, session)?);
+            notes.extend(stop_registered(&instance, &marker)?);
             let (cleared, failure) =
-                clear_instance_runtime(instance.signature, &session::session_dir(session)?);
+                clear_instance_runtime(instance.signature, Some(&session::session_dir(session)?));
             notes.extend(cleared);
             failures.extend(failure);
         }
     }
 
     // Whatever stage the state described, no process of this desktop may outlive
-    // the teardown: the environment marker is the authority, so a compositor
+    // the teardown: both markers together are the authority, so a compositor
     // spawned but never recorded is caught here too. Its output is removed right
     // after this, hence the refusal rather than a note.
-    if let Err(failure) = terminate_marked(session) {
-        return Err(Error::AgentDesktopAlive {
-            session: session.to_owned(),
-            detail: failure.actual,
-        });
+    match terminate_marked(&marker) {
+        Ok(swept) => notes.extend(swept),
+        Err(failure) => {
+            return Err(Error::AgentDesktopAlive {
+                session: session.to_owned(),
+                detail: failure.actual,
+            });
+        }
     }
     notes.push("no process of the agent desktop left".to_owned());
 
-    // The console is a *host* window, and the host reaps it when the compositor
-    // that owns it dies. Removing the output before that would hand the window to
-    // one of the user's outputs for as long as it survives.
-    if let Some(instance) = plan.instance {
-        notes.push(wait_console_reaped(instance.console)?);
-    }
+    // The console is a *host* window, and the host reaps it asynchronously once
+    // the compositor that owns it dies. Removing the output before that would hand
+    // the window to one of the user's outputs for as long as it survives — which
+    // is why this waits at every stage, including a state that never named a
+    // console: a spawn the start could not identify still maps one.
+    notes.push(wait_console_reaped(
+        &isolated.output,
+        plan.instance.map(|instance| Console {
+            address: instance.console,
+            pid: instance.pid,
+        }),
+    )?);
 
     Ok(Teardown { notes, failures })
 }
 
-/// Bounded, and a timeout aborts the teardown rather than removing an output a
-/// window still sits on — the same rule the shared teardown follows before it
-/// removes its own output. A window already gone is an immediate success (§6.5).
-fn wait_console_reaped(address: &str) -> Result<String, Error> {
+/// A console window as the state knows it. The pid is part of the identity
+/// because Hyprland addresses are recycled pointers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Console<'a> {
+    address: &'a str,
+    pid: u32,
+}
+
+/// Bounded, and a timeout aborts rather than removing an output a window still
+/// sits on — the same rule the shared teardown follows before it removes its own
+/// output. A window already gone is an immediate success (§6.5).
+///
+/// Identity is the recorded address when there is one, and the headless output
+/// itself when there is not: whatever the host still composites there is what
+/// `output remove` would relocate onto one of the user's monitors.
+fn wait_console_reaped(output: &str, console: Option<Console<'_>>) -> Result<String, Error> {
     poll_until(
         session::WINDOW_PLACE_TIMEOUT,
         || {
-            Ok(find_client(&hypr::clients()?, address).map_or_else(
-                || Ok(format!("console window {address} is gone from the host")),
-                |console| Err(format!("still on workspace {}", console.workspace.name)),
-            ))
+            let clients = hypr::clients()?;
+            Ok(match console {
+                Some(console) => console_reaped(&clients, console),
+                None => output_vacated(&hypr::monitors()?, &clients, output),
+            })
         },
         |observed| {
             format!(
-                "the host to reap console window {address} now that its compositor is dead (last \
-                 observed: {observed}); its output stays until then"
+                "the host to reap the console window of output {output} now that its compositor is \
+                 dead (last observed: {observed}); the output stays until then"
             )
         },
     )
+}
+
+/// Every process of this desktop is already gone when this runs, so a window
+/// still answering at the console's address whose pid is not the compositor's is
+/// somebody else's window that inherited a recycled pointer — not a console to
+/// wait for. Waiting for it anyway is how a teardown ends up refusing for ever
+/// and leaving the output behind.
+fn console_reaped(clients: &[hypr::Client], console: Console<'_>) -> Result<String, String> {
+    let Some(client) = find_client(clients, console.address) else {
+        return Ok(format!(
+            "console window {} is gone from the host",
+            console.address
+        ));
+    };
+    if u32::try_from(client.pid) != Ok(console.pid) {
+        return Ok(format!(
+            "address {} now belongs to pid {} (`{}`), not the dead nested compositor (pid {})",
+            console.address, client.pid, client.title, console.pid
+        ));
+    }
+    Err(format!("still on workspace {}", client.workspace.name))
+}
+
+/// The same wait for a state that never recorded a console: identity is then the
+/// monitor a window reports, and the agent's headless output has to be empty
+/// before it goes.
+fn output_vacated(
+    monitors: &[hypr::Monitor],
+    clients: &[hypr::Client],
+    output: &str,
+) -> Result<String, String> {
+    let Some(monitor) = monitors.iter().find(|monitor| monitor.name == output) else {
+        return Ok(format!("output {output} is already gone"));
+    };
+    let occupants = clients
+        .iter()
+        .filter(|client| client.monitor == monitor.id)
+        .map(|client| format!("{} (`{}`)", client.address, client.title))
+        .collect::<Vec<_>>();
+    if occupants.is_empty() {
+        return Ok(format!("no window is left on output {output}"));
+    }
+    Err(format!("{} still there", occupants.join(", ")))
 }
 
 /// Step 1 of §6: politeness only, addressed to the instance and never to the
@@ -765,24 +938,20 @@ fn close_app(signature: &str, address: &str) -> String {
 
 /// A well-behaved app unmaps within a few frames; one that wants longer (a
 /// modal, a prompt) gets taken down by `dispatch exit` instead of blocking here.
+/// The same bounded loop as everywhere else — only the outcome differs: a note,
+/// never a failure.
 fn close_settled(ctl: Ctl<'_>, address: &str) -> String {
-    let deadline = Instant::now() + POLITE_CLOSE_TIMEOUT;
-    loop {
-        match hypr::clients_on(ctl) {
-            Ok(clients) if find_client(&clients, address).is_none() => {
-                return format!("closed window {address} in the agent desktop");
-            }
-            Ok(_) => {}
-            Err(error) => return format!("closed window {address}, then listing failed ({error})"),
-        }
-        if Instant::now() >= deadline {
-            return format!(
-                "asked window {address} to close, still mapped after {}ms",
-                POLITE_CLOSE_TIMEOUT.as_millis()
-            );
-        }
-        thread::sleep(session::POLL_INTERVAL);
-    }
+    poll_until(
+        POLITE_CLOSE_TIMEOUT,
+        || {
+            Ok(find_client(&hypr::clients_on(ctl)?, address).map_or_else(
+                || Ok(format!("closed window {address} in the agent desktop")),
+                |window| Err(format!("still mapped on {}", window.workspace.name)),
+            ))
+        },
+        |observed| format!("window {address} to leave the agent desktop ({observed})"),
+    )
+    .unwrap_or_else(|error| format!("asked window {address} to close: {error}"))
 }
 
 /// The effects of step 2, injected so the escalation ladder is testable without
@@ -795,17 +964,17 @@ struct Exit<'a> {
     signal: &'a dyn Fn(&'static str) -> Result<(), Error>,
 }
 
-fn stop_registered(instance: &Registered<'_>, session: &str) -> Result<Vec<String>, Error> {
+fn stop_registered(instance: &Registered<'_>, marker: &Marker<'_>) -> Result<Vec<String>, Error> {
     let ctl = Ctl::Instance(instance.signature);
     let pid = instance.pid;
     stop_instance(
         &Exit {
-            session,
+            session: marker.session,
             label: format!("nested compositor {} (pid {pid})", instance.signature),
             request: &|| hypr::dispatch_on(ctl, &["exit"]),
-            // The marker is both liveness and identity: a recycled pid no longer
-            // carries it, so it is never signalled.
-            alive: &|| pid_carries_marker(pid, session),
+            // The markers are both liveness and identity: a recycled pid carries
+            // neither, so it is never signalled.
+            alive: &|| pid_carries_marker(pid, marker),
             signal: &|signal| session::signal_process(pid, signal),
         },
         EXIT_ESCALATION,
@@ -859,8 +1028,8 @@ fn stop_instance(steps: &Exit<'_>, ladder: session::Escalation) -> Result<Vec<St
 /// after `dispatch exit`, so step 3 removes it explicitly. The signature comes
 /// from a state file, and it ends up in a recursive removal: it has to be a
 /// single directory name.
-fn instance_dir(signature: &str) -> Result<PathBuf, Error> {
-    Ok(instances_dir()?.join(plain_signature(signature)?))
+fn instance_dir(instances: &Path, signature: &str) -> Result<PathBuf, Error> {
+    Ok(instances.join(plain_signature(signature)?))
 }
 
 /// The signature is read back from a state file and ends up in a recursive
@@ -885,11 +1054,14 @@ fn plain_signature(signature: &str) -> Result<&str, Error> {
 /// directory it left behind (fact §2.9). A directory that cannot go is reported
 /// rather than propagated: holding up the output removal over it would leave the
 /// user with a compositing headless output instead of an empty directory.
+///
+/// `keep_log_in` is `None` for a rolled-back start, whose session directory is
+/// removed a few lines later: copying the log into it would only delete it again.
 fn clear_instance_runtime(
     signature: &str,
-    session_dir: &Path,
+    keep_log_in: Option<&Path>,
 ) -> (Vec<String>, Option<RestoreFailure>) {
-    let dir = match instance_dir(signature) {
+    let dir = match instances_dir().and_then(|instances| instance_dir(&instances, signature)) {
         Ok(dir) => dir,
         Err(error) => {
             return (
@@ -902,8 +1074,18 @@ fn clear_instance_runtime(
             );
         }
     };
-    let mut notes = vec![keep_instance_log(&dir, session_dir)];
-    match remove_instance_dir(&dir) {
+    clear_runtime_dir(&dir, keep_log_in)
+}
+
+fn clear_runtime_dir(
+    dir: &Path,
+    keep_log_in: Option<&Path>,
+) -> (Vec<String>, Option<RestoreFailure>) {
+    let mut notes = keep_log_in
+        .map(|session_dir| keep_instance_log(dir, session_dir))
+        .into_iter()
+        .collect::<Vec<_>>();
+    match remove_instance_dir(dir) {
         Ok(note) => {
             notes.push(note);
             (notes, None)
@@ -954,6 +1136,15 @@ fn agent_session_marker() -> Option<String> {
     env::var_os(AGENT_SESSION_ENV).map(|value| value.to_string_lossy().into_owned())
 }
 
+/// The precondition of **every** command, not just of a start. Inside an agent
+/// desktop `hyprctl` answers for the nested compositor, so a headless output
+/// created there stays 0x0 (fact §2.7) and captures of it are silently blank;
+/// and every process around carries this desktop's session marker, the caller's
+/// own shell included, so a sweep run from in here would take it down.
+pub fn refuse_when_nested() -> Result<(), Error> {
+    refuse_nested_marker(agent_session_marker().as_deref())
+}
+
 fn refuse_nested_marker(marker: Option<&str>) -> Result<(), Error> {
     marker.map_or(Ok(()), |session| {
         Err(Error::NestedRefused {
@@ -978,9 +1169,10 @@ fn ensure_output_absent(
     Ok(())
 }
 
-/// A fresh headless output gets a workspace of its own, and only such a
-/// workspace may be renamed: one holding windows, or one the user was looking at
-/// a moment ago, belongs to them.
+/// A fresh headless output brings a workspace of its own, and that is the only
+/// kind this start may rename. Anything that already existed when the snapshot
+/// was taken is the user's — an empty workspace they keep as a scratch pad is
+/// still theirs, and nothing would give the name back at teardown (§12.1).
 fn renameable(
     host: &HostSnapshot,
     clients: &[hypr::Client],
@@ -990,14 +1182,20 @@ fn renameable(
     if !occupants.is_empty() {
         return Err(format!("holds {}", occupants.join(", ")));
     }
-    match host
+    if let Some((output, _)) = host
         .workspaces
         .iter()
         .find(|(_, active)| *active == workspace)
     {
-        Some((output, _)) => Err(format!("it was visible on {output} a moment ago")),
-        None => Ok(()),
+        return Err(format!("it was visible on {output} a moment ago"));
     }
+    if host.workspace_names.contains(workspace) {
+        return Err(
+            "it already existed before this start created its output, so it is the user's"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn workspace_occupants(clients: &[hypr::Client], workspace: &str) -> Vec<String> {
@@ -1032,6 +1230,7 @@ fn console_pid(console: &hypr::Client) -> Result<u32, Error> {
 fn host_snapshot() -> Result<HostSnapshot, Error> {
     Ok(HostSnapshot {
         workspaces: active_workspaces(&hypr::monitors()?),
+        workspace_names: hypr::workspace_names()?,
         active_window: hypr::active_window()?.map(|window| window.address),
         cursor: hypr::cursor_pos()?,
     })
@@ -1131,7 +1330,7 @@ pub fn nested_config(session: &str, size: [u32; 2], keymap: &Keymap) -> String {
 }
 
 fn ensure_nested_binary() -> Result<(), Error> {
-    if binary_on_path(NESTED_BINARY) {
+    if nested_binary_present() {
         return Ok(());
     }
     Err(Error::Tool {
@@ -1142,19 +1341,16 @@ fn ensure_nested_binary() -> Result<(), Error> {
     })
 }
 
-fn binary_on_path(binary: &str) -> bool {
-    env::var_os("PATH")
-        .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
-}
-
 pub fn nested_binary_present() -> bool {
-    binary_on_path(NESTED_BINARY)
+    session::binary_on_path(NESTED_BINARY)
 }
 
 /// Hyprland hands the command to `sh -c`, so the paths are quoted and a path
-/// that could close a quote is refused rather than escaped.
+/// that could close a quote is refused rather than escaped. Both markers are
+/// injected here: everything the nested compositor goes on to spawn inherits
+/// them, which is what makes the pair an identity for this desktop's processes.
 fn spawn_command(
-    session: &str,
+    marker: &Marker<'_>,
     workspace: &str,
     config: &Path,
     log: &Path,
@@ -1163,7 +1359,10 @@ fn spawn_command(
     let log = shell_path(log)?;
     Ok(format!(
         "[workspace name:{workspace} silent; noinitialfocus; fullscreen] \
-         env {AGENT_SESSION_ENV}={session} {NESTED_BINARY} -c '{config}' > '{log}' 2>&1"
+         env {AGENT_SESSION_ENV}={session} {AGENT_INSTANCE_ENV}={instance} {NESTED_BINARY} -c \
+         '{config}' > '{log}' 2>&1",
+        session = marker.session,
+        instance = marker.instance,
     ))
 }
 
@@ -1182,14 +1381,11 @@ fn shell_path(path: &Path) -> Result<&str, Error> {
     Ok(text)
 }
 
-fn runtime_root() -> Result<PathBuf, Error> {
-    env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or(Error::Env("XDG_RUNTIME_DIR"))
-}
-
-fn instances_dir() -> Result<PathBuf, Error> {
-    Ok(runtime_root()?.join("hypr"))
+/// Where every compositor keeps its instance directory, the nested ones
+/// included: a start discovers its own by diffing this (§4.5) and teardown
+/// removes it (fact §2.9).
+pub fn instances_dir() -> Result<PathBuf, Error> {
+    Ok(session::runtime_root()?.join("hypr"))
 }
 
 fn dir_entries(dir: &Path) -> Result<BTreeSet<String>, Error> {
@@ -1260,9 +1456,11 @@ fn wait_for_new_entry(
     )
 }
 
-/// The console is a window that did not exist before the spawn, carries the
-/// nested compositor's class (fact §2.5) and whose process carries our marker.
-/// The title is never part of the identity.
+/// The console carries the nested compositor's class (fact §2.5) and its process
+/// carries both markers of this start; the title is never part of the identity,
+/// and neither is the address. Addresses are recycled pointers, so a console that
+/// inherited the address of a window closed since the snapshot must not be
+/// discarded: `before` only annotates an ambiguity, it never filters.
 fn select_console<'a>(
     clients: &'a [hypr::Client],
     before: &BTreeSet<String>,
@@ -1270,19 +1468,32 @@ fn select_console<'a>(
 ) -> Result<Option<&'a hypr::Client>, Error> {
     let mut console: Option<&hypr::Client> = None;
     for client in clients {
-        if client.class != CONSOLE_CLASS || before.contains(&client.address) {
+        if client.class != CONSOLE_CLASS {
             continue;
         }
         if !ours(client.pid)? {
             continue;
         }
         if let Some(other) = console {
+            let candidate = |client: &hypr::Client| {
+                format!(
+                    "{} (pid {}{})",
+                    client.address,
+                    client.pid,
+                    if before.contains(&client.address) {
+                        ", at an address that predates this start"
+                    } else {
+                        ""
+                    }
+                )
+            };
             return Err(Error::Tool {
                 command: "hyprctl clients".to_owned(),
                 message: format!(
-                    "two console windows carry {AGENT_SESSION_ENV} for this session: {} (pid {}) \
-                     and {} (pid {}) — teardown and retry",
-                    other.address, other.pid, client.address, client.pid
+                    "two console windows carry {AGENT_SESSION_ENV} and {AGENT_INSTANCE_ENV} for \
+                     this start: {} and {} — teardown and retry",
+                    candidate(other),
+                    candidate(client)
                 ),
             });
         }
@@ -1305,7 +1516,7 @@ fn capturable(
     address: &str,
 ) -> Result<(), String> {
     host_frames(host, output, workspace)?;
-    window_frame(outputs, clients, address).map(|_| ())
+    window_frame(outputs, clients, address, AGENT_DESKTOP).map(|_| ())
 }
 
 /// Host side of capturability, and the §2.2 invariant of the whole design: the
@@ -1332,15 +1543,21 @@ fn host_frames(host: &[hypr::Monitor], output: &str, workspace: &str) -> Result<
     Ok(())
 }
 
-/// Instance side: the window is mapped and the nested compositor is showing the
-/// workspace it sits on. Returns what a capture needs to frame it.
+/// Whether a compositor is actually showing a window of its own: mapped, on the
+/// active workspace of the output it reports, with no special workspace over it.
+/// Returns what a capture needs to frame it.
+///
+/// `place` names the compositor being asked, because both of them are: an
+/// instance for the window a capture frames, and the host for the console window
+/// a *shown* agent desktop depends on (fact §2.2).
 fn window_frame<'a>(
     outputs: &'a [hypr::Monitor],
     clients: &'a [hypr::Client],
     address: &str,
+    place: &str,
 ) -> Result<(&'a hypr::Client, &'a hypr::Monitor), String> {
     let Some(window) = find_client(clients, address) else {
-        return Err(format!("window {address} is gone from the agent desktop"));
+        return Err(format!("window {address} is gone from {place}"));
     };
     if window.size[0] <= 0 || window.size[1] <= 0 {
         return Err(format!(
@@ -1350,24 +1567,31 @@ fn window_frame<'a>(
     }
     let Some(monitor) = outputs.iter().find(|monitor| monitor.id == window.monitor) else {
         return Err(format!(
-            "window {address} reports monitor {} which the agent desktop does not have",
+            "window {address} reports monitor {} which {place} does not have",
             window.monitor
         ));
     };
     if monitor.active_workspace.name != window.workspace.name {
         return Err(format!(
-            "window {address} sits on workspace {} while the agent desktop shows {}",
+            "window {address} sits on workspace {} while {place} shows {}",
             window.workspace.name, monitor.active_workspace.name
         ));
     }
     if !monitor.special_workspace.is_empty() {
         return Err(format!(
-            "special workspace {} occludes the agent desktop",
+            "special workspace {} occludes {place}",
             monitor.special_workspace
         ));
     }
     Ok((window, monitor))
 }
+
+/// The agent desktop, as `window_frame` names it when the question is about a
+/// window inside the instance.
+const AGENT_DESKTOP: &str = "the agent desktop";
+/// The user's session, as `window_frame` names it when the question is about the
+/// console window of a shown agent desktop.
+const HOST: &str = "the host";
 
 /// The nested compositor an isolated command talks to, borrowed from the state
 /// that recorded it.
@@ -1416,10 +1640,14 @@ fn live_instance_in<'a>(
             ),
         });
     };
-    // The marker is liveness *and* identity: a dead pid has no readable
-    // environment and a recycled one no longer carries this session's marker, so
-    // no command can address a stranger's process.
-    if !pid_carries_marker_in(proc_root, *pid, session) {
+    // The markers are liveness *and* identity: a dead pid has no readable
+    // environment and a recycled one carries neither marker of this start, so no
+    // command can address a stranger's process.
+    let marker = Marker {
+        session,
+        instance: &isolated.instance_nonce,
+    };
+    if !pid_carries_marker_in(proc_root, *pid, &marker) {
         return Err(Error::AgentDesktopDead {
             session: session.to_owned(),
             signature: signature.clone(),
@@ -1455,6 +1683,9 @@ pub struct AgentCapture {
     pub wayland_display: String,
     pub window: hypr::Client,
     pub monitor: hypr::Monitor,
+    /// Host-side console window, so a capture that blocks while the desktop is
+    /// shown can name the window whose compositing it depended on.
+    pub console: String,
 }
 
 /// Resolves a capture inside an agent desktop, refusing a desktop that cannot
@@ -1466,18 +1697,15 @@ pub fn capture_target(session: &str, isolated: &Isolated) -> Result<AgentCapture
     };
     let instance = live_instance(session, isolated)?;
     let address = recorded_window(session, isolated)?;
-    // Fact §2.2: a console window the host stopped compositing freezes the
-    // nested compositor, and screencopy then blocks for ever. `session show`
-    // moves the console to a workspace of the user's own, where the same
-    // guarantee comes from the host showing that workspace (§5).
-    if !isolated.shown
-        && let Err(observed) =
-            host_frames(&hypr::monitors()?, &isolated.output, &isolated.workspace)
-    {
-        return Err(unready(frozen_reason(
+    // Fact §2.2: a console window the host stopped compositing freezes the nested
+    // compositor, and screencopy then blocks for ever. The invariant holds in a
+    // different place either side of `session show`, and `shown` is only the
+    // state's memory of where the console was put — never an observation — so both
+    // sides are read from the host, every time.
+    if let Err(observed) = frames_probe(&frame_site(isolated, instance.console))? {
+        return Err(unready(frames_reason(
             session,
-            &isolated.output,
-            &isolated.workspace,
+            &frame_site(isolated, instance.console),
             &observed,
         )));
     }
@@ -1485,16 +1713,76 @@ pub fn capture_target(session: &str, isolated: &Isolated) -> Result<AgentCapture
     let ctl = instance.ctl();
     let outputs = hypr::monitors_on(ctl)?;
     let clients = hypr::clients_on(ctl)?;
-    let (window, monitor) = window_frame(&outputs, &clients, address).map_err(unready)?;
+    let (window, monitor) =
+        window_frame(&outputs, &clients, address, AGENT_DESKTOP).map_err(unready)?;
     Ok(AgentCapture {
         wayland_display: instance.wayland_display.to_owned(),
         window: window.clone(),
         monitor: monitor.clone(),
+        console: instance.console.to_owned(),
     })
 }
 
+/// Where the console window has to be composited for the nested compositor to
+/// keep receiving frame callbacks (fact §2.2). `session show` moves it, so it
+/// moves the question every capture and every diagnosis has to ask.
+pub enum FrameSite<'a> {
+    /// Hidden: on the agent workspace, which has to be the active one of the
+    /// agent's own headless output.
+    Headless { output: &'a str, workspace: &'a str },
+    /// Shown: a host window among the user's, which has to be one the host is
+    /// actually showing.
+    Shown { console: &'a str },
+}
+
+/// Reads the site off the state, never the invariant: `shown` records where the
+/// console was *put*, and the user has been free to switch workspace since.
+pub fn frame_site<'a>(isolated: &'a Isolated, console: &'a str) -> FrameSite<'a> {
+    if isolated.shown {
+        FrameSite::Shown { console }
+    } else {
+        FrameSite::Headless {
+            output: &isolated.output,
+            workspace: &isolated.workspace,
+        }
+    }
+}
+
+/// One host-side observation of the §2.2 invariant, wherever the console
+/// currently lives.
+fn frames_probe(site: &FrameSite<'_>) -> Probe<()> {
+    match *site {
+        FrameSite::Headless { output, workspace } => {
+            Ok(host_frames(&hypr::monitors()?, output, workspace))
+        }
+        // A shown console is a host window like any other: mapped, on the active
+        // workspace of its monitor, nothing special over it — which is exactly
+        // what `window_frame` checks, asked of the host this time.
+        FrameSite::Shown { console } => {
+            let monitors = hypr::monitors()?;
+            let clients = hypr::clients()?;
+            Ok(window_frame(&monitors, &clients, console, HOST).map(|_| ()))
+        }
+    }
+}
+
 /// Fact §2.2, spelled out for the user: the one documented cause of a frozen
-/// agent desktop, with the documented host-side fallback.
+/// agent desktop, named where it actually applies.
+pub fn frames_reason(session: &str, site: &FrameSite<'_>, observed: &str) -> String {
+    match *site {
+        FrameSite::Headless { output, workspace } => {
+            frozen_reason(session, output, workspace, observed)
+        }
+        FrameSite::Shown { console } => format!(
+            "agent desktop `{session}` is shown, so its console window {console} only receives \
+             frame callbacks while the host composites it where it stands, and every capture \
+             blocks once it stops ({observed}) — switch back to the workspace it sits on, or run \
+             `hyprpilot --session {session} session hide` to put it back on its headless output"
+        ),
+    }
+}
+
+/// The headless half of `frames_reason`, with the documented host-side fallback.
 pub fn frozen_reason(session: &str, host_output: &str, workspace: &str, observed: &str) -> String {
     format!(
         "the nested compositor only receives frame callbacks while workspace {workspace} is the \
@@ -1507,17 +1795,19 @@ pub fn frozen_reason(session: &str, host_output: &str, workspace: &str, observed
 
 /// Reads the host side of the §2.2 invariant, so a blocked capture reports what
 /// was observed rather than what is likely.
-pub fn frozen_observation(host_output: &str, workspace: &str) -> String {
-    match hypr::monitors() {
-        Ok(monitors) => host_frames(&monitors, host_output, workspace)
-            .err()
-            .unwrap_or_else(|| {
-                format!(
-                    "workspace {workspace} is still active on {host_output}, so the block is \
-                     elsewhere"
-                )
-            }),
-        Err(error) => format!("reading `hyprctl monitors` failed: {error}"),
+pub fn frames_observation(site: &FrameSite<'_>) -> String {
+    match frames_probe(site) {
+        Ok(Err(observed)) => observed,
+        Ok(Ok(())) => match *site {
+            FrameSite::Headless { output, workspace } => format!(
+                "workspace {workspace} is still active on {output}, so the block is elsewhere"
+            ),
+            FrameSite::Shown { console } => format!(
+                "console window {console} is still mapped on the workspace it was shown on, so the \
+                 block is elsewhere"
+            ),
+        },
+        Err(error) => format!("reading the host failed: {error}"),
     }
 }
 
@@ -1701,7 +1991,7 @@ pub fn show(session: &str, path: &Path, isolated: &mut Isolated) -> Result<Strin
             ),
         );
     }
-    let destination = user_workspace(&focused, session, isolated)?;
+    let destination = user_workspace(&focused, &hypr::monitors()?, session, isolated)?;
 
     // Floating first: changing the floating mode is what drops the fullscreen
     // state the start's one-shot rule set, and a fullscreen console would
@@ -1859,6 +2149,7 @@ fn shown_where_the_user_looks(
 /// that focus is refused instead.
 fn user_workspace(
     focused: &hypr::FocusedWorkspace,
+    monitors: &[hypr::Monitor],
     session: &str,
     isolated: &Isolated,
 ) -> Result<String, Error> {
@@ -1871,6 +2162,32 @@ fn user_workspace(
                  workspace in waybar does that); focus one of your own monitors, then run \
                  `hyprpilot --session {session} session show` again",
                 isolated.output
+            ),
+        });
+    }
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor.name == focused.monitor)
+        .ok_or_else(|| Error::Tool {
+            command: "hyprctl monitors".to_owned(),
+            message: format!(
+                "`hyprctl activeworkspace` reports workspace {} on {}, which `hyprctl monitors` \
+                 does not list",
+                focused.name, focused.monitor
+            ),
+        })?;
+    // `activeworkspace` answers with the workspace *underneath* an open special
+    // workspace, so the console would arrive already occluded — which freezes the
+    // nested compositor and blocks every later capture (fact §2.2).
+    if !monitor.special_workspace.is_empty() {
+        return Err(Error::Invalid {
+            what: "user workspace",
+            value: format!("{} on {}", focused.name, focused.monitor),
+            hint: format!(
+                "special workspace {} covers {}, so the console would land under it and stop \
+                 receiving frames; close it, then run `hyprpilot --session {session} session show` \
+                 again",
+                monitor.special_workspace, focused.monitor
             ),
         });
     }
@@ -2023,15 +2340,39 @@ fn ensure_agent_frames(session: &str, isolated: &Isolated) -> Result<(), Error> 
     )
 }
 
-/// Every process of an agent desktop inherits the marker, including the app the
+/// Identity of a process of an agent desktop: the session marker every process of
+/// the desktop inherits, **and** the nonce of the start that spawned it. The
+/// session marker alone is inheritable — a shell that exported it, or anything
+/// launched inside an agent desktop, carries it — so it is never enough to
+/// select a process to signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Marker<'a> {
+    session: &'a str,
+    instance: &'a str,
+}
+
+impl Marker<'_> {
+    fn label(&self) -> String {
+        format!(
+            "{AGENT_SESSION_ENV}={} and {AGENT_INSTANCE_ENV}={}",
+            self.session, self.instance
+        )
+    }
+}
+
+/// Every process of an agent desktop inherits both markers, including the app the
 /// nested compositor launched, so the environment identifies the whole desktop.
-/// A process is never identified by its binary name.
-fn marked_pids_in(proc_root: &Path, session: &str) -> Result<Vec<u32>, Error> {
+/// A process is never identified by its binary name — and never by one marker
+/// alone. This process itself is excluded: a command run from inside an agent
+/// desktop is refused long before this, but a sweep must not be able to signal
+/// its own pid whatever put the markers in its environment.
+fn marked_pids_in(proc_root: &Path, marker: &Marker<'_>) -> Result<Vec<u32>, Error> {
     let context = || format!("listing {}", proc_root.display());
     let entries = fs::read_dir(proc_root).map_err(|source| Error::Io {
         context: context(),
         source,
     })?;
+    let own = std::process::id();
     let mut pids = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|source| Error::Io {
@@ -2041,7 +2382,7 @@ fn marked_pids_in(proc_root: &Path, session: &str) -> Result<Vec<u32>, Error> {
         let Some(pid) = parse_pid(&entry.file_name()) else {
             continue;
         };
-        if environ_carries_marker(&entry.path(), session) {
+        if pid != own && environ_carries_marker(&entry.path(), marker) {
             pids.push(pid);
         }
     }
@@ -2055,59 +2396,108 @@ fn parse_pid(name: &OsStr) -> Option<u32> {
 
 /// A process that exits mid-scan, or whose environment we may not read, is not
 /// one of ours to report.
-fn environ_carries_marker(proc_dir: &Path, session: &str) -> bool {
-    let needle = format!("{AGENT_SESSION_ENV}={session}");
+fn environ_carries_marker(proc_dir: &Path, marker: &Marker<'_>) -> bool {
+    let session = format!("{AGENT_SESSION_ENV}={}", marker.session);
+    let instance = format!("{AGENT_INSTANCE_ENV}={}", marker.instance);
     fs::read(proc_dir.join("environ")).is_ok_and(|environ| {
-        environ
-            .split(|byte| *byte == 0)
-            .any(|variable| variable == needle.as_bytes())
+        let mut carries_session = false;
+        let mut carries_instance = false;
+        for variable in environ.split(|byte| *byte == 0) {
+            carries_session |= variable == session.as_bytes();
+            carries_instance |= variable == instance.as_bytes();
+        }
+        carries_session && carries_instance
     })
 }
 
-fn process_carries_marker(pid: i32, session: &str) -> Result<bool, Error> {
+fn process_carries_marker(pid: i32, marker: &Marker<'_>) -> Result<bool, Error> {
     let pid = u32::try_from(pid).map_err(|_| Error::Tool {
         command: "hyprctl clients".to_owned(),
         message: format!("client reports invalid pid {pid}"),
     })?;
-    Ok(pid_carries_marker(pid, session))
+    Ok(pid_carries_marker(pid, marker))
 }
 
 /// Liveness *and* identity of a recorded pid: a dead pid has no readable
-/// environment, and a recycled one no longer carries this session's marker.
-fn pid_carries_marker(pid: u32, session: &str) -> bool {
-    pid_carries_marker_in(Path::new("/proc"), pid, session)
+/// environment, and a recycled one carries neither marker of this start.
+fn pid_carries_marker(pid: u32, marker: &Marker<'_>) -> bool {
+    pid_carries_marker_in(Path::new("/proc"), pid, marker)
 }
 
-fn pid_carries_marker_in(proc_root: &Path, pid: u32, session: &str) -> bool {
-    environ_carries_marker(&proc_root.join(pid.to_string()), session)
+fn pid_carries_marker_in(proc_root: &Path, pid: u32, marker: &Marker<'_>) -> bool {
+    environ_carries_marker(&proc_root.join(pid.to_string()), marker)
 }
 
-/// `SIGTERM` while the grace period lasts, then `SIGKILL`; bounded either way.
-fn terminate_marked(session: &str) -> Result<(), RestoreFailure> {
+/// The effects of the desktop-wide sweep, injected so the ladder is testable
+/// against a fake `/proc` and without signalling anything.
+struct Sweep<'a> {
+    proc_root: &'a Path,
+    marker: &'a Marker<'a>,
+    signal: &'a dyn Fn(u32, &'static str) -> Result<(), Error>,
+    ladder: session::Escalation,
+}
+
+/// Nothing of this desktop may outlive a teardown or a rolled-back start, and
+/// only the marker pair says what belongs to it. The ladder is §6.2's: the polite
+/// `dispatch exit` its caller already sent gets its grace period first — that is
+/// what lets the nested compositor remove its own runtime directory (fact §2.9) —
+/// then `SIGTERM`, then `SIGKILL`, then a refusal.
+fn terminate_marked(marker: &Marker<'_>) -> Result<Vec<String>, RestoreFailure> {
+    terminate_marked_in(&Sweep {
+        proc_root: Path::new("/proc"),
+        marker,
+        signal: &session::signal_process,
+        ladder: EXIT_ESCALATION,
+    })
+}
+
+fn terminate_marked_in(sweep: &Sweep<'_>) -> Result<Vec<String>, RestoreFailure> {
     let started = Instant::now();
     let failure = |actual: String| RestoreFailure {
         what: "agent desktop",
-        expected: format!("no process left carrying {AGENT_SESSION_ENV}={session}"),
+        expected: format!("no process left carrying {}", sweep.marker.label()),
         actual,
     };
+    let mut notes = Vec::new();
+    let mut step = None;
+    // Each pid is signalled once per rung, not once per poll — and a process that
+    // only appears after the first signal still gets one.
+    let mut signalled = BTreeSet::new();
     loop {
-        let pids = marked_pids_in(Path::new("/proc"), session)
-            .map_err(|error| failure(format!("scanning /proc failed: {error}")))?;
+        let pids = marked_pids_in(sweep.proc_root, sweep.marker).map_err(|error| {
+            failure(format!(
+                "scanning {} failed: {error}",
+                sweep.proc_root.display()
+            ))
+        })?;
         if pids.is_empty() {
-            return Ok(());
+            return Ok(notes);
         }
-        if started.elapsed() >= EXIT_TIMEOUT {
-            return Err(failure(format!("pids {pids:?} still alive")));
+        match sweep.ladder.step(started.elapsed()) {
+            session::Step::Wait => {}
+            session::Step::Signal(signal) => {
+                if step != Some(signal) {
+                    step = Some(signal);
+                    signalled.clear();
+                }
+                let fresh = pids
+                    .iter()
+                    .copied()
+                    .filter(|pid| !signalled.contains(pid))
+                    .collect::<Vec<_>>();
+                if !fresh.is_empty() {
+                    notes.push(format!(
+                        "SIG{signal} sent to pids {fresh:?} of the agent desktop"
+                    ));
+                }
+                for pid in fresh {
+                    let _ = (sweep.signal)(pid, signal);
+                    signalled.insert(pid);
+                }
+            }
+            session::Step::GiveUp => return Err(failure(format!("pids {pids:?} still alive"))),
         }
-        let signal = if started.elapsed() >= EXIT_GRACE {
-            "KILL"
-        } else {
-            "TERM"
-        };
-        for pid in pids {
-            let _ = session::signal_process(pid, signal);
-        }
-        thread::sleep(session::POLL_INTERVAL);
+        thread::sleep(sweep.ladder.poll);
     }
 }
 
@@ -2145,27 +2535,38 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AGENT_SESSION_ENV, ConsoleWant, Exit, HostSnapshot, Keymap, LiveInstance, Registered,
-        TeardownPlan, Visibility, active_workspaces, capturable, capture_target, console_settled,
-        deviation, dir_entries, ensure_output_absent, frozen_reason, instance_match,
-        is_wayland_socket, keep_instance_log, keymap_of, live_instance_in, marked_pids_in,
-        nested_config, new_entries, output_is_configured, persist_visibility, plain_signature,
-        recorded_window, refuse_disposition, refuse_nested_marker, refuse_untracked,
-        remove_instance_dir, renameable, select_console, shell_path, shown_where_the_user_looks,
-        spawn_command, stop_instance, teardown_plan, user_workspace, visibility, wayland_sockets,
-        workspace_occupants,
+        AGENT_SESSION_ENV, Console, ConsoleWant, Exit, FrameSite, HostSnapshot, Keymap,
+        LiveInstance, Marker, Registered, Sweep, TeardownPlan, Visibility, active_workspaces,
+        capturable, capture_target, clear_runtime_dir, console_reaped, console_settled, deviation,
+        dir_entries, ensure_output_absent, frame_site, frames_reason, frozen_reason, instance_dir,
+        instance_match, instance_nonce, is_wayland_socket, keep_instance_log, keymap_of,
+        live_instance_in, marked_pids_in, nested_config, new_entries, output_is_configured,
+        output_vacated, persist_visibility, plain_signature, recorded_window, refuse_disposition,
+        refuse_nested_marker, refuse_untracked, remove_instance_dir, renameable, select_console,
+        shell_path, shown_where_the_user_looks, spawn_command, stop_instance, teardown_plan,
+        terminate_marked_in, user_workspace, visibility, wayland_sockets, workspace_occupants,
     };
     use crate::error::Error;
     use crate::hypr::{Client, Devices, FocusedWorkspace, Monitor};
     use crate::session::{self, Escalation, Instance, Isolated};
 
     const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
+    /// What a nested compositor reports: exactly one output (§4.4 pins a single
+    /// `monitor = ,…` rule), which is the layout every isolated capture and every
+    /// pointer warp works in.
+    const NESTED_MONITORS_JSON: &str = include_str!("../fixtures/monitors-nested.json");
     const DEVICES_JSON: &str = include_str!("../fixtures/devices.json");
     const NESTED_CLIENTS_JSON: &str = include_str!("../fixtures/clients-nested.json");
     const INSTANCE_CLIENTS_JSON: &str = include_str!("../fixtures/clients-ambiguous.json");
+    /// A nonce as a start generates one: pid plus nanoseconds.
+    const NONCE: &str = "4242-1700000000000000000";
 
     fn monitors() -> Result<Vec<Monitor>, serde_json::Error> {
         serde_json::from_str(MONITORS_JSON)
+    }
+
+    fn nested_monitors() -> Result<Vec<Monitor>, serde_json::Error> {
+        serde_json::from_str(NESTED_MONITORS_JSON)
     }
 
     fn instance_clients() -> Result<Vec<Client>, serde_json::Error> {
@@ -2182,15 +2583,47 @@ mod tests {
         }
     }
 
-    fn snapshot(outputs: &[(&str, &str)], focus: Option<&str>) -> HostSnapshot {
+    /// A host with `outputs` showing those workspaces, and `also` as workspaces
+    /// that exist without being visible anywhere — the empty scratch pad a user
+    /// keeps is one of those.
+    fn snapshot_with(outputs: &[(&str, &str)], also: &[&str], focus: Option<&str>) -> HostSnapshot {
         HostSnapshot {
             workspaces: outputs
                 .iter()
                 .map(|(output, workspace)| ((*output).to_owned(), (*workspace).to_owned()))
                 .collect(),
+            workspace_names: outputs
+                .iter()
+                .map(|(_, workspace)| (*workspace).to_owned())
+                .chain(also.iter().map(|name| (*name).to_owned()))
+                .collect(),
             active_window: focus.map(str::to_owned),
             cursor: (100, 200),
         }
+    }
+
+    fn snapshot(outputs: &[(&str, &str)], focus: Option<&str>) -> HostSnapshot {
+        snapshot_with(outputs, &[], focus)
+    }
+
+    fn marker() -> Marker<'static> {
+        Marker {
+            session: "alpha",
+            instance: NONCE,
+        }
+    }
+
+    /// Writes a `/proc/<pid>/environ` blob under `root`.
+    fn fake_environ(root: &Path, pid: &str, variables: &[&str]) -> Result<(), Box<dyn StdError>> {
+        let dir = root.join(pid);
+        fs::create_dir_all(&dir)?;
+        let mut blob = Vec::new();
+        for variable in variables {
+            blob.extend_from_slice(variable.as_bytes());
+            blob.push(0);
+        }
+        fs::write(dir.join("environ"), blob)?;
+        Ok(())
     }
 
     #[test]
@@ -2322,14 +2755,16 @@ mod tests {
         assert_eq!(console.address, "0xc0ff33");
         assert_eq!(console.pid, 4242);
 
+        // Hyprland addresses are recycled pointers: a console that inherited the
+        // address of a window closed since the snapshot is still ours, and
+        // discarding it would burn the whole appear timeout for nothing.
         let known = clients
             .iter()
             .map(|client| client.address.clone())
             .collect::<BTreeSet<_>>();
-        assert!(
-            select_console(&clients, &known, &ours)?.is_none(),
-            "a window that predates the spawn cannot be our console"
-        );
+        let recycled = select_console(&clients, &known, &ours)?
+            .ok_or("a console at a recycled address was discarded")?;
+        assert_eq!(recycled.address, "0xc0ff33");
 
         let anything = |_: i32| Ok(true);
         let error = select_console(&clients, &nothing, &anything)
@@ -2339,6 +2774,13 @@ mod tests {
         assert!(error.contains("two console windows"), "{error}");
         assert!(error.contains("0xc0ff33"), "{error}");
         assert!(error.contains("0xdecoy"), "{error}");
+        // The snapshot is left to enrich an ambiguity, which is all it can honestly
+        // say about an address.
+        let annotated = select_console(&clients, &known, &anything)
+            .err()
+            .ok_or("two marked consoles were accepted")?
+            .to_string();
+        assert!(annotated.contains("predates this start"), "{annotated}");
 
         let unreadable = |_: i32| {
             Err(Error::Tool {
@@ -2354,17 +2796,24 @@ mod tests {
     }
 
     #[test]
-    fn nested_marker_refuses_a_start_inside_an_agent_desktop() -> Result<(), Box<dyn StdError>> {
+    fn the_nested_marker_refuses_every_command_not_only_a_start() -> Result<(), Box<dyn StdError>> {
         refuse_nested_marker(None)?;
 
         for marker in ["alpha", ""] {
             let error = refuse_nested_marker(Some(marker))
                 .err()
-                .ok_or("a start inside an agent desktop was accepted")?;
+                .ok_or("a command inside an agent desktop was accepted")?;
             assert!(matches!(&error, Error::NestedRefused { .. }));
             let message = error.to_string();
             assert!(message.contains(AGENT_SESSION_ENV), "{message}");
+            // A start would build a 0x0 output (fact §2.7); a shared start would
+            // do the same and report success (§2.7 again); and anything sweeping by
+            // marker would reach the caller's own shell.
             assert!(message.contains("0x0"), "{message}");
+            assert!(
+                message.contains("shell this command was typed in"),
+                "{message}"
+            );
         }
         Ok(())
     }
@@ -2455,13 +2904,16 @@ mod tests {
     fn capturable_accepts_an_agent_workspace_active_with_a_mapped_window()
     -> Result<(), Box<dyn StdError>> {
         let monitors = monitors()?;
+        // The agent desktop has exactly one output, so the instance side is read
+        // from a single-output layout — the only one it can ever report (§4.4).
+        let outputs = nested_monitors()?;
         let clients = instance_clients()?;
 
         // Host side: `headless-ci` shows `proto`. Instance side: `0xaaa` sits on
-        // workspace `1`, which is what its own monitor is showing.
+        // workspace `1`, which is what the one output is showing.
         capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2470,7 +2922,7 @@ mod tests {
 
         let frozen = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "agent-alpha",
@@ -2482,7 +2934,7 @@ mod tests {
 
         let absent = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "hyprpilot-alpha",
             "agent-alpha",
@@ -2492,11 +2944,11 @@ mod tests {
         .ok_or("a missing host output was accepted")?;
         assert!(absent.contains("hyprpilot-alpha is absent"), "{absent}");
 
-        let mut occluded = monitors.clone();
+        let mut occluded = monitors;
         occluded[1].special_workspace = "special:magic".to_owned();
         let occluded = capturable(
             &occluded,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2512,11 +2964,12 @@ mod tests {
     fn capturable_refuses_a_window_that_is_gone_unmapped_or_hidden() -> Result<(), Box<dyn StdError>>
     {
         let monitors = monitors()?;
+        let outputs = nested_monitors()?;
         let mut clients = instance_clients()?;
 
         let gone = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2526,10 +2979,11 @@ mod tests {
         .ok_or("an absent window was accepted")?;
         assert!(gone.contains("0xzzz is gone"), "{gone}");
 
-        // `0xbbb` sits on workspace `2` while its monitor shows `1`.
+        // `0xbbb` sits on workspace `2` while the agent desktop's one output
+        // shows `1`.
         let hidden = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2542,7 +2996,7 @@ mod tests {
         clients[0].size = [0, 0];
         let unmapped = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2556,7 +3010,7 @@ mod tests {
         clients[0].monitor = 7;
         let stray = capturable(
             &monitors,
-            &monitors,
+            &outputs,
             &clients,
             "headless-ci",
             "proto",
@@ -2565,22 +3019,32 @@ mod tests {
         .err()
         .ok_or("a window on an unknown monitor was accepted")?;
         assert!(stray.contains("monitor 7"), "{stray}");
+        // The agent desktop has one output, so a second monitor id is never a
+        // place a window of it can live.
+        assert_eq!(
+            outputs.len(),
+            1,
+            "the nested fixture must stay single-output"
+        );
         Ok(())
     }
 
     #[test]
     fn spawn_command_carries_the_one_shot_rules_marker_and_log() -> Result<(), Box<dyn StdError>> {
         let command = spawn_command(
-            "alpha",
+            &marker(),
             "agent-alpha",
             Path::new("/run/user/1000/hyprpilot/sessions/alpha/hyprland.conf"),
             Path::new("/run/user/1000/hyprpilot/sessions/alpha/hyprland.log"),
         )?;
 
+        // Both markers: the session one names the desktop, the instance nonce is
+        // what makes the pair an identity nothing else can inherit by accident.
         assert_eq!(
             command,
             "[workspace name:agent-alpha silent; noinitialfocus; fullscreen] env \
-             HYPRPILOT_AGENT_SESSION=alpha Hyprland -c \
+             HYPRPILOT_AGENT_SESSION=alpha \
+             HYPRPILOT_AGENT_INSTANCE=4242-1700000000000000000 Hyprland -c \
              '/run/user/1000/hyprpilot/sessions/alpha/hyprland.conf' > \
              '/run/user/1000/hyprpilot/sessions/alpha/hyprland.log' 2>&1"
         );
@@ -2591,7 +3055,7 @@ mod tests {
         assert!(shell_path(Path::new("/run/user/1000/it's")).is_err());
         assert!(
             spawn_command(
-                "alpha",
+                &marker(),
                 "agent-alpha",
                 Path::new("/run/user/1000/it's/hyprland.conf"),
                 Path::new("/run/user/1000/hyprland.log"),
@@ -2602,35 +3066,201 @@ mod tests {
     }
 
     #[test]
+    fn a_start_nonce_is_unique_and_shell_safe() -> Result<(), Box<dyn StdError>> {
+        let first = instance_nonce()?;
+        let second = instance_nonce()?;
+
+        assert_ne!(first, second, "two starts must not share a nonce");
+        assert!(
+            first.starts_with(&format!("{}-", std::process::id())),
+            "{first}"
+        );
+        // It ends up in a `sh -c` command line, so nothing in it may need quoting.
+        assert!(
+            first.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "{first}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn marked_pids_cover_every_process_of_the_agent_desktop() -> Result<(), Box<dyn StdError>> {
         let root = tempfile::tempdir()?;
-        let fake_process = |pid: &str, environ: &[&str]| -> Result<(), Box<dyn StdError>> {
-            let dir = root.path().join(pid);
-            fs::create_dir_all(&dir)?;
-            let mut blob = Vec::new();
-            for variable in environ {
-                blob.extend_from_slice(variable.as_bytes());
-                blob.push(0);
-            }
-            fs::write(dir.join("environ"), blob)?;
-            Ok(())
-        };
+        let nonce = format!("HYPRPILOT_AGENT_INSTANCE={NONCE}");
+        let fake_process = |pid: &str, environ: &[&str]| fake_environ(root.path(), pid, environ);
 
-        fake_process("11", &["PATH=/usr/bin", "HYPRPILOT_AGENT_SESSION=alpha"])?;
-        fake_process("12", &["HYPRPILOT_AGENT_SESSION=beta"])?;
-        // The app the nested compositor launched inherits the marker.
+        fake_process(
+            "11",
+            &["PATH=/usr/bin", "HYPRPILOT_AGENT_SESSION=alpha", &nonce],
+        )?;
+        fake_process("12", &["HYPRPILOT_AGENT_SESSION=beta", &nonce])?;
+        // The app the nested compositor launched inherits both markers.
         fake_process(
             "13",
-            &["HYPRPILOT_AGENT_SESSION=alpha", "WAYLAND_DISPLAY=wayland-2"],
+            &[
+                "HYPRPILOT_AGENT_SESSION=alpha",
+                &nonce,
+                "WAYLAND_DISPLAY=wayland-2",
+            ],
         )?;
         // Another desktop whose name merely starts the same.
-        fake_process("14", &["HYPRPILOT_AGENT_SESSION=alpha2"])?;
+        fake_process("14", &["HYPRPILOT_AGENT_SESSION=alpha2", &nonce])?;
+        // The incident this pair exists for: a shell of session `alpha` that
+        // exported the session marker, or anything launched inside that desktop
+        // by an *earlier* start. One marker is not an identity.
+        fake_process("16", &["HYPRPILOT_AGENT_SESSION=alpha"])?;
+        fake_process(
+            "17",
+            &[
+                "HYPRPILOT_AGENT_SESSION=alpha",
+                "HYPRPILOT_AGENT_INSTANCE=99-1",
+            ],
+        )?;
+        // A process carrying only the nonce is no more ours than one carrying
+        // only the session.
+        fake_process("18", &[&nonce])?;
         fs::create_dir_all(root.path().join("15"))?;
         fs::create_dir_all(root.path().join("self"))?;
 
-        assert_eq!(marked_pids_in(root.path(), "alpha")?, vec![11, 13]);
-        assert_eq!(marked_pids_in(root.path(), "alpha2")?, vec![14]);
-        assert!(marked_pids_in(root.path(), "gamma")?.is_empty());
+        assert_eq!(marked_pids_in(root.path(), &marker())?, vec![11, 13]);
+        assert_eq!(
+            marked_pids_in(
+                root.path(),
+                &Marker {
+                    session: "alpha2",
+                    instance: NONCE
+                }
+            )?,
+            vec![14]
+        );
+        assert!(
+            marked_pids_in(
+                root.path(),
+                &Marker {
+                    session: "gamma",
+                    instance: NONCE
+                }
+            )?
+            .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_sweep_never_selects_its_own_process() -> Result<(), Box<dyn StdError>> {
+        let root = tempfile::tempdir()?;
+        let own = std::process::id();
+        // Both markers, and still not a pid to signal: a `teardown` run from a
+        // shell that carries them would otherwise kill the process running it.
+        fake_environ(
+            root.path(),
+            &own.to_string(),
+            &[
+                "HYPRPILOT_AGENT_SESSION=alpha",
+                &format!("HYPRPILOT_AGENT_INSTANCE={NONCE}"),
+            ],
+        )?;
+
+        assert!(marked_pids_in(root.path(), &marker())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_marked_desktop_dies_through_the_exit_ladder() -> Result<(), Box<dyn StdError>> {
+        let root = tempfile::tempdir()?;
+        let nonce = format!("HYPRPILOT_AGENT_INSTANCE={NONCE}");
+        for pid in ["21", "22"] {
+            fake_environ(root.path(), pid, &["HYPRPILOT_AGENT_SESSION=alpha", &nonce])?;
+        }
+        // Pid 21 goes down on SIGTERM, pid 22 only on SIGKILL.
+        let signals: RefCell<Vec<(u32, &'static str)>> = RefCell::new(Vec::new());
+        let reaper = |pid: u32, signal: &'static str| {
+            signals.borrow_mut().push((pid, signal));
+            if (pid == 21 && signal == "TERM") || signal == "KILL" {
+                let _ = fs::remove_dir_all(root.path().join(pid.to_string()));
+            }
+            Ok(())
+        };
+
+        let notes = terminate_marked_in(&Sweep {
+            proc_root: root.path(),
+            marker: &marker(),
+            signal: &reaper,
+            ladder: TEST_LADDER,
+        })
+        .map_err(|failure| failure.actual)?;
+
+        // The polite `dispatch exit` its caller already sent gets the grace period
+        // first (fact §2.9: that is what lets the nested compositor remove its own
+        // runtime directory), and only then SIGTERM, then SIGKILL.
+        assert_eq!(
+            *signals.borrow(),
+            vec![(21, "TERM"), (22, "TERM"), (22, "KILL")],
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("SIGTERM sent")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("SIGKILL sent")),
+            "{notes:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_desktop_that_survives_the_ladder_refuses_the_teardown() -> Result<(), Box<dyn StdError>> {
+        let root = tempfile::tempdir()?;
+        fake_environ(
+            root.path(),
+            "31",
+            &[
+                "HYPRPILOT_AGENT_SESSION=alpha",
+                &format!("HYPRPILOT_AGENT_INSTANCE={NONCE}"),
+            ],
+        )?;
+
+        let failure = terminate_marked_in(&Sweep {
+            proc_root: root.path(),
+            marker: &marker(),
+            signal: &|_, _| Ok(()),
+            ladder: TEST_LADDER,
+        })
+        .err()
+        .ok_or("an immortal process was reported as swept")?;
+
+        assert_eq!(failure.what, "agent desktop");
+        assert!(failure.actual.contains("[31]"), "{}", failure.actual);
+        // Both markers are named, so the refusal says what was looked for.
+        assert!(
+            failure.expected.contains("HYPRPILOT_AGENT_SESSION=alpha"),
+            "{}",
+            failure.expected
+        );
+        assert!(
+            failure
+                .expected
+                .contains(&format!("HYPRPILOT_AGENT_INSTANCE={NONCE}")),
+            "{}",
+            failure.expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_sweep_that_cannot_read_proc_fails_instead_of_reporting_success()
+    -> Result<(), Box<dyn StdError>> {
+        let failure = terminate_marked_in(&Sweep {
+            proc_root: Path::new("/nonexistent/proc"),
+            marker: &marker(),
+            signal: &|_, _| Ok(()),
+            ladder: TEST_LADDER,
+        })
+        .err()
+        .ok_or("an unreadable /proc must not count as an empty desktop")?;
+
+        assert!(failure.actual.contains("scanning"), "{}", failure.actual);
         Ok(())
     }
 
@@ -2727,6 +3357,7 @@ mod tests {
         Isolated {
             output: "hyprpilot-alpha".to_owned(),
             workspace: "agent-alpha".to_owned(),
+            instance_nonce: NONCE.to_owned(),
             size: [1920, 1080],
             shown: false,
             active_address: active.map(str::to_owned),
@@ -2763,6 +3394,96 @@ mod tests {
         let plan = teardown_plan(&launched_nothing);
         assert_eq!(plan.close, None, "no window recorded, nothing to close");
         assert!(plan.instance.is_some());
+    }
+
+    #[test]
+    fn the_console_is_waited_for_by_address_and_pid() -> Result<(), Box<dyn StdError>> {
+        let clients: Vec<Client> = serde_json::from_str(NESTED_CLIENTS_JSON)?;
+        let console = Console {
+            address: "0xc0ff33",
+            pid: 4242,
+        };
+
+        // Still mapped: the output stays, or `output remove` would hand the window
+        // to one of the user's monitors.
+        let waiting = console_reaped(&clients, console)
+            .err()
+            .ok_or("a console still on the host was reported as reaped")?;
+        assert!(waiting.contains("agent-alpha"), "{waiting}");
+
+        let gone = console_reaped(&[], console)?;
+        assert!(gone.contains("0xc0ff33 is gone"), "{gone}");
+
+        // Every process of the desktop is dead by the time this runs, so a live pid
+        // at that address is a window that inherited a recycled pointer. Waiting
+        // for it would abort the teardown for ever and leave the output behind.
+        let recycled = console_reaped(
+            &clients,
+            Console {
+                address: "0xc0ff33",
+                pid: 999,
+            },
+        )?;
+        assert!(recycled.contains("now belongs to pid 4242"), "{recycled}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_console_that_was_never_recorded_is_waited_for_by_output() -> Result<(), Box<dyn StdError>>
+    {
+        let monitors = monitors()?;
+        let clients: Vec<Client> = serde_json::from_str(NESTED_CLIENTS_JSON)?;
+
+        // An `Instance::Pending` state names no console, and a spawn the start
+        // could not identify still maps one: identity is then the monitor a window
+        // reports. `0xc0ff33` sits on monitor 1, which is `headless-ci`.
+        let occupied = output_vacated(&monitors, &clients, "headless-ci")
+            .err()
+            .ok_or("an output still holding a window was reported as empty")?;
+        assert!(occupied.contains("0xc0ff33"), "{occupied}");
+
+        let empty = output_vacated(&monitors, &clients, "DP-3")
+            .err()
+            .ok_or("DP-3 holds the two windows of monitor 0")?;
+        assert!(empty.contains("0xdecoy"), "{empty}");
+
+        assert!(output_vacated(&monitors, &[], "headless-ci")?.contains("no window is left"));
+        // An output already gone needs no wait at all (§6.5).
+        assert!(output_vacated(&monitors, &clients, "hyprpilot-alpha")?.contains("already gone"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_frame_site_follows_the_console_not_the_flag() {
+        let hidden = agent_state(live_instance(), Some("0xapp"));
+        assert!(matches!(
+            frame_site(&hidden, "0xc0ff33"),
+            FrameSite::Headless {
+                output: "hyprpilot-alpha",
+                workspace: "agent-alpha"
+            }
+        ));
+
+        let mut shown = agent_state(live_instance(), Some("0xapp"));
+        shown.shown = true;
+        // Shown: the invariant holds on the user's own workspace, so the check and
+        // the diagnosis are about the console window, not about the headless output
+        // (which is still active and empty, and would report everything as fine).
+        assert!(matches!(
+            frame_site(&shown, "0xc0ff33"),
+            FrameSite::Shown {
+                console: "0xc0ff33"
+            }
+        ));
+
+        let reason = frames_reason(
+            "alpha",
+            &frame_site(&shown, "0xc0ff33"),
+            "window 0xc0ff33 sits on workspace 2 while the agent desktop shows 5",
+        );
+        assert!(reason.contains("frame callbacks"), "{reason}");
+        assert!(reason.contains("0xc0ff33"), "{reason}");
+        assert!(reason.contains("session hide"), "{reason}");
     }
 
     #[test]
@@ -2910,6 +3631,40 @@ mod tests {
     }
 
     #[test]
+    fn a_rolled_back_start_removes_the_runtime_directory_without_keeping_a_log()
+    -> Result<(), Box<dyn StdError>> {
+        // Fact §2.9: every start that got as far as a signature leaks
+        // $XDG_RUNTIME_DIR/hypr/<sig>/ unless it is removed explicitly, and a
+        // rollback is a start that failed.
+        let root = tempfile::tempdir()?;
+        let instances = root.path().join("hypr");
+        let instance = instance_dir(&instances, "beef_1700000000")?;
+        let session_dir = root.path().join("sessions").join("alpha");
+        fs::create_dir_all(&instance)?;
+        fs::create_dir_all(&session_dir)?;
+        fs::write(instance.join("hyprland.log"), b"nested log")?;
+
+        // The rollback removes the session directory a line later, so copying the
+        // log into it would only delete it again.
+        let (notes, failure) = clear_runtime_dir(&instance, None);
+        assert!(failure.is_none(), "{failure:?}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("removed"), "{notes:?}");
+        assert!(!instance.exists());
+        assert!(!session_dir.join("instance.log").exists());
+
+        // A teardown asks for the log, and keeps it next to the session's own.
+        fs::create_dir_all(&instance)?;
+        fs::write(instance.join("hyprland.log"), b"nested log")?;
+        let (notes, failure) = clear_runtime_dir(&instance, Some(&session_dir));
+        assert!(failure.is_none(), "{failure:?}");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert_eq!(fs::read(session_dir.join("instance.log"))?, b"nested log");
+        assert!(!instance.exists());
+        Ok(())
+    }
+
+    #[test]
     fn a_capture_needs_a_live_instance_and_a_recorded_window() -> Result<(), Box<dyn StdError>> {
         // Both refusals happen before any compositor call, which is what makes
         // them assertable here.
@@ -2992,19 +3747,13 @@ mod tests {
     #[test]
     fn an_instance_whose_pid_lost_the_marker_is_dead() -> Result<(), Box<dyn StdError>> {
         let root = tempfile::tempdir()?;
-        let environ = |pid: &str, variables: &[&str]| -> Result<(), Box<dyn StdError>> {
-            let dir = root.path().join(pid);
-            fs::create_dir_all(&dir)?;
-            let mut blob = Vec::new();
-            for variable in variables {
-                blob.extend_from_slice(variable.as_bytes());
-                blob.push(0);
-            }
-            fs::write(dir.join("environ"), blob)?;
-            Ok(())
-        };
-        // The live nested compositor of session `alpha` carries the marker.
-        environ("4242", &["HYPRPILOT_AGENT_SESSION=alpha", "PATH=/usr/bin"])?;
+        let nonce = format!("HYPRPILOT_AGENT_INSTANCE={NONCE}");
+        let environ = |pid: &str, variables: &[&str]| fake_environ(root.path(), pid, variables);
+        // The live nested compositor of session `alpha` carries both markers.
+        environ(
+            "4242",
+            &["HYPRPILOT_AGENT_SESSION=alpha", &nonce, "PATH=/usr/bin"],
+        )?;
 
         let live = agent_state(live_instance(), Some("0xapp"));
         assert_eq!(
@@ -3085,34 +3834,45 @@ mod tests {
     #[test]
     fn a_focus_on_the_agent_output_is_not_a_destination() -> Result<(), Box<dyn StdError>> {
         let state = agent_state(live_instance(), Some("0xapp"));
+        let monitors = monitors()?;
+        let focused = |name: &str, monitor: &str| FocusedWorkspace {
+            name: name.to_owned(),
+            monitor: monitor.to_owned(),
+        };
         assert_eq!(
-            user_workspace(
-                &FocusedWorkspace {
-                    name: "2".to_owned(),
-                    monitor: "DP-3".to_owned(),
-                },
-                "alpha",
-                &state
-            )?,
-            "2"
+            user_workspace(&focused("1", "DP-3"), &monitors, "alpha", &state)?,
+            "1"
         );
 
         for (name, monitor) in [("agent-alpha", "hyprpilot-alpha"), ("3", "hyprpilot-alpha")] {
-            let error = user_workspace(
-                &FocusedWorkspace {
-                    name: name.to_owned(),
-                    monitor: monitor.to_owned(),
-                },
-                "alpha",
-                &state,
-            )
-            .err()
-            .ok_or("the agent desktop's own output was accepted as a destination")?
-            .to_string();
+            let error = user_workspace(&focused(name, monitor), &monitors, "alpha", &state)
+                .err()
+                .ok_or("the agent desktop's own output was accepted as a destination")?
+                .to_string();
             assert!(error.contains("hyprpilot-alpha"), "{error}");
             assert!(error.contains("waybar"), "{error}");
             assert!(error.contains("session show"), "{error}");
         }
+
+        // `hyprctl activeworkspace` answers with the workspace *underneath* an
+        // open special workspace: a console moved there arrives occluded, which
+        // freezes the nested compositor (fact §2.2).
+        let mut covered = monitors.clone();
+        covered[0].special_workspace = "special:magic".to_owned();
+        let error = user_workspace(&focused("1", "DP-3"), &covered, "alpha", &state)
+            .err()
+            .ok_or("a workspace under a special workspace was accepted")?
+            .to_string();
+        assert!(error.contains("special:magic"), "{error}");
+        assert!(error.contains("stop receiving frames"), "{error}");
+
+        // A focused monitor `hyprctl monitors` does not list is a disagreement to
+        // report, not something to move a window on.
+        let error = user_workspace(&focused("1", "DP-9"), &monitors, "alpha", &state)
+            .err()
+            .ok_or("an unknown monitor was accepted as a destination")?
+            .to_string();
+        assert!(error.contains("does not list"), "{error}");
         Ok(())
     }
 
@@ -3253,9 +4013,12 @@ mod tests {
         );
         assert!(workspace_occupants(&clients, "9").is_empty());
 
-        let host = snapshot(&[("DP-3", "1"), ("HDMI-A-1", "8")], Some("0xabc"));
-        // The workspace a fresh headless output brings with it: empty, and not
-        // one the user was looking at.
+        // A scratch pad the user keeps: empty, active nowhere, and still theirs —
+        // nothing would give the name back at teardown (§12.1).
+        let host = snapshot_with(&[("DP-3", "1"), ("HDMI-A-1", "8")], &["7"], Some("0xabc"));
+        // The workspace a fresh headless output brings with it: empty, not one the
+        // user was looking at, and absent from the snapshot taken before the
+        // output existed.
         renameable(&host, &clients, "9")?;
 
         let occupied = renameable(&host, &clients, "2")
@@ -3267,6 +4030,11 @@ mod tests {
             .err()
             .ok_or("a workspace the user was looking at was accepted")?;
         assert!(visible.contains("visible on HDMI-A-1"), "{visible}");
+
+        let scratch = renameable(&host, &clients, "7")
+            .err()
+            .ok_or("an empty workspace the user already had was accepted")?;
+        assert!(scratch.contains("already existed"), "{scratch}");
         Ok(())
     }
 }

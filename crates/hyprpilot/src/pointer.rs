@@ -7,7 +7,6 @@
 //! the agent desktop instead, over its own single-output layout, and nothing is
 //! restored: that seat has no human on it (`Route` and `Seat` below).
 
-use std::env;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -303,7 +302,10 @@ impl Route {
                 Ok(Self::Shared { window })
             }
             ModeState::Isolated(isolated) => {
-                let target = AgentTarget::resolve(name, &isolated, &runtime_root()?)?;
+                // The nested compositor's socket sits directly in
+                // `$XDG_RUNTIME_DIR`, next to the user's own, not under the
+                // crate's session directory.
+                let target = AgentTarget::resolve(name, &isolated, &session::runtime_root()?)?;
                 let window = agent_window(&target)?;
                 Ok(Self::Isolated {
                     signature: target.signature,
@@ -343,14 +345,6 @@ impl Route {
             Self::Isolated { .. } => None,
         }
     }
-}
-
-/// The nested compositor's socket sits directly in `$XDG_RUNTIME_DIR`, next to
-/// the user's own, not under the crate's session directory.
-fn runtime_root() -> Result<PathBuf, Error> {
-    env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or(Error::Env("XDG_RUNTIME_DIR"))
 }
 
 fn socket_path(runtime_dir: &Path, wayland_display: &str) -> PathBuf {
@@ -569,6 +563,7 @@ mod tests {
         Isolated {
             output: "hyprpilot-alpha".to_owned(),
             workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
             size: [1600, 1000],
             shown: false,
             active_address: active_address.map(str::to_owned),

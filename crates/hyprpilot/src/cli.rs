@@ -239,6 +239,12 @@ impl From<ButtonArg> for pointer::MouseButton {
 
 pub fn run() -> Result<String, Error> {
     let cli = Cli::parse();
+    // The precondition of every command, not only of a start: inside an agent
+    // desktop `hyprctl` answers for the nested compositor — an output created
+    // there stays 0x0 (fact §2.7) and captures of it are silently blank — and
+    // every process around, this one's own shell included, carries that desktop's
+    // session marker.
+    isolated::refuse_when_nested()?;
     let session_name = session::resolve_name(cli.session.as_deref())?;
     let name = session_name.as_str();
     match cli.command {
@@ -636,11 +642,6 @@ fn sizes_mismatch(configured: [u32; 2], effective: [f64; 2]) -> bool {
         })
 }
 
-fn on_path(binary: &str) -> bool {
-    env::var_os("PATH")
-        .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
-}
-
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(".doctor-probe");
     fs::create_dir_all(dir).is_ok()
@@ -709,6 +710,16 @@ struct AgentProbe {
     version: Option<String>,
     sessions_dir: PathBuf,
     sessions_writable: bool,
+    /// `$XDG_RUNTIME_DIR/hypr`, where every compositor keeps its instance
+    /// directory and its `.socket.sock`: a start discovers its nested compositor
+    /// by diffing this directory (§4.5) and every `hyprctl -i` reaches it through
+    /// the socket inside.
+    instances_dir: PathBuf,
+    instances_listable: bool,
+    /// Whether the *host's* own instance socket is in there, i.e. whether that
+    /// layout is the one this machine actually uses. `None` when the signature is
+    /// unknown, which the check above already reports.
+    host_socket: Option<bool>,
 }
 
 /// The version token of a `hyprctl version` line, e.g. `0.56.0` out of
@@ -750,6 +761,38 @@ fn agent_checks(probe: &AgentProbe, report: &mut Report) {
         &format!("{dir} is writable — sessions can be claimed"),
         &format!("{dir} is not writable — no session can be claimed there"),
     );
+
+    let instances = probe.instances_dir.display();
+    report.check(
+        probe.instances_listable,
+        &format!(
+            "{instances} is listable — a start finds its nested compositor by diffing it, and \
+             `hyprctl -i` talks to the socket inside"
+        ),
+        &format!(
+            "{instances} cannot be listed — a start cannot discover the instance it spawns, and no \
+             command could address it"
+        ),
+    );
+    match probe.host_socket {
+        Some(true) => report.ok(&format!(
+            "this session's own instance socket is in {instances} — the layout an agent desktop is \
+             addressed through"
+        )),
+        Some(false) => report.fail(&format!(
+            "this session's own instance socket is missing from {instances} — an agent desktop is \
+             addressed through that layout, so a nested compositor could not be reached either"
+        )),
+        None => {}
+    }
+}
+
+/// Whether the running compositor's own `.socket.sock` sits where an agent
+/// desktop's would, i.e. whether `hyprctl -i <signature>` can reach one at all.
+/// `None` when no signature is exported — the check for that stands on its own.
+fn host_instance_socket(instances_dir: &Path) -> Option<bool> {
+    let signature = env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    Some(instances_dir.join(signature).join(".socket.sock").exists())
 }
 
 fn doctor() -> Result<String, Error> {
@@ -774,7 +817,7 @@ fn doctor() -> Result<String, Error> {
     );
 
     report.check(
-        on_path("grim"),
+        session::binary_on_path("grim"),
         "grim found on PATH",
         "grim not found on PATH — install grim for captures",
     );
@@ -788,17 +831,20 @@ fn doctor() -> Result<String, Error> {
         Err(error) => report.fail(&error.to_string()),
     }
 
-    match session::sessions_dir() {
-        Ok(sessions_dir) => agent_checks(
+    match (session::sessions_dir(), isolated::instances_dir()) {
+        (Ok(sessions_dir), Ok(instances_dir)) => agent_checks(
             &AgentProbe {
                 binary: isolated::nested_binary_present(),
                 version,
                 sessions_writable: writable(&sessions_dir),
                 sessions_dir,
+                instances_listable: fs::read_dir(&instances_dir).is_ok(),
+                host_socket: host_instance_socket(&instances_dir),
+                instances_dir,
             },
             &mut report,
         ),
-        Err(error) => report.fail(&error.to_string()),
+        (Err(error), _) | (_, Err(error)) => report.fail(&error.to_string()),
     }
 
     match pointer::probe_virtual_pointer() {
@@ -809,6 +855,11 @@ fn doctor() -> Result<String, Error> {
         ),
         Err(error) => report.fail(&error.to_string()),
     }
+    report.info(
+        "the virtual pointer probe above asked the compositor of $WAYLAND_DISPLAY, which is the \
+         host: an agent desktop's own nested compositor is only probed when `click` or `scroll` run \
+         against that session",
+    );
 
     match hypr::devices() {
         Ok(devices) => {
@@ -867,6 +918,7 @@ mod tests {
         Isolated {
             output: "hyprpilot-alpha".to_owned(),
             workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
             size: [1920, 1080],
             shown: false,
             active_address: active.map(str::to_owned),
@@ -1391,6 +1443,9 @@ mod tests {
             version: version.map(str::to_owned),
             sessions_dir: PathBuf::from("/run/user/1000/hyprpilot/sessions"),
             sessions_writable: writable,
+            instances_dir: PathBuf::from("/run/user/1000/hypr"),
+            instances_listable: true,
+            host_socket: Some(true),
         };
         let lines = |probe: &AgentProbe| {
             let mut report = Report::default();
@@ -1439,6 +1494,45 @@ mod tests {
         );
         assert!(report.contains("session start --isolated"), "{report}");
         assert!(report.contains("is not writable"), "{report}");
+
+        // §5 lists the sockets: a start discovers its nested compositor by diffing
+        // $XDG_RUNTIME_DIR/hypr, and every `hyprctl -i` reaches it through the
+        // socket inside — neither is possible if that directory cannot be read.
+        let report = lines(&probe(true, Some("Hyprland 0.56.0"), true))?;
+        assert!(
+            report.contains("ok    /run/user/1000/hypr is listable"),
+            "{report}"
+        );
+        assert!(
+            report.contains("ok    this session's own instance socket"),
+            "{report}"
+        );
+
+        let error = lines(&AgentProbe {
+            instances_listable: false,
+            host_socket: Some(false),
+            ..probe(true, Some("Hyprland 0.56.0"), true)
+        })
+        .err()
+        .ok_or("an unreadable instance directory passed doctor")?;
+        assert!(
+            matches!(error, Error::DoctorFailed { failures: 2, .. }),
+            "{error:?}"
+        );
+        let report = error.to_string();
+        assert!(
+            report.contains("FAIL  /run/user/1000/hypr cannot be listed"),
+            "{report}"
+        );
+        assert!(report.contains("instance socket is missing"), "{report}");
+
+        // Without a signature there is no socket path to check, and the missing
+        // signature is reported on its own.
+        let report = lines(&AgentProbe {
+            host_socket: None,
+            ..probe(true, Some("Hyprland 0.56.0"), true)
+        })?;
+        assert!(!report.contains("instance socket"), "{report}");
         Ok(())
     }
 
