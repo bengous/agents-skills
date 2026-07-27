@@ -1257,6 +1257,25 @@ assert_host_snapshot_equals() {
 	return "${status}"
 }
 
+# `hyprctl workspacerules` n'a pas de forme stable garantie : seul le nombre
+# d'entrees compte ici, et une table illisible est un echec de mesure, pas un
+# echec du crate.
+count_workspace_rules() {
+	local destination=$1
+	local label=$2
+	local raw count
+
+	if ! raw=$(hyprctl workspacerules -j 2>&1); then
+		fail "${label}: workspacerules observe=erreur hyprctl (${raw}); attendu=liste"
+		return 1
+	fi
+	if ! count=$(jq -r 'length' <<<"${raw}"); then
+		fail "${label}: workspacerules observe=JSON invalide; attendu=tableau"
+		return 1
+	fi
+	printf -v "${destination}" '%s' "${count}"
+}
+
 workspace_present() {
 	local workspace=$1
 	local raw
@@ -3592,6 +3611,248 @@ scenario_isolated_start_match_failure() (
 		"hote apres start rate isolated_start_match_failure" || return 1
 )
 
+# Le 2026-07-27 la barre waybar est passee de `1 2 3 4 5` a `1 2 . . .` et y est
+# restee. `hyprctl output create headless` fait attribuer par Hyprland le plus
+# petit identifiant de workspace libre au nouvel output, le start le renomme en
+# `agent-<n>`, et waybar attache ce nom au bouton du numero confisque : sans cle
+# `agent-*` dans `format-icons` il tombe sur `default`, le point. Le retrait de
+# l'output detruisait le workspace en laissant le nom mort sur le bouton.
+#
+# Aucun test unitaire ne voit la config de waybar. Ce que le gate peut prouver,
+# et ce qui suffit, c'est que le nom revient : l'ensemble des workspaces apres
+# demontage est exactement celui d'avant.
+scenario_isolated_workspace_untouched() (
+	local cleanup_failed=0
+	local session="e2e-wsuntouched-$$"
+	local title="hyprpilot-e2e-iso-wsuntouched-$$"
+	local signatures_before="" signatures_ready=0
+	local entry_x="" entry_y="" session_dir="" command_output=""
+	local before_workspaces="" during_workspaces="" after_workspaces=""
+	local active_workspace="" gained="" lost="" lost_count=0
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_isolated_workspace_untouched() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if ! isolated_raw_cleanup "${session}" "${signatures_ready}" "${signatures_before}" \
+			"nettoyage isolated_workspace_untouched"; then
+			cleanup_failed=1
+		fi
+		restore_cursor_best_effort "${entry_x}" "${entry_y}"
+
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_isolated_workspace_untouched EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	require_isolated_support
+	session_dir=$(session_dir_path "${session}")
+	read_cursor entry_x entry_y "precondition isolated_workspace_untouched" || return 1
+	snapshot_hypr_signatures signatures_before
+	signatures_ready=1
+	if [[ -e ${session_dir} ]]; then
+		fail "precondition isolated_workspace_untouched: session observe=presente (${session_dir}); attendu=absente"
+		return 1
+	fi
+	assert_named_output_absent "hyprpilot-${session}" \
+		"precondition isolated_workspace_untouched" || return 1
+	read_host_workspaces before_workspaces \
+		"precondition isolated_workspace_untouched" || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" --session "${session}" session start --isolated \
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" --size 1280x720 2>&1
+	); then
+		fail "session start isolated_workspace_untouched observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+
+	# L'output agent porte bien son propre workspace : c'est la seule assertion
+	# qui dit que le renommage a vise le workspace que l'output a amene.
+	if ! active_workspace=$(
+		hyprctl monitors -j 2>&1 |
+			jq -er --arg name "hyprpilot-${session}" \
+				'.[] | select(.name == $name) | .activeWorkspace.name'
+	); then
+		fail "isolated_workspace_untouched: workspace actif observe=illisible; attendu=agent-${session}"
+		return 1
+	fi
+	if [[ ${active_workspace} != "agent-${session}" ]]; then
+		fail "isolated_workspace_untouched: workspace de hyprpilot-${session} observe=${active_workspace}; attendu=agent-${session}"
+		return 1
+	fi
+
+	# Pendant la session, le repli assume son cout : un numero est confisque et
+	# porte le nom agent. Ce que le scenario verifie, c'est qu'il n'y en a qu'un
+	# et qu'aucun autre workspace de l'utilisateur ne bouge.
+	read_host_workspaces during_workspaces "pendant isolated_workspace_untouched" || return 1
+	if ! gained=$(jq -c --argjson before "${before_workspaces}" '. - $before' \
+		<<<"${during_workspaces}"); then
+		fail "isolated_workspace_untouched: comparaison observe=jq en echec; attendu=liste"
+		return 1
+	fi
+	if [[ ${gained} != "[\"agent-${session}\"]" ]]; then
+		fail "isolated_workspace_untouched: workspaces apparus=${gained}; attendu=[\"agent-${session}\"]"
+		return 1
+	fi
+	if ! lost=$(jq -c --argjson during "${during_workspaces}" '. - $during' \
+		<<<"${before_workspaces}"); then
+		fail "isolated_workspace_untouched: comparaison observe=jq en echec; attendu=liste"
+		return 1
+	fi
+	if ! lost_count=$(jq -r 'length' <<<"${lost}"); then
+		fail "isolated_workspace_untouched: comptage observe=jq en echec; attendu=entier"
+		return 1
+	fi
+	if ((lost_count > 1)); then
+		fail "isolated_workspace_untouched: workspaces confisques=${lost}; attendu=au plus un (celui que l'output a amene)"
+		return 1
+	fi
+
+	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then
+		fail "teardown isolated_workspace_untouched observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	wait_named_output_absent "hyprpilot-${session}" \
+		"teardown isolated_workspace_untouched" || return 1
+	wait_workspace_absent "agent-${session}" "teardown isolated_workspace_untouched" || return 1
+
+	# Le coeur du correctif : le nom rendu avant que l'output parte.
+	read_host_workspaces after_workspaces "apres isolated_workspace_untouched" || return 1
+	if [[ ${after_workspaces} != "${before_workspaces}" ]]; then
+		fail "isolated_workspace_untouched: workspaces apres teardown=${after_workspaces}; attendu=${before_workspaces} (un numero confisque garde son nom mort dans waybar jusqu'au redemarrage de waybar)"
+		return 1
+	fi
+)
+
+# Une regle de workspace ne se retire pas a l'execution (hyprwm/Hyprland#5691) et
+# la reposer l'empile au lieu de la remplacer (#2268). `hyprctl workspacerules`
+# en contenait trente, orphelines : une par session isolee, et une par appel de
+# `target` en mode partage. Le compte est donc borne, pas nul.
+scenario_host_rules_bounded() (
+	local cleanup_failed=0
+	local scenario_tmp="" session_file="" cleanup_output="" command_output=""
+	local app_pid="" address="" addresses_json=""
+	local title="hyprpilot-e2e-rules-$$"
+	local after_start=0 after_targets=0 after_restart=0 iteration
+
+	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+	cleanup_host_rules_bounded() {
+		local scenario_status=$?
+		trap - EXIT INT TERM
+
+		if [[ -n ${session_file} && -e ${session_file} ]]; then
+			if ! cleanup_output=$("${HYPRPILOT}" teardown 2>&1); then
+				fail "nettoyage host_rules_bounded: teardown observe=echec (${cleanup_output}); attendu=succes"
+				cleanup_failed=1
+			fi
+		fi
+		if [[ -n ${app_pid} ]] && kill -0 "${app_pid}" 2>/dev/null; then
+			kill "${app_pid}" 2>/dev/null || cleanup_failed=1
+			wait "${app_pid}" 2>/dev/null || true
+		fi
+		if ! assert_output_absent "nettoyage host_rules_bounded"; then
+			cleanup_failed=1
+		fi
+		if [[ -n ${scenario_tmp} ]]; then
+			if [[ ${scenario_tmp} != "${XDG_RUNTIME_DIR}"/hyprpilot-e2e-host-rules.* ]]; then
+				fail "nettoyage host_rules_bounded: repertoire observe=${scenario_tmp}; attendu=sous ${XDG_RUNTIME_DIR}"
+				cleanup_failed=1
+			elif ! rm -rf -- "${scenario_tmp}"; then
+				cleanup_failed=1
+			fi
+		fi
+
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
+		if ((scenario_status != 0 || cleanup_failed != 0)); then
+			exit 1
+		fi
+		exit 0
+	}
+
+	trap cleanup_host_rules_bounded EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
+	if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+		fail "host_rules_bounded: XDG_RUNTIME_DIR observe=vide; attendu=repertoire runtime"
+		return 1
+	fi
+	session_file=$(session_file_path default)
+	if [[ -e ${session_file} ]]; then
+		fail "precondition host_rules_bounded: session observe=presente; attendu=absente"
+		return 1
+	fi
+	if ! scenario_tmp=$(mktemp -d -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-host-rules.XXXXXX"); then
+		fail "host_rules_bounded: repertoire temporaire observe=creation impossible; attendu=mktemp reussi"
+		return 1
+	fi
+
+	zenity --entry --title="${title}" >/dev/null 2>&1 &
+	app_pid=$!
+	wait_client_addresses_by_title addresses_json "${title}" 1 \
+		"settle spawn host_rules_bounded" || return 1
+	address=$(jq -er '.[0]' <<<"${addresses_json}") || return 1
+
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "session start host_rules_bounded observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	count_workspace_rules after_start "apres start host_rules_bounded" || return 1
+
+	# Trois changements de cible sur la meme fenetre. C'est exactement ce qui
+	# reposait la regle de parking a chaque fois.
+	for ((iteration = 0; iteration < 3; iteration++)); do
+		if ! command_output=$(
+			"${HYPRPILOT}" target --address "${address}" 2>&1
+		); then
+			fail "target ${iteration} host_rules_bounded observe=echec (${command_output}); attendu=succes"
+			return 1
+		fi
+	done
+	count_workspace_rules after_targets "apres trois target host_rules_bounded" || return 1
+	if ((after_targets != after_start)); then
+		fail "host_rules_bounded: regles apres trois target observe=${after_targets}; attendu=${after_start} (un changement de cible ne pose pas de regle)"
+		return 1
+	fi
+
+	# Et le start suivant reutilise la regle laissee par le precedent au lieu
+	# d'en empiler une seconde : c'est ce que la table de regles verifie.
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "teardown host_rules_bounded observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	if ! command_output=$(
+		"${HYPRPILOT}" session start --match-title "${title}" 2>&1
+	); then
+		fail "second session start host_rules_bounded observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+	count_workspace_rules after_restart "apres second start host_rules_bounded" || return 1
+	if ((after_restart != after_start)); then
+		fail "host_rules_bounded: regles apres second start observe=${after_restart}; attendu=${after_start} (une regle equivalente ne se pose qu'une fois)"
+		return 1
+	fi
+	if ! command_output=$("${HYPRPILOT}" teardown 2>&1); then
+		fail "second teardown host_rules_bounded observe=echec (${command_output}); attendu=succes"
+		return 1
+	fi
+)
+
 scenario_isolated_output() (
 	local cleanup_failed=0
 	local session="e2e-out-$$"
@@ -3873,6 +4134,7 @@ scenario_isolated_teardown() (
 	local signatures_before="" signatures_ready=0 leftover=""
 	local entry_x="" entry_y="" session_dir="" command_output=""
 	local signature="" nested_pid="" console_address=""
+	local ledger_length=0 renamed_from=""
 	local before_x before_y attempt process_gone=0
 
 	# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
@@ -3924,6 +4186,29 @@ scenario_isolated_teardown() (
 	read_state_field "${session}" '.instance.pid' nested_pid "etat isolated_teardown" || return 1
 	read_state_field "${session}" '.instance.console_address' console_address \
 		"etat isolated_teardown" || return 1
+
+	# Le journal d'hote est ce que le demontage deroule : un start qui aurait
+	# cesse d'y ecrire laisserait le renommage et les regles derriere lui sans
+	# que rien ne le dise. Les quatre entrees sont l'output, sa regle de mode,
+	# le renommage du workspace et la regle qui le lie a l'output — cette
+	# derniere absente si une session precedente l'a deja laissee sur l'hote,
+	# puisqu'une regle equivalente ne se pose qu'une fois.
+	read_state_field "${session}" '.host | length' ledger_length \
+		"journal isolated_teardown" || return 1
+	if ((ledger_length < 3)); then
+		fail "isolated_teardown: journal observe=${ledger_length} entree(s); attendu=au moins 3 (output, mode-set, renommage)"
+		return 1
+	fi
+	if ! read_state_field "${session}" \
+		'[.host[] | select(.mutation == "workspace_renamed") | .from] | join(",")' \
+		renamed_from "journal isolated_teardown"; then
+		return 1
+	fi
+	if [[ -z ${renamed_from} ]]; then
+		fail "isolated_teardown: journal observe=aucun workspace_renamed; attendu=le nom d'origine du workspace confisque"
+		return 1
+	fi
+
 	read_stable_cursor before_x before_y "avant teardown isolated_teardown" || return 1
 
 	if ! command_output=$("${HYPRPILOT}" --session "${session}" teardown 2>&1); then

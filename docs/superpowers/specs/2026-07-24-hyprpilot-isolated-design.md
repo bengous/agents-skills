@@ -96,15 +96,41 @@ session start --isolated --app CMD --match-title T [--match-class C]
 
 1. Claim atomique du dossier session ; refus si session partagée exigée en
    parallèle (voir singleton) ou nom invalide. L'état est ensuite réécrit
-   après chaque ressource compositeur acquise (output créé, instance
-   spawnée, app lancée) : un start qui échoue à mi-chemin reste toujours
-   rattrapable par `teardown`, comme en v2. Snapshot hôte (workspace
-   actif, fenêtre active) pris ici, avant toute mutation.
+   **avant** chaque mutation d'hôte et après chaque ressource acquise
+   (output créé, instance spawnée, app lancée) : un start qui échoue à
+   mi-chemin, ou tué net, reste toujours rattrapable par `teardown`.
+   Snapshot hôte (workspace actif, fenêtre active) pris ici, avant toute
+   mutation.
+
+   Chaque mutation durable de l'hôte entre au **journal** (`host` dans la
+   charge utile) avec de quoi la défaire, et y entre avant d'être posée.
+   Un crash entre les deux laisse un état qui promet plus que le
+   compositeur ne tient, ce que le teardown absorbe puisque chaque undo est
+   idempotent ; l'ordre inverse laisserait une mutation que rien
+   n'enregistre. C'est ce défaut qui a produit les deux régressions du
+   2026-07-27, la barre waybar dégradée et les trente règles orphelines.
 2. `hyprctl output create headless hyprpilot-<name>`, puis mode-set
    `WxH@60` (défaut 1920x1080) et `scale 1` imposés ; vérification bornée
-   par `monitors -j`.
+   par `monitors -j`. La règle de mode-set est indélébile
+   (hyprwm/Hyprland#5691) et inévitable : `output create headless` ne prend
+   pas de taille. Elle est journalisée comme telle, avec son remède
+   (`hyprctl reload`).
 3. Lecture de l'`activeWorkspace.id` du headless, puis
-   `dispatch renameworkspace <id> agent-<name>`.
+   `dispatch renameworkspace <id> agent-<name>`, journalisé avec le nom
+   d'origine — sans lui, le nom est irrécupérable et le bouton de la barre
+   garde un label mort. Le workspace que Hyprland attache à un output créé
+   à l'exécution est le plus petit identifiant libre, donc un slot de
+   l'utilisateur : le renommage est refusé si ce workspace tenait une
+   fenêtre, était visible quelque part, ou existait déjà avant la création
+   de l'output.
+
+   Recette écartée, mesurée le 2026-07-27 sur 0.56 : poser
+   `agent-<name>, monitor:hyprpilot-<name>, default:true` avant la création
+   de l'output ne supprime pas le renommage. La règle est bien enregistrée
+   dans `workspacerules` mais n'est pas appliquée à un output créé à
+   l'exécution — l'output reçoit un workspace numérique. Le renommage reste
+   donc la seule recette, et son coût est assumé : pendant toute la vie de
+   la session, un numéro de la barre porte un nom `agent-*`.
 4. Génération de la config nested minimale dans le dossier session
    (animations off, wallpaper uni, gaps/bordures zéro, keymap hérité, pas
    d'exec-once).
@@ -165,21 +191,37 @@ Toutes les commandes lisent le mode dans l'état de leur session et routent.
    SIGTERM puis SIGKILL en derniers recours.
 3. Copie du log nested dans le dossier session (ou un chemin --out), puis
    suppression de `$XDG_RUNTIME_DIR/hypr/<sig>/`.
-4. `cursorpos` sauvé, `output remove hyprpilot-<name>`, `dispatch
-   movecursor` de restauration, vérification. Ceci corrige aussi, pour le
-   mode partagé, la limite documentée « teardown ne restaure pas le
-   curseur » : même mécanique appliquée aux deux modes.
-5. Suppression du dossier session. Toute étape sur un objet déjà absent est
+4. Déroulé du journal d'hôte, en ordre inverse de sa pose : un workspace
+   récupère son nom, un workspace évacué revient sur son moniteur, tant que
+   l'output qui les a déplacés existe encore. Rendre un nom après
+   `output remove` le rendrait à un workspace déjà détruit — c'est
+   exactement le défaut waybar. Ce que Hyprland ne sait pas retirer (les
+   `keyword`) est nommé dans les notes avec son remède au lieu d'être tu.
+5. `cursorpos` sauvé, `output remove hyprpilot-<name>`, `dispatch
+   movecursor` de restauration, vérification. Le retrait est décidé par la
+   présence d'une entrée `output_created` au journal, jamais par un
+   drapeau : un drapeau peut valoir vrai sans qu'aucune création soit
+   derrière. Ceci corrige aussi, pour le mode partagé, la limite documentée
+   « teardown ne restaure pas le curseur » : même mécanique appliquée aux
+   deux modes.
+6. Suppression du dossier session. Toute étape sur un objet déjà absent est
    un succès idempotent.
 
 ## 7. Waybar et observation
 
-Les workspaces `agent-<session>` sont visibles dans `hyprctl workspaces -j`
-dès le spawn. Selon la config waybar (`all-outputs`), ils apparaissent dans
-la barre : c'est un indicateur de présence des agents, PAS un bouton (un
-clic waybar bascule le focus vers l'output headless invisible). Documenter
-dans SKILL/README : observation = `session show`/`hide` ; le module waybar
-custom éventuel est hors scope.
+Le workspace `agent-<session>` n'ajoute pas un bouton à la barre : il en
+**renomme un**. Hyprland attache au nouvel output headless le plus petit
+identifiant libre, donc un slot que l'utilisateur occupe déjà dans sa
+config `persistent-workspaces` ; le renommage lui donne un nom pour lequel
+`format-icons` n'a pas de clé, et la barre tombe sur `default`. Le symptôme
+observé le 2026-07-27 est donc la **disparition du numéro confisqué**, pas
+l'apparition d'un workspace agent.
+
+Le teardown rend le nom avant de retirer l'output, donc la barre est
+entière dès la fin de la session. Entre les deux, la dégradation est le
+coût assumé de la recette (§4.3). Un clic sur ce workspace bascule le focus
+vers l'output headless invisible : observation = `session show`/`hide` ; le
+module waybar custom éventuel est hors scope.
 
 ## 8. Portals : slice exploratoire timeboxée
 

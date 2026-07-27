@@ -56,10 +56,10 @@ cursor and focus of *its own* instance, never the host's.
 | `wait [--stable\|--changed-from PNG] [--timeout 5s]` | poll captures until stable / changed |
 | `status` | session JSON: schema, mode, tracked windows + dispositions, active target, parked windows, configured vs effective output size. In an agent desktop: instance signature, `WAYLAND_DISPLAY`, pid, console address, `shown`, and the geometry read inside the instance |
 | `doctor` | environment checks (hyprctl, grim, protocols, layout) plus the agent-desktop ones (`Hyprland` on PATH, version against the validated 0.56, sessions directory writable) |
-| `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), then remove the output and state. An agent desktop is destroyed whole and refuses both flags |
+| `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), unwind the host ledger, then remove the output and state. An agent desktop is destroyed whole and refuses both flags |
 
 State lives in `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/session.json`
-(`schema_version: 4`, one claim per name, multi-window). It is published by a
+(`schema_version: 5`, one claim per name, multi-window). It is published by a
 single `hard_link`, which claims the name and makes the file appear complete in
 the same step, so no reader — and no `teardown` — can find a half-written
 session; `session.lock` next to it serialises the commands that change it.
@@ -70,22 +70,42 @@ other version), grim, and zenity+jq for the E2E gate.
 
 **Reserved namespace**: outputs `hyprpilot` (shared) and `hyprpilot-<session>`
 (isolated); workspaces `hyprpilot` and `special:hyprpilot-parked` (shared) and
-`agent-<session>` (isolated). Named `agent-*` workspaces show up in
-`hyprctl workspaces -j` as soon as they exist, so waybar may display them
-depending on its `all-outputs` setting; they are a presence indicator, not a
-button. Clicking one moves the focus to an invisible headless output, and
-`session show` then refuses to move the console onto the workspace it came
-from: looking at an agent desktop is `session show`/`session hide`, never a
-waybar click.
+`agent-<session>` (isolated).
+
+**What an agent desktop costs your bar, while it runs.** `hyprctl output create
+headless` makes Hyprland attach the *lowest free workspace id* to the new
+output — `3` if you occupy 1 and 2 — and the start renames it `agent-<session>`.
+A bar with persistent workspaces then shows that button under a name its
+`format-icons` has no key for, so the number is replaced by whatever `default`
+draws. It is not a new button appearing: it is one of yours wearing another
+name. `teardown` gives the name back before the output goes, so the bar is
+whole again the moment the session ends; there is no way to avoid the
+confiscation in between, because a workspace rule with `default:true` is not
+applied to an output created at runtime (measured on 0.56, 2026-07-27).
+
+Clicking that workspace moves the focus to an invisible headless output, and
+`session show` then refuses to move the console onto the workspace it came from:
+looking at an agent desktop is `session show`/`session hide`, never a bar click.
+
+**What a session leaves on the host, for good.** Hyprland retracts no `keyword`
+while it runs ([#5691]), and reposting one stacks a second instead of replacing
+it ([#2268]). Every session therefore leaves its `monitor` mode-set rule and its
+`workspace` binding behind. They are inert, and they are posed at most once — a
+start reads `hyprctl workspacerules` and reuses an equivalent rule rather than
+adding one. `doctor` lists what is outstanding; `hyprctl reload` is the only
+thing that clears it.
+
+[#5691]: https://github.com/hyprwm/Hyprland/issues/5691
+[#2268]: https://github.com/hyprwm/Hyprland/issues/2268
 
 **No state compatibility**: a state file from any older schema makes every
 command fail with the version found, the version expected and the way out.
 `teardown` is the exception, in both locations — the pre-v3
-`$XDG_RUNTIME_DIR/hyprpilot/session.json` and a `schema_version: 3` file at the
-current path — so a session left by an older build is never stranded with its
-window parked on a hidden output. Those states recorded no window identity, so
-their teardown disposes of windows by address alone, as the build that wrote
-them did.
+`$XDG_RUNTIME_DIR/hyprpilot/session.json`, and a `schema_version: 3` or `4` file
+at the current path — so a session left by an older build is never stranded with
+its window parked on a hidden output, or its agent desktop still alive. v2 and
+v3 recorded no window identity, so their teardown disposes of windows by address
+alone, as the build that wrote them did; v4 did record it, and keeps it.
 
 ## Agent desktops (`--isolated`)
 
