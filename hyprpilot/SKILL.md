@@ -216,9 +216,8 @@ Caveats:
 - File pickers work in shared mode because it drives the user's real desktop.
   An **agent desktop** cannot open them: the nested compositor inherits the
   host D-Bus session, so `FileChooser` portal calls hang with no dialog — every
-  GTK4 picker included. Measured in
-  `crates/hyprpilot/references/portal-probe.md`. A GUI you have to test through
-  a file picker belongs in shared mode.
+  GTK4 picker included. A GUI you have to test through a file picker belongs in
+  shared mode.
 - If an agent desktop's nested compositor dies, every command fails saying so
   and naming `teardown`; `teardown` is what cleans it up.
 - State left by an older build (any older `schema_version`, or the

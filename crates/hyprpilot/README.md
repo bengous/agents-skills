@@ -276,9 +276,9 @@ nested compositor's log before the rollback removes it.
 - **Portals inside an agent desktop**: an app launched in a nested Hyprland
   inherits the host's `DBUS_SESSION_BUS_ADDRESS`, so any `FileChooser` portal
   call hangs with no dialog anywhere — including every GTK4 file picker, whose
-  only path is the portal (`GTK_USE_PORTAL=0` changes nothing). Measured, with
-  the D-Bus traces and a validated private-bus workaround that is out of scope
-  for this cycle, in [`references/portal-probe.md`](references/portal-probe.md).
+  only path is the portal (`GTK_USE_PORTAL=0` changes nothing). Giving each
+  instance its own D-Bus session bus lifts this, measured on 0.56 and out of
+  scope for this cycle: the session lifecycle owns no bus.
   Shared mode is unaffected: it drives the user's real portal dialogs.
 - Out of scope for this cycle: audio inside an agent desktop, and a waybar
   module for agent desktops.
