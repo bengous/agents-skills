@@ -1,13 +1,3 @@
-## Agent Choice
-
-Use `explorer` for repo/codebase questions with exact paths, symbols, commands,
-or search targets. Use `default` for docs, web, design tradeoffs, external
-facts, or non-codebase synthesis.
-
-Use `fork_context: false` unless exact conversation context is required. If
-using `fork_context: true`, omit a custom `agent_type` and make the task narrow
-in the prompt.
-
 ## Subagent Prompt
 
 ```text
