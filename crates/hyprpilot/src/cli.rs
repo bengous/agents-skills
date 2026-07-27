@@ -795,6 +795,23 @@ fn host_instance_socket(instances_dir: &Path) -> Option<bool> {
     Some(instances_dir.join(signature).join(".socket.sock").exists())
 }
 
+/// Hyprland retracts no `keyword` while it runs (hyprwm/Hyprland#5691), so a
+/// session that ends still leaves its `monitor` and `workspace` rules behind.
+/// They are harmless and they accumulate; `doctor` names them so the leak is
+/// visible instead of silent, with the one command that clears it.
+fn report_host_leaks(report: &mut Report) {
+    let leaks = session::live_host_leaks();
+    if leaks.is_empty() {
+        return;
+    }
+    report.info(&format!(
+        "{} host rule(s) posed by hyprpilot sessions cannot be retracted while Hyprland runs and \
+         stay until `hyprctl reload`: {}",
+        leaks.len(),
+        leaks.join(", ")
+    ));
+}
+
 fn doctor() -> Result<String, Error> {
     let mut report = Report::default();
 
@@ -846,6 +863,8 @@ fn doctor() -> Result<String, Error> {
         ),
         (Err(error), _) | (_, Err(error)) => report.fail(&error.to_string()),
     }
+
+    report_host_leaks(&mut report);
 
     match pointer::probe_virtual_pointer() {
         Ok(present) => report.check(

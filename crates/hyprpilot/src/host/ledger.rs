@@ -108,6 +108,20 @@ impl HostMutation {
         }
     }
 
+    /// What this mutation leaves on the host that nothing can retract, or
+    /// `None` when `undo` takes it back. Exhaustive like the two matches around
+    /// it, and the same answer `undo` gives — asserted, since two matches can
+    /// drift where one cannot.
+    pub fn leak(&self) -> Option<String> {
+        match self {
+            Self::MonitorRuleSet { rule } => Some(format!("monitor rule `{rule}`")),
+            Self::WorkspaceRuleSet { rule } => Some(format!("workspace rule `{rule}`")),
+            Self::OutputCreated { .. }
+            | Self::WorkspaceRenamed { .. }
+            | Self::WorkspaceMovedToMonitor { .. } => None,
+        }
+    }
+
     /// How this mutation comes back. `cursor` is the position to warp back to
     /// when `output remove` re-centres it and `cursorpos` cannot be read at the
     /// last moment (fact §2.8): a rolled-back start passes the snapshot it took
@@ -135,6 +149,9 @@ impl HostMutation {
                 what: format!("monitor rule `{rule}`"),
                 remedy: RELOAD,
             }),
+            // Posed at most once (`Ledger::bind_workspace`), because that is the
+            // only defence: reposting stacks a second one (#2268) and nothing
+            // retracts either (#5691).
             Self::WorkspaceRuleSet { rule } => Ok(Undo::Impossible {
                 what: format!("workspace rule `{rule}`"),
                 remedy: RELOAD,
@@ -522,6 +539,29 @@ mod tests {
                 kind(&mutation)
             );
         }
+    }
+
+    /// `undo` and `leak` are two exhaustive matches over the same enum, and two
+    /// matches can drift where one cannot: what `doctor` lists as unretractable
+    /// has to be exactly what `undo` refuses to take back.
+    #[test]
+    fn what_doctor_lists_is_what_the_undo_cannot_take_back() -> Result<(), Box<dyn StdError>> {
+        for mutation in every_mutation() {
+            let listed = mutation.leak().is_some();
+            let impossible = with_recorder(|effects, _| {
+                Ok::<_, Error>(matches!(
+                    mutation.undo(effects, None)?,
+                    Undo::Impossible { .. }
+                ))
+            })?;
+            assert_eq!(
+                listed,
+                impossible,
+                "{} is classified one way by `leak` and the other by `undo`",
+                kind(&mutation)
+            );
+        }
+        Ok(())
     }
 
     #[test]

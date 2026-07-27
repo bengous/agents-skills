@@ -203,19 +203,8 @@ impl Session {
         self.shared_or(|| Error::ModeRouting { command })
     }
 
-    fn shared_mut(&mut self, command: &'static str) -> Result<&mut Shared, Error> {
-        self.shared_mut_or(|| Error::ModeRouting { command })
-    }
-
     fn shared_or(&self, error: impl FnOnce() -> Error) -> Result<&Shared, Error> {
         match &self.state {
-            ModeState::Shared(shared) => Ok(shared),
-            ModeState::Isolated(_) => Err(error()),
-        }
-    }
-
-    fn shared_mut_or(&mut self, error: impl FnOnce() -> Error) -> Result<&mut Shared, Error> {
-        match &mut self.state {
             ModeState::Shared(shared) => Ok(shared),
             ModeState::Isolated(_) => Err(error()),
         }
@@ -990,6 +979,58 @@ impl<'a, P: Recorded> Ledger<'a, P> {
         self.record()?;
         post()
     }
+
+    /// A workspace rule, posed at most once. It is the only defence there is:
+    /// Hyprland stacks a repeated rule instead of replacing it, the first one
+    /// keeping precedence (#2268), and retracts none of them (#5691). Nothing
+    /// is recorded when nothing is added — the ledger says what this session
+    /// did, not what it found.
+    pub fn bind_workspace(&mut self, workspace: &str, monitor: &str) -> Result<(), Error> {
+        if host::workspace_rule_is_posted(workspace, monitor) {
+            return Ok(());
+        }
+        self.apply(
+            HostMutation::WorkspaceRuleSet {
+                rule: host::workspace_rule(workspace, monitor),
+            },
+            || host::keyword_workspace(workspace, monitor),
+        )
+    }
+}
+
+/// What the live sessions have posed on the host that nothing can retract, each
+/// with the command that clears it. Read from the ledgers rather than from
+/// `hyprctl workspacerules`, because the question is what *this crate* left
+/// behind, not what the user's own config holds.
+///
+/// A session directory that cannot be read is skipped: `doctor` reports on the
+/// host, and one unreadable state must not turn that into an error.
+pub fn live_host_leaks() -> Vec<String> {
+    let Ok(entries) = sessions_dir().and_then(|dir| {
+        fs::read_dir(&dir).map_err(|source| Error::Io {
+            context: format!("listing {}", dir.display()),
+            source,
+        })
+    }) else {
+        return Vec::new();
+    };
+    let mut leaks = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(raw) = fs::read_to_string(entry.path().join("session.json")) else {
+            continue;
+        };
+        let Ok(session) = serde_json::from_str::<Session>(&raw) else {
+            continue;
+        };
+        let ledger = match &session.state {
+            ModeState::Shared(shared) => &shared.host,
+            ModeState::Isolated(isolated) => &isolated.host,
+        };
+        for what in ledger.iter().filter_map(HostMutation::leak) {
+            leaks.push(format!("{what} (session `{}`)", session.name));
+        }
+    }
+    leaks
 }
 
 /// Whether this session is the one that created its output, read off the ledger
@@ -1344,6 +1385,21 @@ fn effective_output_size(output: &hypr::Monitor) -> Result<[u32; 2], Error> {
 /// Through `hypr`, like every other `hyprctl` call of the crate: a `Command` of
 /// its own here would be the one path able to address a compositor the `Ctl`
 /// layer never routed (see the `hypr` module note).
+/// The rule text `resize_monitor` posts, so the ledger records exactly what
+/// went on the host.
+fn monitor_rule_of(output: &hypr::Monitor, width: u32, height: u32) -> Result<String, Error> {
+    Ok(hypr::monitor_rule_at(
+        &output.name,
+        width,
+        height,
+        (
+            exact_layout_integer(output.x, "x", &output.name)?,
+            exact_layout_integer(output.y, "y", &output.name)?,
+        ),
+        output.scale,
+    ))
+}
+
 fn resize_monitor(output: &hypr::Monitor, width: u32, height: u32) -> Result<(), Error> {
     host::keyword_monitor_at(
         &output.name,
@@ -1531,7 +1587,16 @@ fn wait_for_verified_placement(
     }
 }
 
-fn evacuate_stray_workspace(output_name: &str, workspace_name: &str) -> Result<(), Error> {
+/// The shared-mode twin of the isolated rename: the workspace Hyprland attaches
+/// to a freshly created output is one of the user's slots, and pushing it onto
+/// "the first other monitor" used to leave it there for good. The ledger records
+/// the monitor it came from, so the teardown brings it home before the output
+/// that displaced it goes.
+fn evacuate_stray_workspace(
+    ledger: &mut Ledger<'_, Shared>,
+    output_name: &str,
+    workspace_name: &str,
+) -> Result<(), Error> {
     let monitors = hypr::monitors()?;
     let ours = monitors
         .iter()
@@ -1543,20 +1608,27 @@ fn evacuate_stray_workspace(output_name: &str, workspace_name: &str) -> Result<(
     if ours.active_workspace.name == workspace_name {
         return Ok(());
     }
+    let stray = ours.active_workspace.name.clone();
     let refuge = monitors
         .iter()
         .find(|monitor| monitor.name != output_name)
         .ok_or_else(|| Error::Tool {
             command: "hyprctl monitors".to_owned(),
             message: "no other monitor to evacuate the stray workspace to".to_owned(),
-        })?;
-    host::move_workspace_to_monitor(
-        &workspace_selector(&ours.active_workspace.name),
-        &refuge.name,
+        })?
+        .name
+        .clone();
+    ledger.apply(
+        HostMutation::WorkspaceMovedToMonitor {
+            workspace: stray.clone(),
+            from: output_name.to_owned(),
+        },
+        || host::move_workspace_to_monitor(&workspace_selector(&stray), &refuge),
     )
 }
 
 fn park_window(
+    ledger: &mut Ledger<'_, Shared>,
     address: &str,
     output_name: &str,
     workspace_name: &str,
@@ -1565,16 +1637,17 @@ fn park_window(
         "movetoworkspacesilent",
         &format!("name:{workspace_name},address:{address}"),
     ])?;
-    place_session_window(address, output_name, workspace_name)
+    place_session_window(ledger, address, output_name, workspace_name)
 }
 
 fn place_session_window(
+    ledger: &mut Ledger<'_, Shared>,
     address: &str,
     output_name: &str,
     workspace_name: &str,
 ) -> Result<Option<Placement>, Error> {
     host::move_workspace_to_monitor(&format!("name:{workspace_name}"), output_name)?;
-    evacuate_stray_workspace(output_name, workspace_name)?;
+    evacuate_stray_workspace(ledger, output_name, workspace_name)?;
 
     let (window, output) = wait_for_session_workspace(address, output_name, workspace_name)?;
     let placement = place(client_rect(&window), output_rect(&output)?);
@@ -1662,9 +1735,13 @@ fn wait_for_target_layout(session: &Shared) -> Result<(), Error> {
     }
 }
 
-fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
-    host::keyword_workspace(&session.parking_workspace, &session.output)?;
-
+fn activate_persisted_target(ledger: &mut Ledger<'_, Shared>) -> Result<(), Error> {
+    // The parking rule used to be reposted here, on every single `target`.
+    // Hyprland stacks a repeated rule instead of replacing it (#2268) and
+    // retracts none of them (#5691), so a session that switched target thirty
+    // times left thirty rules behind. It is a property of the output, so it is
+    // posed once, at `start`.
+    let session = &ledger.payload;
     let clients = hypr::clients()?;
     for tracked in &session.windows {
         if tracked.address == session.active_address {
@@ -1701,49 +1778,42 @@ fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
         ])?;
     }
 
-    place_active_target(session)
+    place_active_target(ledger)
 }
 
-fn place_active_target(session: &Shared) -> Result<(), Error> {
+fn place_active_target(ledger: &mut Ledger<'_, Shared>) -> Result<(), Error> {
+    let address = ledger.payload.active_address.clone();
+    let output = ledger.payload.output.clone();
+    let workspace = ledger.payload.active_workspace.clone();
     if matches!(
-        place_session_window(
-            &session.active_address,
-            &session.output,
-            &session.active_workspace,
-        )?,
+        place_session_window(ledger, &address, &output, &workspace)?,
         Some(Placement::Oversized(_, _))
     ) {
         let _ = writeln!(
             std::io::stderr(),
-            "hyprpilot: warning: window {} is larger than output {}; \
+            "hyprpilot: warning: window {address} is larger than output {output}; \
              use `hyprpilot session resize`",
-            session.active_address,
-            session.output
         );
     }
-    wait_for_target_layout(session)
+    wait_for_target_layout(&ledger.payload)
 }
 
 fn persist_target_before_activation(
-    path: &Path,
-    session: &mut Session,
+    ledger: &mut Ledger<'_, Shared>,
     client: &hypr::Client,
     mode: TargetMode,
     disposition: Disposition,
 ) -> Result<(), Error> {
     if mode == TargetMode::Adopt {
-        session
-            .shared_mut("target")?
+        ledger
+            .payload
             .windows
             .push(TrackedWindow::adopt(client, disposition));
-        save_over(path, session)?;
+        ledger.record()?;
     }
 
-    session
-        .shared_mut("target")?
-        .active_address
-        .clone_from(&client.address);
-    save_over(path, session)
+    ledger.payload.active_address.clone_from(&client.address);
+    ledger.record()
 }
 
 pub fn target(
@@ -1784,11 +1854,20 @@ pub fn target(
             on_teardown,
         );
     }
+    let ModeState::Shared(shared) = session.state else {
+        return Err(Error::ModeRouting { command: "target" });
+    };
+    let mut ledger = Ledger::new(&path, name, shared);
     let started = Instant::now();
     let (client, mode) = loop {
         let clients = hypr::clients()?;
-        let shared = session.shared("target")?;
-        match target_lookup(&clients, shared, criteria, untracked, wait.is_some())? {
+        match target_lookup(
+            &clients,
+            &ledger.payload,
+            criteria,
+            untracked,
+            wait.is_some(),
+        )? {
             TargetLookup::Ready { client, mode } => break (client.clone(), mode),
             TargetLookup::Retry => {
                 let timeout = wait.ok_or_else(|| {
@@ -1812,8 +1891,8 @@ pub fn target(
 
     // Adoption (when needed) and the active address are persisted before the
     // first compositor command. Activation only accepts that resulting state.
-    persist_target_before_activation(&path, &mut session, &client, mode, disposition)?;
-    activate_persisted_target(session.shared("target")?)?;
+    persist_target_before_activation(&mut ledger, &client, mode, disposition)?;
+    activate_persisted_target(&mut ledger)?;
 
     Ok(format!(
         "target active — {} window {} (`{}`)",
@@ -1841,25 +1920,35 @@ pub fn resize(name: &str, size: &str) -> Result<String, Error> {
     let (width, height) = parse_size(size)?;
     let requested_size = [width, height];
     let path = session_path(name)?;
-    let mut session = load(name)?;
-    let shared = session.shared_or(resize_unsupported)?;
-    let output = find_output(&shared.output)?.ok_or_else(|| Error::Tool {
+    let session = load(name)?;
+    session.shared_or(resize_unsupported)?;
+    let ModeState::Shared(shared) = session.state else {
+        return Err(resize_unsupported());
+    };
+    let mut ledger = Ledger::new(&path, name, shared);
+    let output_name = ledger.payload.output.clone();
+    let output = find_output(&output_name)?.ok_or_else(|| Error::Tool {
         command: "hyprctl monitors".to_owned(),
-        message: format!("session output {} is missing", shared.output),
+        message: format!("session output {output_name} is missing"),
     })?;
-    let output_name = shared.output.clone();
 
-    resize_monitor(&output, width, height)?;
+    // A second mode-set on the same output: unretractable like the first, and
+    // recorded like it, so `doctor` and the teardown can say what stays behind.
+    ledger.apply(
+        HostMutation::MonitorRuleSet {
+            rule: monitor_rule_of(&output, width, height)?,
+        },
+        || resize_monitor(&output, width, height),
+    )?;
 
     let effective_size = wait_for_effective_resize(&output_name, requested_size)?;
-    session.shared_mut_or(resize_unsupported)?.size = effective_size;
-    save_over(&path, &session)?;
-    let shared = session.shared_or(resize_unsupported)?;
-    place_active_target(shared)?;
+    ledger.payload.size = effective_size;
+    ledger.record()?;
+    place_active_target(&mut ledger)?;
 
     Ok(format!(
-        "session resized — output {} is {}x{}, window {} repositioned",
-        shared.output, effective_size[0], effective_size[1], shared.active_address
+        "session resized — output {output_name} is {}x{}, window {} repositioned",
+        effective_size[0], effective_size[1], ledger.payload.active_address
     ))
 }
 
@@ -2032,9 +2121,12 @@ pub fn start(
         },
         || host::keyword_monitor(OUTPUT_NAME, width, height),
     )?;
+    // Bound to the output, not re-bound on every change of target: the rule
+    // says where the parking workspace lives, which the output decides once.
+    ledger.bind_workspace(PARKING_WORKSPACE_NAME, OUTPUT_NAME)?;
 
     if matches!(
-        park_window(&window.address, OUTPUT_NAME, WORKSPACE_NAME)?,
+        park_window(&mut ledger, &window.address, OUTPUT_NAME, WORKSPACE_NAME)?,
         Some(Placement::Oversized(_, _))
     ) {
         let _ = writeln!(
@@ -3283,16 +3375,15 @@ mod tests {
     fn target_persistence_finishes_before_activation() -> Result<(), Box<dyn StdError>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
-        let mut session = sample_session();
-        save_new_to(&path, &session)?;
+        let mut ledger = Ledger::new(&path, DEFAULT_SESSION_NAME, sample_shared());
+        ledger.claim()?;
         let client = matching_clients()?
             .into_iter()
             .find(|client| client.address == "0xddd")
             .ok_or("target fixture missing")?;
 
         persist_target_before_activation(
-            &path,
-            &mut session,
+            &mut ledger,
             &client,
             TargetMode::Adopt,
             Disposition::Close,
@@ -4076,8 +4167,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
-        let mut updated = sample_session();
-        let shared = updated.shared_mut("target")?;
+        let mut shared = sample_shared();
         shared.windows.push(TrackedWindow {
             address: "0xdef".to_owned(),
             stable_id: "9003".to_owned(),
@@ -4089,6 +4179,11 @@ mod tests {
             teardown: Disposition::Restore,
         });
         shared.active_address = "0xdef".to_owned();
+        let updated = Session {
+            schema_version: SCHEMA_VERSION,
+            name: DEFAULT_SESSION_NAME.to_owned(),
+            state: ModeState::Shared(shared),
+        };
 
         save_over(&path, &updated)?;
 

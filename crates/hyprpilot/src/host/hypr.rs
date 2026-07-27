@@ -394,6 +394,32 @@ pub(in crate::host) fn workspace_rule(workspace: &str, monitor: &str) -> String 
     format!("{workspace}, monitor:{monitor}")
 }
 
+/// One entry of `hyprctl workspacerules -j`, as 0.56 reports it. `monitor` is
+/// optional because a rule need not bind one; the crate only ever poses rules
+/// that do.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRule {
+    pub workspace_string: String,
+    pub monitor: Option<String>,
+}
+
+impl WorkspaceRule {
+    /// Two rules are the same one when they bind the same workspace to the same
+    /// output. Nothing else in the entry matters: reposting a rule that differs
+    /// only in its other fields would still stack a second one.
+    pub(in crate::host) fn binds(&self, workspace: &str, monitor: &str) -> bool {
+        self.workspace_string == workspace && self.monitor.as_deref() == Some(monitor)
+    }
+}
+
+/// Every workspace rule the compositor currently holds. A rule cannot be
+/// retracted while Hyprland runs (#5691), so this is what a start reads to keep
+/// from posing a duplicate.
+pub(in crate::host) fn workspace_rules() -> Result<Vec<WorkspaceRule>, Error> {
+    run_json_on(Ctl::Host, &["workspacerules"])
+}
+
 pub fn version_on(ctl: Ctl<'_>) -> Result<String, Error> {
     run_on(ctl, &["version"])
 }

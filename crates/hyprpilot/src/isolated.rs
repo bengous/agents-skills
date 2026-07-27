@@ -393,12 +393,7 @@ impl Start<'_> {
         // workspace is destroyed while the console is shown, `hide` recreates it
         // with `movetoworkspacesilent`, and without the rule that recreation
         // lands on the monitor the console currently sits on — the user's.
-        state.apply(
-            HostMutation::WorkspaceRuleSet {
-                rule: host::workspace_rule(&self.workspace, &self.output),
-            },
-            || host::keyword_workspace(&self.workspace, &self.output),
-        )
+        state.bind_workspace(&self.workspace, &self.output)
     }
 
     /// §4.4. The keymap is the only dynamic part, so it is read from the host,
