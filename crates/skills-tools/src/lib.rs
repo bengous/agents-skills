@@ -8,6 +8,87 @@ const DESCRIPTION_MAX_CHARS: usize = 1024;
 const COMPATIBILITY_MAX_CHARS: usize = 500;
 const SPEC_URL: &str = "https://agentskills.io/specification";
 
+/// Frontmatter keys defined by the Agent Skills specification. Every reader of
+/// the shared skill store consumes these, Codex included.
+const SPEC_FIELDS: &[Field] = &[
+    Field {
+        key: "name",
+        rule: Rule::Dedicated,
+    },
+    Field {
+        key: "description",
+        rule: Rule::Dedicated,
+    },
+    Field {
+        key: "compatibility",
+        rule: Rule::Dedicated,
+    },
+    Field {
+        key: "license",
+        rule: Rule::NonEmptyString,
+    },
+    Field {
+        key: "metadata",
+        rule: Rule::StringMap,
+    },
+    // The specification describes a space-separated string. Claude Code widens
+    // it to a sequence of strings, which is the form most skills here use.
+    Field {
+        key: "allowed-tools",
+        rule: Rule::ToolList,
+    },
+];
+
+/// Claude Code extensions to the specification. Other readers ignore them.
+const CLAUDE_CODE_FIELDS: &[Field] = &[
+    Field {
+        key: "disallowed-tools",
+        rule: Rule::ToolList,
+    },
+    Field {
+        key: "model",
+        rule: Rule::NonEmptyString,
+    },
+    Field {
+        key: "effort",
+        rule: Rule::NonEmptyString,
+    },
+    Field {
+        key: "argument-hint",
+        rule: Rule::NonEmptyString,
+    },
+    Field {
+        key: "disable-model-invocation",
+        rule: Rule::Boolean,
+    },
+    Field {
+        key: "shell",
+        rule: Rule::OneOf(&["bash", "powershell"]),
+    },
+    Field {
+        key: "hooks",
+        rule: Rule::Mapping,
+    },
+];
+
+struct Field {
+    key: &'static str,
+    rule: Rule,
+}
+
+enum Rule {
+    /// Carried by a dedicated function, which also reports the key when absent.
+    Dedicated,
+    NonEmptyString,
+    Boolean,
+    /// A non-empty string, or a sequence of non-empty strings.
+    ToolList,
+    /// A mapping whose keys and values are all non-empty strings.
+    StringMap,
+    Mapping,
+    OneOf(&'static [&'static str]),
+}
+
 pub fn run_cli(args: impl IntoIterator<Item = String>) -> Result<String, String> {
     let args = args.into_iter().collect::<Vec<_>>();
 
@@ -145,6 +226,7 @@ fn validate_skill_file(path: &Path) -> Result<(), Vec<String>> {
     validate_name(path, &parsed, &mut problems);
     validate_description(path, &parsed, &mut problems);
     validate_compatibility(path, &parsed, &mut problems);
+    validate_known_fields(path, &parsed, &mut problems);
 
     if problems.is_empty() {
         Ok(())
@@ -273,6 +355,131 @@ fn validate_compatibility(
     }
 }
 
+fn validate_known_fields(
+    path: &Path,
+    parsed: &BTreeMap<String, serde_yaml::Value>,
+    problems: &mut Vec<String>,
+) {
+    for (key, value) in parsed {
+        let Some(field) = lookup_field(key) else {
+            problems.push(format!(
+                "{}: unknown frontmatter key `{key}`; expected one of {} (Agent Skills) or {} (Claude Code)",
+                path.display(),
+                join_keys(SPEC_FIELDS),
+                join_keys(CLAUDE_CODE_FIELDS)
+            ));
+            continue;
+        };
+
+        if let Err(expectation) = check_rule(&field.rule, value) {
+            problems.push(format!("{}: `{key}` {expectation}", path.display()));
+        }
+    }
+}
+
+fn lookup_field(key: &str) -> Option<&'static Field> {
+    SPEC_FIELDS
+        .iter()
+        .chain(CLAUDE_CODE_FIELDS)
+        .find(|field| field.key == key)
+}
+
+fn join_keys(fields: &[Field]) -> String {
+    fields
+        .iter()
+        .map(|field| field.key)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn check_rule(rule: &Rule, value: &serde_yaml::Value) -> Result<(), String> {
+    match rule {
+        Rule::Dedicated => Ok(()),
+        Rule::NonEmptyString => {
+            if is_non_empty_string(value) {
+                Ok(())
+            } else {
+                Err("must be a non-empty string".to_owned())
+            }
+        }
+        Rule::Boolean => {
+            if value.as_bool().is_some() {
+                Ok(())
+            } else {
+                Err("must be a boolean".to_owned())
+            }
+        }
+        Rule::ToolList => check_tool_list(value),
+        Rule::StringMap => check_string_map(value),
+        Rule::Mapping => {
+            if value.as_mapping().is_some() {
+                Ok(())
+            } else {
+                Err("must be a mapping".to_owned())
+            }
+        }
+        Rule::OneOf(allowed) => check_one_of(value, allowed),
+    }
+}
+
+fn check_tool_list(value: &serde_yaml::Value) -> Result<(), String> {
+    const EXPECTATION: &str = "must be a non-empty string or a sequence of non-empty strings";
+
+    if value.is_string() {
+        return if is_non_empty_string(value) {
+            Ok(())
+        } else {
+            Err(EXPECTATION.to_owned())
+        };
+    }
+
+    let Some(items) = value.as_sequence() else {
+        return Err(EXPECTATION.to_owned());
+    };
+
+    if items.is_empty() || !items.iter().all(is_non_empty_string) {
+        return Err(EXPECTATION.to_owned());
+    }
+
+    Ok(())
+}
+
+fn check_string_map(value: &serde_yaml::Value) -> Result<(), String> {
+    let Some(mapping) = value.as_mapping() else {
+        return Err("must be a mapping of string keys to string values".to_owned());
+    };
+
+    for (key, entry) in mapping {
+        let Some(key) = key.as_str() else {
+            return Err("must use string keys".to_owned());
+        };
+
+        if !is_non_empty_string(entry) {
+            return Err(format!("must map `{key}` to a non-empty string"));
+        }
+    }
+
+    Ok(())
+}
+
+fn check_one_of(value: &serde_yaml::Value, allowed: &[&str]) -> Result<(), String> {
+    let expectation = || format!("must be one of {}", allowed.join(", "));
+
+    let Some(text) = value.as_str() else {
+        return Err(expectation());
+    };
+
+    if allowed.contains(&text) {
+        Ok(())
+    } else {
+        Err(format!("{}, got `{text}`", expectation()))
+    }
+}
+
+fn is_non_empty_string(value: &serde_yaml::Value) -> bool {
+    value.as_str().is_some_and(|text| !text.trim().is_empty())
+}
+
 fn get_string_field<'a>(
     parsed: &'a BTreeMap<String, serde_yaml::Value>,
     field: &str,
@@ -317,7 +524,7 @@ mod tests {
 
     #[test]
     fn rejects_description_longer_than_spec_limit() -> Result<(), Box<dyn Error>> {
-        let path = write_skill_file(
+        let (_temp_dir, path) = write_skill_file(
             "bad-skill",
             &format!(
                 "---\nname: bad-skill\ndescription: \"{}\"\n---\n",
@@ -342,7 +549,7 @@ mod tests {
 
     #[test]
     fn accepts_multiline_pipe_description() -> Result<(), Box<dyn Error>> {
-        let path = write_skill_file(
+        let (_temp_dir, path) = write_skill_file(
             "good-skill",
             "---\nname: good-skill\ndescription: |\n  line one\n  line two\n---\n",
         )?;
@@ -356,7 +563,7 @@ mod tests {
 
     #[test]
     fn rejects_name_that_does_not_match_parent_directory() -> Result<(), Box<dyn Error>> {
-        let path = write_skill_file(
+        let (_temp_dir, path) = write_skill_file(
             "folder-name",
             "---\nname: other-name\ndescription: valid description\n---\n",
         )?;
@@ -377,7 +584,7 @@ mod tests {
 
     #[test]
     fn rejects_compatibility_longer_than_spec_limit() -> Result<(), Box<dyn Error>> {
-        let path = write_skill_file(
+        let (_temp_dir, path) = write_skill_file(
             "compat-skill",
             &format!(
                 "---\nname: compat-skill\ndescription: valid description\ncompatibility: \"{}\"\n---\n",
@@ -413,7 +620,135 @@ mod tests {
         Ok(())
     }
 
-    fn write_skill_file(dir_name: &str, content: &str) -> Result<PathBuf, Box<dyn Error>> {
+    #[test]
+    fn accepts_allowed_tools_as_sequence_of_strings() -> Result<(), Box<dyn Error>> {
+        assert_accepted(
+            "seq-skill",
+            "---\nname: seq-skill\ndescription: valid description\nallowed-tools:\n  - Read\n  - Grep\n---\n",
+        )
+    }
+
+    #[test]
+    fn rejects_allowed_tools_sequence_holding_a_non_string() -> Result<(), Box<dyn Error>> {
+        let problems = problems_for(
+            "seq-skill",
+            "---\nname: seq-skill\ndescription: valid description\nallowed-tools:\n  - Read\n  - 42\n---\n",
+        )?;
+
+        assert!(
+            problems.iter().any(|problem| problem.contains(
+                "`allowed-tools` must be a non-empty string or a sequence of non-empty strings"
+            )),
+            "unexpected problems: {problems:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_metadata_value_that_is_not_a_string() -> Result<(), Box<dyn Error>> {
+        let problems = problems_for(
+            "meta-skill",
+            "---\nname: meta-skill\ndescription: valid description\nmetadata:\n  version: 1.0\n---\n",
+        )?;
+
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem
+                    .contains("`metadata` must map `version` to a non-empty string")),
+            "unexpected problems: {problems:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() -> Result<(), Box<dyn Error>> {
+        let problems = problems_for(
+            "stray-skill",
+            "---\nname: stray-skill\ndescription: valid description\nversion: 2.1.1\n---\n",
+        )?;
+
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("unknown frontmatter key `version`")),
+            "unexpected problems: {problems:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_boolean_disable_model_invocation() -> Result<(), Box<dyn Error>> {
+        assert_accepted(
+            "gated-skill",
+            "---\nname: gated-skill\ndescription: valid description\ndisable-model-invocation: true\n---\n",
+        )
+    }
+
+    #[test]
+    fn rejects_quoted_disable_model_invocation() -> Result<(), Box<dyn Error>> {
+        let problems = problems_for(
+            "gated-skill",
+            "---\nname: gated-skill\ndescription: valid description\ndisable-model-invocation: \"true\"\n---\n",
+        )?;
+
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("`disable-model-invocation` must be a boolean")),
+            "unexpected problems: {problems:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_shell_outside_the_supported_set() -> Result<(), Box<dyn Error>> {
+        let problems = problems_for(
+            "shell-skill",
+            "---\nname: shell-skill\ndescription: valid description\nshell: fish\n---\n",
+        )?;
+
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem
+                    .contains("`shell` must be one of bash, powershell, got `fish`")),
+            "unexpected problems: {problems:#?}"
+        );
+
+        Ok(())
+    }
+
+    fn assert_accepted(dir_name: &str, content: &str) -> Result<(), Box<dyn Error>> {
+        let (_temp_dir, path) = write_skill_file(dir_name, content)?;
+
+        match validate_skill_file(&path) {
+            Ok(()) => Ok(()),
+            Err(problems) => Err(Box::new(io::Error::other(problems.join("; ")))),
+        }
+    }
+
+    fn problems_for(dir_name: &str, content: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        let (_temp_dir, path) = write_skill_file(dir_name, content)?;
+
+        match validate_skill_file(&path) {
+            Ok(()) => Err(Box::new(io::Error::other(
+                "expected validation to report a problem",
+            ))),
+            Err(problems) => Ok(problems),
+        }
+    }
+
+    /// Returns the `TempDir` guard alongside the path. Callers must bind it, so
+    /// that the directory outlives the validation under test.
+    fn write_skill_file(
+        dir_name: &str,
+        content: &str,
+    ) -> Result<(TempDir, PathBuf), Box<dyn Error>> {
         let temp_dir = TempDir::new()?;
         let skill_dir = temp_dir.path().join(dir_name);
         fs::create_dir_all(&skill_dir)?;
@@ -421,9 +756,6 @@ mod tests {
         let skill_path = skill_dir.join("SKILL.md");
         fs::write(&skill_path, content)?;
 
-        let temp_path = temp_dir.keep();
-        assert!(temp_path.exists(), "temp dir should still exist");
-
-        Ok(skill_path)
+        Ok((temp_dir, skill_path))
     }
 }
