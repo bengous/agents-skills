@@ -2861,7 +2861,13 @@ fn finish_teardown(
     notes.extend(unwound.notes);
     notes.extend(unwound.leaked);
     failures.extend(unwound.failures);
-    failures.extend(unwound.stopped);
+    if let Some(stopped) = unwound.stopped {
+        // Its mutation is still on the host and the state is the only record of
+        // it, so nothing below runs: the state stays on disk and a later
+        // teardown resumes, exactly like an output that will not empty.
+        failures.push(stopped);
+        return report_teardown(format!("teardown stopped — {}", notes.join(", ")), failures);
+    }
 
     if output_was_created(ledger) {
         // Refused before the removal, not after: the state stays on disk so the
