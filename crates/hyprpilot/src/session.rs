@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
 use crate::host;
-use crate::host::ledger::HostMutation;
+use crate::host::ledger::{self, HostMutation};
 use crate::hypr;
 
 /// Shared mode drives the user's windows on this single output; it is a
@@ -2733,17 +2733,45 @@ fn clear_state(location: &StateLocation) -> Result<(), Error> {
     }
 }
 
-/// The last two steps both modes share (§6.4 and §6.5): the output goes with
-/// the cursor put back, then the state. `failures` carries what earlier steps
-/// could not undo, so the message reports every one of them at once.
+/// The three superseded schemas recorded exactly one thing about the host:
+/// whether the output was theirs. That is one ledger entry, so they get one and
+/// the teardown has a single code path.
+fn legacy_ledger(output_name: &str, output_created: bool) -> Vec<HostMutation> {
+    if output_created {
+        vec![HostMutation::OutputCreated {
+            output: output_name.to_owned(),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The last two steps both modes share (§6.4 and §6.5): the host ledger is
+/// unwound, the output goes with the cursor put back, then the state.
+/// `failures` carries what earlier steps could not undo, so the message reports
+/// every one of them at once.
 fn finish_teardown(
     location: &StateLocation,
     output_name: &str,
-    output_created: bool,
+    ledger: &[HostMutation],
     mut notes: Vec<String>,
     mut failures: Vec<RestoreFailure>,
 ) -> Result<String, Error> {
-    if output_created {
+    // Everything whose undo still needs the output, while it still exists. This
+    // is where a workspace gets its name back: renaming it after the output was
+    // removed would give the name to nothing, and the user's bar would keep the
+    // dead label until waybar was restarted.
+    let unwound = ledger::unwind(
+        &ledger::live_undo_effects(),
+        &ledger::before_the_output(ledger),
+        None,
+    );
+    notes.extend(unwound.notes);
+    notes.extend(unwound.leaked);
+    failures.extend(unwound.failures);
+    failures.extend(unwound.stopped);
+
+    if output_was_created(ledger) {
         // Refused before the removal, not after: the state stays on disk so the
         // teardown can be retried once whatever landed on the output is off it.
         wait_for_empty_output(output_name)?;
@@ -2786,13 +2814,7 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
             match &session.state {
                 ModeState::Shared(shared) => {
                     let notes = teardown_shared(shared, kill, close)?;
-                    finish_teardown(
-                        &location,
-                        &shared.output,
-                        output_was_created(&shared.host),
-                        notes,
-                        Vec::new(),
-                    )
+                    finish_teardown(&location, &shared.output, &shared.host, notes, Vec::new())
                 }
                 // The whole desktop goes: the instance dies first, then the
                 // output it rendered into, in that order only (§6).
@@ -2802,7 +2824,7 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
                     finish_teardown(
                         &location,
                         &isolated.output,
-                        output_was_created(&isolated.host),
+                        &isolated.host,
                         brought_down.notes,
                         brought_down.failures,
                     )
@@ -2866,7 +2888,7 @@ fn teardown_superseded_at(
         return finish_teardown(
             &location,
             &isolated.output,
-            true,
+            &legacy_ledger(&isolated.output, true),
             notes,
             brought_down.failures,
         );
@@ -2884,7 +2906,7 @@ fn teardown_superseded_at(
         return finish_teardown(
             &location,
             &shared.output,
-            created.output_created,
+            &legacy_ledger(&shared.output, created.output_created),
             notes,
             Vec::new(),
         );
@@ -2897,7 +2919,7 @@ fn teardown_superseded_at(
     finish_teardown(
         &location,
         &shared.output,
-        shared.output_created,
+        &legacy_ledger(&shared.output, shared.output_created),
         notes,
         Vec::new(),
     )
@@ -2919,7 +2941,7 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
             finish_teardown(
                 &location,
                 &shared.output,
-                shared.output_created,
+                &legacy_ledger(&shared.output, shared.output_created),
                 notes,
                 Vec::new(),
             )
@@ -2930,7 +2952,7 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
             finish_teardown(
                 &location,
                 &legacy.output,
-                legacy.output_created,
+                &legacy_ledger(&legacy.output, legacy.output_created),
                 notes,
                 Vec::new(),
             )

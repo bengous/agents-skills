@@ -49,6 +49,16 @@ pub enum HostMutation {
     WorkspaceMovedToMonitor { workspace: String, from: String },
 }
 
+/// When an undo may run, relative to the removal of the output. The output goes
+/// last and only once nothing is left on it, so anything that has to happen
+/// *while* it still exists — a workspace getting its name back, a workspace
+/// coming home to it — runs before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoPhase {
+    BeforeTheOutput,
+    TheOutput,
+}
+
 /// What undoing one host mutation produced.
 #[derive(Debug)]
 pub enum Undo {
@@ -84,6 +94,20 @@ pub fn live_undo_effects() -> UndoEffects<'static> {
 }
 
 impl HostMutation {
+    /// Exhaustive like `undo`: a mutation added without deciding whether its
+    /// undo still needs the output does not compile. Getting this wrong is the
+    /// waybar defect itself — a workspace renamed back *after* its output was
+    /// removed is a workspace that never gets its name back.
+    pub fn phase(&self) -> UndoPhase {
+        match self {
+            Self::OutputCreated { .. } => UndoPhase::TheOutput,
+            Self::MonitorRuleSet { .. }
+            | Self::WorkspaceRuleSet { .. }
+            | Self::WorkspaceRenamed { .. }
+            | Self::WorkspaceMovedToMonitor { .. } => UndoPhase::BeforeTheOutput,
+        }
+    }
+
     /// How this mutation comes back. `cursor` is the position to warp back to
     /// when `output remove` re-centres it and `cursorpos` cannot be read at the
     /// last moment (fact §2.8): a rolled-back start passes the snapshot it took
@@ -135,6 +159,65 @@ impl HostMutation {
     }
 }
 
+/// What unwinding a ledger did, and what it could not.
+#[derive(Debug, Default)]
+pub struct Unwound {
+    /// What actually changed on the host, for the teardown message.
+    pub notes: Vec<String>,
+    /// What Hyprland cannot retract while it runs, each with the command that
+    /// clears it. Not failures: they are the documented cost of a `keyword`
+    /// (#5691), and the point of listing them is that the leak is visible
+    /// instead of silent.
+    pub leaked: Vec<String>,
+    pub failures: Vec<RestoreFailure>,
+    /// Set when an undo could not run at all. Everything still ahead of it in
+    /// the ledger is untouched, so the state has to stay on disk for a later
+    /// `teardown` to resume from.
+    pub stopped: Option<RestoreFailure>,
+}
+
+/// Undoes a ledger in reverse, which is the only order that holds: a workspace
+/// gets its name back, and a pushed-off workspace comes home, *before* the
+/// output that caused either is removed.
+pub fn unwind(
+    effects: &UndoEffects<'_>,
+    ledger: &[HostMutation],
+    cursor: Option<(i32, i32)>,
+) -> Unwound {
+    let mut unwound = Unwound::default();
+    for mutation in ledger.iter().rev() {
+        match mutation.undo(effects, cursor) {
+            Ok(Undo::Done { notes, failure }) => {
+                unwound.notes.extend(notes);
+                unwound.failures.extend(failure);
+            }
+            Ok(Undo::Impossible { what, remedy }) => unwound
+                .leaked
+                .push(format!("{what} stays until `{remedy}`")),
+            Err(error) => {
+                unwound.stopped = Some(RestoreFailure {
+                    what: "host mutation",
+                    expected: format!("{mutation:?} undone"),
+                    actual: error.to_string(),
+                });
+                return unwound;
+            }
+        }
+    }
+    unwound
+}
+
+/// The entries whose undo still needs the output. The output removal itself is
+/// left to the caller, because it has to come last and behind a check that
+/// nothing of the user's is on the output any more.
+pub fn before_the_output(ledger: &[HostMutation]) -> Vec<HostMutation> {
+    ledger
+        .iter()
+        .filter(|mutation| mutation.phase() == UndoPhase::BeforeTheOutput)
+        .cloned()
+        .collect()
+}
+
 /// A dispatch-based undo: it either happened, or it is a failure to report next
 /// to the others.
 fn dispatched(
@@ -164,7 +247,7 @@ mod tests {
     use std::cell::RefCell;
     use std::error::Error as StdError;
 
-    use super::{HostMutation, RELOAD, Undo, UndoEffects};
+    use super::{HostMutation, RELOAD, Undo, UndoEffects, UndoPhase, before_the_output};
     use crate::error::Error;
     use crate::session::OutputRemoval;
 
@@ -389,6 +472,56 @@ mod tests {
             command: "test".to_owned(),
             message: "this undo must not remove an output".to_owned(),
         })
+    }
+
+    /// The waybar defect, as a unit. `hyprctl output create headless` makes
+    /// Hyprland attach the lowest free workspace id to the new output, and this
+    /// crate renames it. Giving the name back *after* `output remove` hands it
+    /// to a workspace the compositor has already destroyed: the user's bar keeps
+    /// the dead `agent-*` label on the confiscated slot until waybar restarts.
+    #[test]
+    fn a_renamed_workspace_is_given_its_name_back_before_its_output_goes() {
+        // The ledger exactly as an isolated start writes it.
+        let ledger = every_mutation();
+        let before = before_the_output(&ledger);
+
+        assert!(
+            before.iter().any(
+                |mutation| matches!(mutation, HostMutation::WorkspaceRenamed { from, .. } if from == "3")
+            ),
+            "the rename has to be undone while its output still exists"
+        );
+        assert!(
+            !before
+                .iter()
+                .any(|mutation| matches!(mutation, HostMutation::OutputCreated { .. })),
+            "the output removal is gated on the output being empty, so it is not \
+             part of this phase"
+        );
+        assert_eq!(
+            ledger.len() - before.len(),
+            1,
+            "exactly one mutation waits for the output to be empty"
+        );
+    }
+
+    /// Exhaustive like `undo`: adding a mutation forces a decision about whether
+    /// its undo still needs the output, instead of defaulting to the order that
+    /// caused the defect above.
+    #[test]
+    fn every_mutation_says_whether_its_undo_still_needs_the_output() {
+        for mutation in every_mutation() {
+            let expected = match kind(&mutation) {
+                "output_created" => UndoPhase::TheOutput,
+                _ => UndoPhase::BeforeTheOutput,
+            };
+            assert_eq!(
+                mutation.phase(),
+                expected,
+                "{} is undone in the wrong phase",
+                kind(&mutation)
+            );
+        }
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::capture;
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
 use crate::host;
-use crate::host::ledger::{self, HostMutation, Undo};
+use crate::host::ledger::{self, HostMutation, Unwound, unwind};
 use crate::hypr::{self, Ctl};
 use crate::session::{self, Instance, Isolated, Ledger};
 
@@ -748,23 +748,6 @@ impl Start<'_> {
     }
 }
 
-/// What unwinding the ledger did, and what it could not.
-#[derive(Default)]
-pub struct Unwound {
-    /// What actually changed on the host, for the teardown message.
-    pub notes: Vec<String>,
-    /// What Hyprland cannot retract while it runs, each with the command that
-    /// clears it. Not failures: they are the documented cost of a `keyword`
-    /// (hyprwm/Hyprland#5691), and the point of listing them is that the leak
-    /// is visible instead of silent.
-    pub leaked: Vec<String>,
-    pub failures: Vec<RestoreFailure>,
-    /// Set when an undo could not run at all. Everything still ahead of it in
-    /// the ledger is untouched, so the state has to stay on disk for a later
-    /// `teardown` to resume from.
-    pub stopped: Option<RestoreFailure>,
-}
-
 fn warn_unwound(unwound: &Unwound) {
     let mut stderr = std::io::stderr();
     for note in &unwound.notes {
@@ -773,37 +756,6 @@ fn warn_unwound(unwound: &Unwound) {
     for leak in &unwound.leaked {
         let _ = writeln!(stderr, "hyprpilot: warning: {leak}");
     }
-}
-
-/// Undoes the ledger in reverse, which is the only order that holds: a
-/// workspace gets its name back, and a workspace comes back to the monitor it
-/// was pushed off, *before* the output that caused either is removed.
-pub fn unwind(
-    effects: &ledger::UndoEffects<'_>,
-    ledger: &[HostMutation],
-    cursor: Option<(i32, i32)>,
-) -> Unwound {
-    let mut unwound = Unwound::default();
-    for mutation in ledger.iter().rev() {
-        match mutation.undo(effects, cursor) {
-            Ok(Undo::Done { notes, failure }) => {
-                unwound.notes.extend(notes);
-                unwound.failures.extend(failure);
-            }
-            Ok(Undo::Impossible { what, remedy }) => unwound
-                .leaked
-                .push(format!("{what} stays until `{remedy}`")),
-            Err(error) => {
-                unwound.stopped = Some(RestoreFailure {
-                    what: "agent host mutation",
-                    expected: format!("{mutation:?} undone"),
-                    actual: error.to_string(),
-                });
-                return unwound;
-            }
-        }
-    }
-    unwound
 }
 
 /// The console of a start that got far enough to identify one: its address plus
@@ -4486,8 +4438,10 @@ mod tests {
         );
         assert!(workspace_occupants(&clients, "9").is_empty());
 
-        // A scratch pad the user keeps: empty, active nowhere, and still theirs —
-        // nothing would give the name back at teardown (§12.1).
+        // A scratch pad the user keeps: empty, active nowhere, and still theirs.
+        // The ledger gives a renamed workspace its name back at teardown, but
+        // only at teardown — for the whole life of the session the user would be
+        // looking at a slot of theirs wearing an `agent-*` label (§12.1).
         let host = snapshot_with(&[("DP-3", "1"), ("HDMI-A-1", "8")], &["7"], Some("0xabc"));
         // The workspace a fresh headless output brings with it: empty, not one the
         // user was looking at, and absent from the snapshot taken before the
