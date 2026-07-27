@@ -111,6 +111,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`swarm-research`](swarm-research/)                             | Fan out parallel Codex research subagents and synthesize the findings                                                         |
 | [`targetify`](targetify/)                                       | Rank evidence-backed repo targets before spending scarce premium model attention                                             |
 | [`teach-back`](teach-back/)                                     | Teach a session incrementally and verify the human's understanding before advancing                                           |
+| [`unrepresentable`](unrepresentable/)                           | Make invalid states unrepresentable in new Rust, TypeScript, or Go types: state enums, newtypes, typestate                    |
 
 ### Claude Code (`-cc`)
 
