@@ -43,9 +43,12 @@ pub enum HostMutation {
     /// from the compositor, which is how it used to be lost for good.
     WorkspaceRenamed { id: i64, from: String, to: String },
     /// A workspace pushed off an output of ours onto one of the user's
-    /// monitors. `from` is the monitor it sat on before the move, so the undo
-    /// puts it back where `output remove` can rehome it as if nothing had
-    /// happened.
+    /// monitors. `from` is the monitor it sat on before the move. Usually there
+    /// is nothing to bring back — the workspace Hyprland attaches to a new
+    /// output is empty, so it is destroyed once the move leaves it empty
+    /// elsewhere — and the entry then only accounts for what happened. When one
+    /// does survive it holds something of the user's, and the undo puts it back
+    /// where `output remove` rehomes it as if this session had never run.
     WorkspaceMovedToMonitor { workspace: String, from: String },
 }
 
@@ -84,12 +87,15 @@ type RemoveOutput<'a> =
 pub struct UndoEffects<'a> {
     pub remove_output: RemoveOutput<'a>,
     pub dispatch: &'a dyn Fn(&[&str]) -> Result<(), Error>,
+    /// Whether a workspace still exists.
+    pub workspace_exists: &'a dyn Fn(&str) -> Result<bool, Error>,
 }
 
 pub fn live_undo_effects() -> UndoEffects<'static> {
     UndoEffects {
         remove_output: &session::remove_output_restoring_cursor,
         dispatch: &super::hypr::dispatch,
+        workspace_exists: &|workspace| Ok(super::hypr::workspace_names()?.contains(workspace)),
     }
 }
 
@@ -162,16 +168,36 @@ impl HostMutation {
                 "renamed workspace",
                 format!("workspace {id} named `{from}` again"),
             )),
-            Self::WorkspaceMovedToMonitor { workspace, from } => Ok(dispatched(
-                (effects.dispatch)(&[
-                    "moveworkspacetomonitor",
-                    &session::workspace_selector(workspace),
-                    from,
-                ]),
-                format!("workspace {workspace} is back on {from}"),
-                "evacuated workspace",
-                format!("workspace {workspace} back on {from}"),
-            )),
+            // Idempotent like every other teardown step, and this is the usual
+            // outcome rather than an edge case: the workspace Hyprland attaches
+            // to a freshly created output is empty, so the evacuation that moves
+            // it elsewhere leaves it empty there and the compositor destroys it.
+            // Measured on all ten shared gate scenarios — none of them still had
+            // one to bring back.
+            Self::WorkspaceMovedToMonitor { workspace, from } => {
+                if !(effects.workspace_exists)(workspace)? {
+                    return Ok(Undo::Done {
+                        notes: vec![format!(
+                            "workspace {workspace} no longer exists, so the move off {from} left \
+                             nothing behind"
+                        )],
+                        failure: None,
+                    });
+                }
+                // It survived, so it holds something of the user's. Back onto the
+                // output it was pushed off, which `output remove` then rehomes
+                // just as it would have if this session had never created it.
+                Ok(dispatched(
+                    (effects.dispatch)(&[
+                        "moveworkspacetomonitor",
+                        &session::workspace_selector(workspace),
+                        from,
+                    ]),
+                    format!("workspace {workspace} is back on {from}"),
+                    "evacuated workspace",
+                    format!("workspace {workspace} back on {from}"),
+                ))
+            }
         }
     }
 }
@@ -261,7 +287,7 @@ fn dispatched(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::error::Error as StdError;
 
     use super::{HostMutation, RELOAD, Undo, UndoEffects, UndoPhase, before_the_output};
@@ -346,10 +372,14 @@ mod tests {
                 .push(args.iter().map(|arg| (*arg).to_owned()).collect());
             Ok(())
         };
+        // Every sample workspace still exists, so each variant is driven through
+        // the arm that actually mutates; the "already gone" path has its own test.
+        let workspace_exists = |_: &str| Ok(true);
         body(
             &UndoEffects {
                 remove_output: &remove_output,
                 dispatch: &dispatch,
+                workspace_exists: &workspace_exists,
             },
             &recorder,
         )
@@ -456,6 +486,43 @@ mod tests {
         })
     }
 
+    /// The usual outcome, not an edge case: the workspace Hyprland attaches to a
+    /// freshly created output is empty, so the evacuation leaves it empty
+    /// elsewhere and the compositor destroys it. Treating that as a failure is
+    /// what turned every shared teardown into `TeardownIncomplete` on the gate
+    /// run of 2026-07-27 — ten scenarios, all of them.
+    #[test]
+    fn an_evacuated_workspace_the_compositor_destroyed_is_nothing_to_bring_back()
+    -> Result<(), Box<dyn StdError>> {
+        let dispatched = Cell::new(0_u32);
+        let dispatch = |_: &[&str]| {
+            dispatched.set(dispatched.get() + 1);
+            Ok(())
+        };
+        let effects = UndoEffects {
+            remove_output: &|_, _| unreachable(),
+            dispatch: &dispatch,
+            workspace_exists: &|_| Ok(false),
+        };
+        let Undo::Done { notes, failure } = HostMutation::WorkspaceMovedToMonitor {
+            workspace: "4".to_owned(),
+            from: "hyprpilot".to_owned(),
+        }
+        .undo(&effects, None)?
+        else {
+            return Err("a workspace that is gone is not an unretractable leak".into());
+        };
+        assert_eq!(dispatched.get(), 0, "nothing left to move");
+        assert!(failure.is_none(), "a workspace already gone is a success");
+        assert!(
+            notes
+                .first()
+                .is_some_and(|note| note.contains("no longer exists")),
+            "the teardown still has to say what became of it: {notes:?}"
+        );
+        Ok(())
+    }
+
     /// A workspace that will not come back must not stop the output removal:
     /// the user would be left with a compositing headless output instead.
     #[test]
@@ -469,6 +536,7 @@ mod tests {
                     message: "no such workspace".to_owned(),
                 })
             },
+            workspace_exists: &|_| Ok(true),
         };
         let renamed = HostMutation::WorkspaceRenamed {
             id: 3,

@@ -3743,6 +3743,7 @@ mod tests {
             &ledger::UndoEffects {
                 remove_output: &remove_output,
                 dispatch: &dispatch,
+                workspace_exists: &|_| Ok(true),
             },
             &ledger,
             None,
@@ -3804,6 +3805,7 @@ mod tests {
             &ledger::UndoEffects {
                 remove_output: &remove_output,
                 dispatch: &dispatch,
+                workspace_exists: &|_| Ok(true),
             },
             &ledger,
             None,
