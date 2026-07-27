@@ -31,7 +31,15 @@ pub struct FocusedWorkspace {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Client {
+    /// What every dispatcher selector is built from — and a handle the
+    /// compositor reuses: it is formatted from the window object's own address
+    /// (`HyprCtl.cpp`), so a closed window's address can come back as another
+    /// window's. Anything that has to recognise a window later compares
+    /// `stable_id` too.
     pub address: String,
+    /// Hyprland's per-window counter, monotonic within one compositor run
+    /// (`Window.cpp`), so it never names two windows of a session.
+    pub stable_id: String,
     pub at: [i32; 2],
     pub size: [i32; 2],
     pub workspace: WorkspaceRef,
@@ -498,6 +506,7 @@ mod tests {
         let clients: Vec<Client> = serde_json::from_str(CLIENTS_JSON)?;
         let raw = serde_json::to_string(&serde_json::json!({
             "address": clients[0].address,
+            "stableId": clients[0].stable_id,
             "at": clients[0].at,
             "size": clients[0].size,
             "workspace": {"id": 1, "name": "1"},

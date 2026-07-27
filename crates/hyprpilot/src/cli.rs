@@ -627,8 +627,8 @@ fn shared_status(session: &session::Session, state: &session::Shared) -> Result<
             "title": window.title,
         })),
         "initial_user_focus": &state.initial_user_focus,
-        "attached": state.spawned_pid.is_none(),
-        "spawned_pid": state.spawned_pid,
+        "attached": state.spawned.is_none(),
+        "spawned_pid": state.spawned.map(|group| group.pid),
     });
     serialize_status(&value)
 }
@@ -951,6 +951,7 @@ mod tests {
     fn tracked(client: &Client) -> TrackedWindow {
         TrackedWindow {
             address: client.address.clone(),
+            stable_id: client.stable_id.clone(),
             title_at_adoption: client.title.clone(),
             origin_workspace: client.workspace.name.clone(),
             origin_at: client.at,
@@ -967,7 +968,7 @@ mod tests {
             active_workspace: "hyprpilot".to_owned(),
             parking_workspace: "special:hyprpilot-parked".to_owned(),
             size: [1600, 1000],
-            spawned_pid: None,
+            spawned: None,
             initial_user_focus: None,
             primary_address: clients[0].address.clone(),
             active_address: clients[1].address.clone(),

@@ -535,6 +535,7 @@ mod tests {
     fn window() -> hypr::Client {
         hypr::Client {
             address: "0xabc".to_owned(),
+            stable_id: "9001".to_owned(),
             at: [100, 200],
             size: [800, 600],
             workspace: hypr::WorkspaceRef {

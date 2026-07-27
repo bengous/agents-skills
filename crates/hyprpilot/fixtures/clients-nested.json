@@ -1,6 +1,7 @@
 [
   {
     "address": "0xc0ff33",
+    "stableId": "5001",
     "at": [5120, 0],
     "size": [1920, 1080],
     "workspace": {"name": "agent-alpha"},
@@ -14,6 +15,7 @@
   },
   {
     "address": "0xdecoy",
+    "stableId": "5002",
     "at": [100, 100],
     "size": [1280, 720],
     "workspace": {"name": "3"},
@@ -27,6 +29,7 @@
   },
   {
     "address": "0xstale",
+    "stableId": "5003",
     "at": [0, 0],
     "size": [900, 600],
     "workspace": {"name": "1"},

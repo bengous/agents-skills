@@ -1,6 +1,7 @@
 [
   {
     "address": "0xaaa",
+    "stableId": "4001",
     "at": [10, 20],
     "size": [800, 600],
     "workspace": {"name": "1"},
@@ -14,6 +15,7 @@
   },
   {
     "address": "0xbbb",
+    "stableId": "4002",
     "at": [30, 40],
     "size": [800, 600],
     "workspace": {"name": "2"},
@@ -27,6 +29,7 @@
   },
   {
     "address": "0xccc",
+    "stableId": "4003",
     "at": [50, 60],
     "size": [800, 600],
     "workspace": {"name": "3"},
@@ -40,6 +43,7 @@
   },
   {
     "address": "0xddd",
+    "stableId": "4004",
     "at": [70, 80],
     "size": [800, 600],
     "workspace": {"name": "4"},

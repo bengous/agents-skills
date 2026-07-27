@@ -1,6 +1,7 @@
 [
   {
     "address": "0xunknown",
+    "stableId": "6201",
     "at": [0, 0],
     "size": [800, 600],
     "workspace": {"name": "special:hyprpilot-parked"},

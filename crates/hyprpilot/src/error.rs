@@ -117,7 +117,7 @@ pub enum Error {
         expected: String,
         actual: String,
     },
-    SweepRefused {
+    OutputOccupied {
         output: String,
         reason: String,
     },
@@ -125,8 +125,19 @@ pub enum Error {
         criteria: String,
         candidates: serde_json::Value,
     },
+    /// Another process holds the session lock.
+    SessionBusy {
+        name: String,
+    },
     WindowNotFound(String),
     WindowGone(String),
+    /// The address of a tracked window now answers for a window this session
+    /// never adopted.
+    WindowReplaced {
+        address: String,
+        adopted: String,
+        current: String,
+    },
     UnmappedChar(char),
     InvalidChord(String),
     Invalid {
@@ -165,12 +176,7 @@ impl fmt::Display for Error {
             Self::NoSession => {
                 write!(f, "no active session — run `hyprpilot session start` first")
             }
-            Self::SessionExists { name, path } => write!(
-                f,
-                "session `{name}` is already active ({}) — run \
-                 `hyprpilot --session {name} teardown` first",
-                path.display()
-            ),
+            Self::SessionExists { name, path } => write_session_exists(f, name, path),
             Self::SharedSessionExists { name } => write_shared_session_exists(f, name),
             Self::CorruptSession { path, message } => write_corrupt_session(f, path, message),
             Self::UnsupportedSessionVersion { path, found } => {
@@ -213,10 +219,7 @@ impl fmt::Display for Error {
                 expected,
                 actual,
             } => write_host_deviation(f, what, expected, actual),
-            Self::SweepRefused { output, reason } => write!(
-                f,
-                "refusing to remove orphan output {output}: {reason}; no output was removed"
-            ),
+            Self::OutputOccupied { output, reason } => write_output_occupied(f, output, reason),
             Self::WindowAmbiguous {
                 criteria,
                 candidates,
@@ -225,10 +228,16 @@ impl fmt::Display for Error {
                 "multiple windows match {criteria}; refine the match criteria\n{candidates}"
             ),
             Self::WindowNotFound(criteria) => write!(f, "no window matches {criteria}"),
+            Self::SessionBusy { name } => write_session_busy(f, name),
             Self::WindowGone(address) => write!(
                 f,
                 "session window {address} no longer exists — run `hyprpilot teardown`"
             ),
+            Self::WindowReplaced {
+                address,
+                adopted,
+                current,
+            } => write_window_replaced(f, address, adopted, current),
             Self::UnmappedChar(c) => write!(
                 f,
                 "character {c:?} has no keysym mapping — send it as a raw keysym with `hyprpilot key <keysym>`"
@@ -403,6 +412,49 @@ fn write_restore_failures(
         )?;
     }
     Ok(())
+}
+
+fn write_session_exists(
+    f: &mut fmt::Formatter<'_>,
+    name: &str,
+    path: &std::path::Path,
+) -> fmt::Result {
+    write!(
+        f,
+        "session `{name}` is already active ({}) — run `hyprpilot --session {name} teardown` first",
+        path.display()
+    )
+}
+
+fn write_session_busy(f: &mut fmt::Formatter<'_>, name: &str) -> fmt::Result {
+    write!(
+        f,
+        "session `{name}` is already being changed by another hyprpilot command — `target`, \
+         `resize`, `show`, `hide` and `teardown` run one at a time on a session; nothing was \
+         changed"
+    )
+}
+
+fn write_window_replaced(
+    f: &mut fmt::Formatter<'_>,
+    address: &str,
+    adopted: &str,
+    current: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "session window {address} (`{adopted}`) is gone and Hyprland gave its address to \
+         `{current}`, which this session never adopted — nothing was sent to it; run `hyprpilot \
+         teardown`"
+    )
+}
+
+fn write_output_occupied(f: &mut fmt::Formatter<'_>, output: &str, reason: &str) -> fmt::Result {
+    write!(
+        f,
+        "refusing to remove output {output}: {reason}; no output was removed, and the session \
+         state was kept — move that window off the output, then run `hyprpilot teardown` again"
+    )
 }
 
 fn write_unsupported_version(

@@ -25,7 +25,7 @@ use crate::hypr;
 pub const OUTPUT_NAME: &str = "hyprpilot";
 pub const WORKSPACE_NAME: &str = "hyprpilot";
 const PARKING_WORKSPACE_NAME: &str = "special:hyprpilot-parked";
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_SESSION_NAME: &str = "default";
 const SESSION_ENV: &str = "HYPRPILOT_SESSION";
 const SESSION_NAME_MAX: usize = 32;
@@ -103,7 +103,7 @@ pub struct Shared {
     pub parking_workspace: String,
     pub size: [u32; 2],
     /// None when attached to a pre-existing window.
-    pub spawned_pid: Option<u32>,
+    pub spawned: Option<SpawnedGroup>,
     /// Address of the user's focused window when the session started, so
     /// `status` can assert the focus was left untouched.
     pub initial_user_focus: Option<String>,
@@ -212,15 +212,58 @@ impl Session {
     }
 }
 
+/// The process group `session start --app` launched, identified well enough to
+/// signal later: `spawn_app` makes the child its own group leader, and the start
+/// time recorded here is what tells that group apart from whatever inherits its
+/// pid once it dies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnedGroup {
+    pub pid: u32,
+    /// Field 22 of `/proc/<pid>/stat`, in clock ticks since boot.
+    started_at_ticks: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TrackedWindow {
     pub address: String,
+    /// Recorded at adoption next to the address, because the address alone is a
+    /// pointer Hyprland reuses: everything this session later moves, closes or
+    /// restores is checked against this first (`tracked_now`).
+    pub stable_id: String,
     pub title_at_adoption: String,
     pub origin_workspace: String,
     pub origin_at: [i32; 2],
     pub origin_size: [i32; 2],
     pub origin_floating: bool,
     pub teardown: Disposition,
+}
+
+impl TrackedWindow {
+    /// The one way a window enters the table: the address and the identity it is
+    /// checked against then always come from the same client, and no call site
+    /// can pair them by hand.
+    fn adopt(client: &hypr::Client, teardown: Disposition) -> Self {
+        Self {
+            address: client.address.clone(),
+            stable_id: client.stable_id.clone(),
+            title_at_adoption: client.title.clone(),
+            origin_workspace: client.workspace.name.clone(),
+            origin_at: client.at,
+            origin_size: client.size,
+            origin_floating: client.floating,
+            teardown,
+        }
+    }
+}
+
+impl Shared {
+    /// The tracked entry an address names. Every window a shared session drives
+    /// is adopted through `windows` and `load` refuses a state where the primary
+    /// or the active window is missing from it, so a loaded session always
+    /// answers here.
+    fn tracked(&self, address: &str) -> Option<&TrackedWindow> {
+        self.windows.iter().find(|window| window.address == address)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,9 +389,33 @@ struct LegacySession {
     spawned_pid: Option<u32>,
 }
 
+/// A multi-window session as the builds before window identity wrote it: v2 at
+/// the old unnamed location, v3 at the per-name one. `teardown` is the only
+/// command that reads either, and it disposes of these windows by address alone
+/// — the identity check of a current session has nothing to compare against
+/// here, and pretending otherwise would leave the user's windows parked.
+#[derive(Debug, Deserialize)]
+struct IdentitylessShared {
+    output: String,
+    output_created: bool,
+    spawned_pid: Option<u32>,
+    primary_address: String,
+    windows: Vec<IdentitylessWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdentitylessWindow {
+    address: String,
+    origin_workspace: String,
+    origin_at: [i32; 2],
+    origin_size: [i32; 2],
+    origin_floating: bool,
+    teardown: Disposition,
+}
+
 /// State at the old unnamed location, readable by `teardown` only.
 enum PreV3Session {
-    V2(Shared),
+    V2(IdentitylessShared),
     Legacy(LegacySession),
 }
 
@@ -474,25 +541,34 @@ fn load_from(path: &Path) -> Result<Session, Error> {
     }
     let session: Session = parse_json(&raw, path).map_err(corrupt)?;
     if let ModeState::Shared(shared) = &session.state {
-        check_primary(shared, path)?;
+        check_window_table(shared, path)?;
     }
     Ok(session)
 }
 
-fn check_primary(shared: &Shared, path: &Path) -> Result<(), Error> {
+/// Both addresses a shared session drives commands with must name a window it
+/// adopted: the identity check every action runs (`tracked_now`) has nothing to
+/// compare against otherwise, and would fall back to trusting the address.
+fn check_window_table(shared: &Shared, path: &Path) -> Result<(), Error> {
+    let corrupt = |message: &str| {
+        Err(Error::CorruptSession {
+            path: path.to_path_buf(),
+            message: message.to_owned(),
+        })
+    };
     if shared
         .windows
         .iter()
         .filter(|window| window.address == shared.primary_address)
         .count()
-        == 1
+        != 1
     {
-        return Ok(());
+        return corrupt("primary_address must identify exactly one tracked window");
     }
-    Err(Error::CorruptSession {
-        path: path.to_path_buf(),
-        message: "primary_address must identify exactly one tracked window".to_owned(),
-    })
+    if shared.tracked(&shared.active_address).is_none() {
+        return corrupt("active_address must identify a tracked window");
+    }
+    Ok(())
 }
 
 /// Refuses to run on state left behind by an older build: the v3 layout moved,
@@ -540,13 +616,33 @@ fn load_pre_v3_from(path: &Path) -> Result<PreV3Session, Error> {
             version.as_u64().and_then(|found| u32::try_from(found).ok()),
         ));
     }
-    let shared: Shared = parse_json_value(value, path).map_err(&corrupt)?;
-    check_primary(&shared, path)?;
+    let shared: IdentitylessShared = parse_json_value(value, path).map_err(&corrupt)?;
+    check_identityless_primary(&shared, path)?;
     Ok(PreV3Session::V2(shared))
+}
+
+fn check_identityless_primary(shared: &IdentitylessShared, path: &Path) -> Result<(), Error> {
+    if shared
+        .windows
+        .iter()
+        .filter(|window| window.address == shared.primary_address)
+        .count()
+        == 1
+    {
+        return Ok(());
+    }
+    Err(Error::CorruptSession {
+        path: path.to_path_buf(),
+        message: "primary_address must identify exactly one tracked window".to_owned(),
+    })
 }
 
 /// The shared output is a singleton, so a second shared session is refused
 /// whatever its name.
+// TODO: a state file this build cannot read under *another* name currently
+// fails the whole start, naming a session the user did not touch. The check
+// needs to be able to say "another session exists and I cannot read it" without
+// pretending the singleton is free.
 fn find_shared_session_in(dir: &Path, exclude: &str) -> Result<Option<String>, Error> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -603,47 +699,10 @@ fn serialize(session: &Session) -> Result<String, Error> {
     })
 }
 
-/// Atomically claims the session lock: fails with `SessionExists` if another
-/// session file is already present, without a check-then-write race.
-pub fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| Error::Io {
-            context: format!("creating {}", parent.display()),
-            source,
-        })?;
-    }
-    let raw = serialize(session)?;
-    let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::SessionExists {
-                name: session.name.clone(),
-                path: path.to_path_buf(),
-            });
-        }
-        Err(source) => {
-            return Err(Error::Io {
-                context: format!("creating session file {}", path.display()),
-                source,
-            });
-        }
-    };
-    file.write_all(raw.as_bytes()).map_err(|source| Error::Io {
-        context: format!("writing session file {}", path.display()),
-        source,
-    })?;
-    file.sync_all().map_err(|source| Error::Io {
-        context: format!("syncing session file {}", path.display()),
-        source,
-    })
-}
-
-pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
-    let raw = serialize(session)?;
+/// Writes the payload to a sibling of `path`, fully on disk before it returns.
+/// The caller decides how it becomes visible under `path`; both ways below are
+/// a single rename-class syscall, so no reader ever sees a half-written state.
+fn write_beside(path: &Path, raw: &str) -> Result<PathBuf, Error> {
     let file_name = path.file_name().ok_or_else(|| Error::Invalid {
         what: "session path",
         value: path.display().to_string(),
@@ -653,7 +712,7 @@ pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
     tmp_name.push(format!(".{}.tmp", std::process::id()));
     let tmp_path = path.with_file_name(tmp_name);
 
-    let write_result = (|| {
+    let written = (|| {
         let mut file = fs::File::create(&tmp_path).map_err(|source| Error::Io {
             context: format!("creating temporary session file {}", tmp_path.display()),
             source,
@@ -665,21 +724,165 @@ pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
         file.sync_all().map_err(|source| Error::Io {
             context: format!("syncing temporary session file {}", tmp_path.display()),
             source,
+        })
+    })();
+
+    // TODO: a SIGKILL between `create` and the publish leaves this sibling
+    // behind; `teardown`'s `remove_dir_all` collects it, nothing else does.
+    match written {
+        Ok(()) => Ok(tmp_path),
+        Err(error) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(error)
+        }
+    }
+}
+
+/// Durability of the *name*: the rename that published the state is only on
+/// disk once its directory is. A directory that cannot be synced is not fatal —
+/// the state is already correct in the page cache, and every reader goes
+/// through it — so this reports nothing and lets the caller succeed.
+fn sync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+}
+
+/// Atomically claims the session lock: fails with `SessionExists` if another
+/// session file is already present, without a check-then-write race. Requires a
+/// filesystem that supports hard links — `XDG_RUNTIME_DIR` is tmpfs, which
+/// does; one that refuses them reports the `link` failure as an I/O error.
+///
+/// The claim and the payload are published by the same `hard_link`, which fails
+/// with `AlreadyExists` exactly like `create_new` but makes the file appear
+/// complete. Creating the final path first and writing into it afterwards would
+/// leave a window — one crash, one `ENOSPC` — where `session.json` exists,
+/// holds nothing, and is what every reader and `teardown` finds.
+pub fn save_new_to(path: &Path, session: &Session) -> Result<(), Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::Io {
+            context: format!("creating {}", parent.display()),
+            source,
         })?;
-        fs::rename(&tmp_path, path).map_err(|source| Error::Io {
+    }
+    let raw = serialize(session)?;
+    let tmp_path = write_beside(path, &raw)?;
+
+    let claimed = match fs::hard_link(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(Error::SessionExists {
+                name: session.name.clone(),
+                path: path.to_path_buf(),
+            })
+        }
+        Err(source) => Err(Error::Io {
+            context: format!("publishing session file {}", path.display()),
+            source,
+        }),
+    };
+    let _ = fs::remove_file(&tmp_path);
+    claimed?;
+    sync_parent_dir(path);
+    Ok(())
+}
+
+pub fn save_over(path: &Path, session: &Session) -> Result<(), Error> {
+    let raw = serialize(session)?;
+    let tmp_path = write_beside(path, &raw)?;
+    fs::rename(&tmp_path, path).map_err(|source| {
+        let _ = fs::remove_file(&tmp_path);
+        Error::Io {
             context: format!(
                 "replacing session file {} with {}",
                 path.display(),
                 tmp_path.display()
             ),
             source,
-        })
-    })();
+        }
+    })?;
+    sync_parent_dir(path);
+    Ok(())
+}
 
-    if write_result.is_err() {
-        let _ = fs::remove_file(tmp_path);
+/// Held for the whole read → change → persist → drive sequence of a mutating
+/// command. Two of those interleaving both write back a state they read before
+/// the other's write: the window the loser adopted stays parked on the hidden
+/// output with nothing tracking it any more. Dropping the file releases it, so
+/// a command that dies never leaves the session locked.
+/// The file lives in the session directory, which `teardown` removes while
+/// holding this very lock: the open descriptor keeps the inode alive, so the
+/// holder is unaffected, and the next `start` creates a fresh one. A second
+/// teardown that opened the old inode first therefore holds a lock nothing else
+/// can see — it finds no state and does nothing, which is the intended outcome.
+pub struct SessionLock(#[expect(dead_code, reason = "the open file is the lock")] fs::File);
+
+const LOCK_FILE: &str = "session.lock";
+/// Guards the singleton shared output, across session names.
+const SHARED_LOCK_FILE: &str = "shared.lock";
+
+/// `None` when there is no session directory to serialise against — the command
+/// then fails on its own missing state, which says more than a lock error.
+pub fn lock_session(name: &str) -> Result<Option<SessionLock>, Error> {
+    lock_session_in(&session_dir(name)?, name)
+}
+
+/// The lock a `start` takes: it has to exist before the session directory does,
+/// since the whole point is to hold the name from the singleton check through to
+/// the published claim.
+pub fn lock_new_session(name: &str) -> Result<SessionLock, Error> {
+    let dir = session_dir(name)?;
+    fs::create_dir_all(&dir).map_err(|source| Error::Io {
+        context: format!("creating {}", dir.display()),
+        source,
+    })?;
+    lock_file_at(&dir.join(LOCK_FILE), name)
+}
+
+/// The shared output is one resource for the whole machine, so the check that
+/// refuses a second shared session and the claim that creates the first one have
+/// to be one transaction — under different session names, per-name locks never
+/// meet.
+fn lock_shared_mode() -> Result<SessionLock, Error> {
+    let dir = runtime_dir()?;
+    fs::create_dir_all(&dir).map_err(|source| Error::Io {
+        context: format!("creating {}", dir.display()),
+        source,
+    })?;
+    lock_file_at(&dir.join(SHARED_LOCK_FILE), OUTPUT_NAME)
+}
+
+fn lock_session_in(dir: &Path, name: &str) -> Result<Option<SessionLock>, Error> {
+    if !dir.is_dir() {
+        return Ok(None);
     }
-    write_result
+    lock_file_at(&dir.join(LOCK_FILE), name).map(Some)
+}
+
+fn lock_file_at(path: &Path, name: &str) -> Result<SessionLock, Error> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        // The file is a lock, never a payload: its contents are irrelevant and
+        // must not be disturbed by opening it.
+        .truncate(false)
+        .open(path)
+        .map_err(|source| Error::Io {
+            context: format!("opening session lock {}", path.display()),
+            source,
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(SessionLock(file)),
+        Err(fs::TryLockError::WouldBlock) => Err(Error::SessionBusy {
+            name: name.to_owned(),
+        }),
+        Err(fs::TryLockError::Error(source)) => Err(Error::Io {
+            context: format!("locking session {}", path.display()),
+            source,
+        }),
+    }
 }
 
 pub fn load(name: &str) -> Result<Session, Error> {
@@ -716,11 +919,18 @@ pub fn current_window(
 
 /// Same, for a caller that already routed by mode and holds the payload.
 pub fn shared_window(shared: &Shared) -> Result<(CurrentSession, hypr::Client), Error> {
+    let Some(tracked) = shared.tracked(&shared.active_address) else {
+        return Err(Error::WindowGone(shared.active_address.clone()));
+    };
     let clients = hypr::clients()?;
-    let window = clients
-        .into_iter()
-        .find(|c| c.address == shared.active_address)
-        .ok_or_else(|| Error::WindowGone(shared.active_address.clone()))?;
+    // Every keystroke, click and capture goes through here, so this is where a
+    // recycled address has to stop: typing into whatever inherited the address
+    // is exactly what the session promises never to do.
+    let window = match tracked_now(&clients, tracked) {
+        Tracked::Live(client) => client.clone(),
+        Tracked::Gone => return Err(Error::WindowGone(shared.active_address.clone())),
+        Tracked::Replaced(other) => return Err(replaced_error(tracked, other)),
+    };
     Ok((
         CurrentSession {
             output: shared.output.clone(),
@@ -728,6 +938,34 @@ pub fn shared_window(shared: &Shared) -> Result<(CurrentSession, hypr::Client), 
         },
         window,
     ))
+}
+
+/// A tracked window as the compositor reports it right now. `Replaced` is the
+/// case an address-only lookup cannot see: the window this session adopted is
+/// gone and another one answers to its address.
+enum Tracked<'a> {
+    Live(&'a hypr::Client),
+    Gone,
+    Replaced(&'a hypr::Client),
+}
+
+fn tracked_now<'a>(clients: &'a [hypr::Client], tracked: &TrackedWindow) -> Tracked<'a> {
+    match clients
+        .iter()
+        .find(|client| client.address == tracked.address)
+    {
+        None => Tracked::Gone,
+        Some(client) if client.stable_id == tracked.stable_id => Tracked::Live(client),
+        Some(other) => Tracked::Replaced(other),
+    }
+}
+
+fn replaced_error(tracked: &TrackedWindow, other: &hypr::Client) -> Error {
+    Error::WindowReplaced {
+        address: tracked.address.clone(),
+        adopted: tracked.title_at_adoption.clone(),
+        current: other.title.clone(),
+    }
 }
 
 pub fn find_output(name: &str) -> Result<Option<hypr::Monitor>, Error> {
@@ -900,7 +1138,7 @@ fn find_window(criteria: &Criteria<'_>) -> Result<Option<hypr::Client>, Error> {
     }
 }
 
-fn spawn_app(command: &str) -> Result<u32, Error> {
+fn spawn_app(command: &str) -> Result<SpawnedGroup, Error> {
     use std::os::unix::process::CommandExt;
     let child = Command::new("sh")
         .args(["-c", command])
@@ -913,7 +1151,17 @@ fn spawn_app(command: &str) -> Result<u32, Error> {
             context: format!("spawning `{command}`"),
             source,
         })?;
-    Ok(child.id())
+    let pid = child.id();
+    // Read immediately: this pid still names the child that was just forked, so
+    // the start time recorded here is the one to compare against at teardown.
+    let started_at_ticks = process_start_ticks(pid).ok_or_else(|| Error::Io {
+        context: format!("reading /proc/{pid}/stat of the app just spawned"),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    })?;
+    Ok(SpawnedGroup {
+        pid,
+        started_at_ticks,
+    })
 }
 
 fn wait_for_window(criteria: &Criteria<'_>) -> Result<Option<hypr::Client>, Error> {
@@ -1003,12 +1251,12 @@ fn resize_monitor(output: &hypr::Monitor, width: u32, height: u32) -> Result<(),
     )
 }
 
-fn resize_has_applied(
-    previous_size: [u32; 2],
-    requested_size: [u32; 2],
-    effective_size: [u32; 2],
-) -> bool {
-    requested_size == previous_size || effective_size != previous_size
+/// The resize is done when the output reports the size that was asked for.
+/// Accepting any size that merely *differs* from the previous one persists
+/// whatever intermediate mode the compositor happened to report first, under a
+/// name (`session resize WxH`) that promises those dimensions.
+fn resize_has_applied(requested_size: [u32; 2], effective_size: [u32; 2]) -> bool {
+    effective_size == requested_size
 }
 
 // TODO: this loop and the five below it (`wait_for_window`,
@@ -1018,7 +1266,6 @@ fn resize_has_applied(
 // already provides; fold them into that one helper.
 fn wait_for_effective_resize(
     output_name: &str,
-    previous_size: [u32; 2],
     requested_size: [u32; 2],
 ) -> Result<[u32; 2], Error> {
     let deadline = Instant::now() + WINDOW_PLACE_TIMEOUT;
@@ -1028,7 +1275,7 @@ fn wait_for_effective_resize(
             message: format!("session output {output_name} is missing after resize"),
         })?;
         let effective_size = effective_output_size(&output)?;
-        if resize_has_applied(previous_size, requested_size, effective_size) {
+        if resize_has_applied(requested_size, effective_size) {
             return Ok(effective_size);
         }
         if Instant::now() >= deadline {
@@ -1245,6 +1492,10 @@ fn place_session_window(
     Ok(window.floating.then_some(placement))
 }
 
+// TODO: resolve tracked windows through `tracked_now` here and in
+// `read_park_state`. Both only *verify* placement, so a recycled address makes
+// them confirm a layout about a window this session never adopted — a false
+// green, never a destructive dispatch.
 fn target_layout_is_verified(
     session: &Shared,
     clients: &[hypr::Client],
@@ -1318,9 +1569,9 @@ fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
         if tracked.address == session.active_address {
             continue;
         }
-        if let Some(client) = clients
-            .iter()
-            .find(|client| client.address == tracked.address)
+        // A window that died and left its address behind is not parked: moving
+        // whatever inherited it is moving a window of the user's.
+        if let Tracked::Live(client) = tracked_now(&clients, tracked)
             && client.workspace.name != session.parking_workspace
         {
             hypr::dispatch(&[
@@ -1330,10 +1581,15 @@ fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
         }
     }
 
-    let target = hypr::clients()?
-        .into_iter()
-        .find(|client| client.address == session.active_address)
-        .ok_or_else(|| Error::WindowGone(session.active_address.clone()))?;
+    let Some(active) = session.tracked(&session.active_address) else {
+        return Err(Error::WindowGone(session.active_address.clone()));
+    };
+    let clients = hypr::clients()?;
+    let target = match tracked_now(&clients, active) {
+        Tracked::Live(client) => client,
+        Tracked::Gone => return Err(Error::WindowGone(session.active_address.clone())),
+        Tracked::Replaced(other) => return Err(replaced_error(active, other)),
+    };
     if target.workspace.name != session.active_workspace {
         hypr::dispatch(&[
             "movetoworkspacesilent",
@@ -1375,15 +1631,10 @@ fn persist_target_before_activation(
     disposition: Disposition,
 ) -> Result<(), Error> {
     if mode == TargetMode::Adopt {
-        session.shared_mut("target")?.windows.push(TrackedWindow {
-            address: client.address.clone(),
-            title_at_adoption: client.title.clone(),
-            origin_workspace: client.workspace.name.clone(),
-            origin_at: client.at,
-            origin_size: client.size,
-            origin_floating: client.floating,
-            teardown: disposition,
-        });
+        session
+            .shared_mut("target")?
+            .windows
+            .push(TrackedWindow::adopt(client, disposition));
         save_over(path, session)?;
     }
 
@@ -1415,6 +1666,7 @@ pub fn target(
         });
     }
 
+    let _lock = lock_session(name)?;
     let path = session_path(name)?;
     let mut session = load(name)?;
     // Routed before the first compositor read, so an isolated session resolves
@@ -1484,6 +1736,7 @@ fn resize_unsupported() -> Error {
 }
 
 pub fn resize(name: &str, size: &str) -> Result<String, Error> {
+    let _lock = lock_session(name)?;
     let (width, height) = parse_size(size)?;
     let requested_size = [width, height];
     let path = session_path(name)?;
@@ -1493,12 +1746,11 @@ pub fn resize(name: &str, size: &str) -> Result<String, Error> {
         command: "hyprctl monitors".to_owned(),
         message: format!("session output {} is missing", shared.output),
     })?;
-    let previous_size = effective_output_size(&output)?;
     let output_name = shared.output.clone();
 
     resize_monitor(&output, width, height)?;
 
-    let effective_size = wait_for_effective_resize(&output_name, previous_size, requested_size)?;
+    let effective_size = wait_for_effective_resize(&output_name, requested_size)?;
     session.shared_mut_or(resize_unsupported)?.size = effective_size;
     save_over(&path, &session)?;
     let shared = session.shared_or(resize_unsupported)?;
@@ -1531,6 +1783,7 @@ fn on_agent_desktop(
     command: &'static str,
     act: impl FnOnce(&str, &Path, &mut Isolated) -> Result<String, Error>,
 ) -> Result<String, Error> {
+    let _lock = lock_session(name)?;
     let path = session_path(name)?;
     let mut session = load(name)?;
     act(name, &path, session.agent_mut(command)?)
@@ -1564,7 +1817,7 @@ fn refuse_second_shared_session(name: &str) -> Result<(), Error> {
 fn acquire_window(
     app: Option<&str>,
     criteria: &Criteria<'_>,
-) -> Result<(hypr::Client, Option<u32>), Error> {
+) -> Result<(hypr::Client, Option<SpawnedGroup>), Error> {
     if let Some(window) = find_window(criteria)? {
         return Ok((window, None));
     }
@@ -1574,18 +1827,18 @@ fn acquire_window(
             "{description} — pass --app to launch it"
         )));
     };
-    let pid = spawn_app(command)?;
+    let group = spawn_app(command)?;
     match wait_for_window(criteria) {
-        Ok(Some(window)) => Ok((window, Some(pid))),
+        Ok(Some(window)) => Ok((window, Some(group))),
         Ok(None) => {
-            let _ = kill_process_group(pid);
+            let _ = kill_spawned_group(&group);
             Err(Error::WindowNotFound(format!(
                 "{description} after launching `{command}` ({}s timeout) — process killed",
                 WINDOW_APPEAR_TIMEOUT.as_secs()
             )))
         }
         Err(error) => {
-            let _ = kill_process_group(pid);
+            let _ = kill_spawned_group(&group);
             Err(error)
         }
     }
@@ -1613,6 +1866,13 @@ pub fn start(
     }
     let (width, height) = parse_size(size)?;
     let path = session_path(name)?;
+    // Both held for the whole start: the per-name one keeps a `teardown` from
+    // clearing the state this start is about to park a window against, and the
+    // shared one makes the singleton check below mean something — two starts
+    // under different names would otherwise both pass it and both drive the one
+    // shared output.
+    let _shared_lock = lock_shared_mode()?;
+    let _lock = lock_new_session(name)?;
     claim_preflight(name, &path)?;
     refuse_second_shared_session(name)?;
 
@@ -1626,10 +1886,10 @@ pub fn start(
         class: match_class,
         pid: None,
     };
-    let (window, spawned_pid) = acquire_window(app, &criteria)?;
+    let (window, spawned) = acquire_window(app, &criteria)?;
 
     let output_created = find_output(OUTPUT_NAME)?.is_none();
-    let teardown = spawned_pid.map_or(Disposition::Restore, |_| Disposition::Close);
+    let teardown = spawned.map_or(Disposition::Restore, |_| Disposition::Close);
     let session = Session {
         schema_version: SCHEMA_VERSION,
         name: name.to_owned(),
@@ -1639,26 +1899,20 @@ pub fn start(
             active_workspace: WORKSPACE_NAME.to_owned(),
             parking_workspace: PARKING_WORKSPACE_NAME.to_owned(),
             size: [width, height],
-            spawned_pid,
+            spawned,
             initial_user_focus,
             primary_address: window.address.clone(),
             active_address: window.address.clone(),
-            windows: vec![TrackedWindow {
-                address: window.address.clone(),
-                title_at_adoption: window.title.clone(),
-                origin_workspace: window.workspace.name.clone(),
-                origin_at: window.at,
-                origin_size: window.size,
-                origin_floating: window.floating,
-                teardown,
-            }],
+            windows: vec![TrackedWindow::adopt(&window, teardown)],
         }),
     };
     // Lock + persist before touching the compositor: if anything below
-    // fails, `hyprpilot teardown` can still clean up from this state.
+    // fails, `hyprpilot teardown` can still clean up from this state. A claim
+    // that could not be published leaves no state to clean up from, so the app
+    // this start launched goes with it — whatever made the write fail.
     if let Err(error) = save_new_to(&path, &session) {
-        if let (Error::SessionExists { .. }, Some(pid)) = (&error, spawned_pid) {
-            let _ = kill_process_group(pid);
+        if let Some(group) = &spawned {
+            let _ = kill_spawned_group(group);
         }
         return Err(error);
     }
@@ -1775,7 +2029,45 @@ pub fn signal_process(pid: u32, signal: &str) -> Result<(), Error> {
     })
 }
 
-fn kill_process_group(pid: u32) -> Result<(), Error> {
+/// Whether the group still has a member this user could signal. `kill -s 0`
+/// reports a group that is gone and one this user may not touch the same way,
+/// and neither is a group `--kill` can bring down.
+fn process_group_is_signalable(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-s", "0", "--", &format!("-{pid}")])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Boot-relative start time of a pid, from field 22 of `/proc/<pid>/stat`. The
+/// leading `comm` field can hold spaces and parentheses, so everything is read
+/// after its closing one.
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(") ")?.1;
+    after_comm.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Whether the pid recorded at spawn still names the process that was spawned.
+/// A pid is a number the kernel reuses, and `kill -- -PID` addresses whatever
+/// group leads under it today: without this, a `--kill` run long after the app
+/// died would signal a stranger's process group — the same defect the window
+/// identity check exists for, one resource down.
+fn spawned_group_is_ours(group: &SpawnedGroup) -> bool {
+    process_start_ticks(group.pid) == Some(group.started_at_ticks)
+}
+
+fn kill_spawned_group(group: &SpawnedGroup) -> Result<GroupKill, Error> {
+    if !spawned_group_is_ours(group) {
+        return Ok(GroupKill::AlreadyGone);
+    }
+    kill_process_group(group.pid)
+}
+
+fn kill_process_group(pid: u32) -> Result<GroupKill, Error> {
+    if !process_group_is_signalable(pid) {
+        return Ok(GroupKill::AlreadyGone);
+    }
     let output = Command::new("kill")
         .args(["--", &format!("-{pid}")])
         .output()
@@ -1784,17 +2076,39 @@ fn kill_process_group(pid: u32) -> Result<(), Error> {
             source,
         })?;
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(Error::Tool {
-            command: format!("kill -- -{pid}"),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        })
+        return Ok(GroupKill::Signalled);
     }
+    // The last member can exit between the probe above and the signal.
+    if !process_group_is_signalable(pid) {
+        return Ok(GroupKill::AlreadyGone);
+    }
+    Err(Error::Tool {
+        command: format!("kill -- -{pid}"),
+        message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
 }
 
 fn window_exists(address: &str) -> Result<bool, Error> {
     Ok(hypr::clients()?.iter().any(|c| c.address == address))
+}
+
+/// Waits for a *tracked* window to be gone. An address that comes back as
+/// another window's says the tracked one is gone too — polling it until the
+/// timeout would abort a teardown over a stranger's window.
+fn wait_tracked_gone(window: &TrackedWindow, hint: &str) -> Result<(), Error> {
+    let deadline = Instant::now() + WINDOW_CLOSE_TIMEOUT;
+    loop {
+        if !matches!(presence_now(window)?, Presence::Live) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout {
+                what: format!("window {} to close ({hint})", window.address),
+                after_ms: WINDOW_CLOSE_TIMEOUT.as_millis(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Waits for the window to disappear; on timeout returns an error so the
@@ -1814,14 +2128,41 @@ fn wait_window_gone(address: &str, hint: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// What teardown does with one tracked window. `Restore` and `Close` act on the
+/// window itself, so one that is already gone makes them moot; `KillGroup` acts
+/// on the process group behind the primary, which outlives its window whenever
+/// the app unmapped without exiting. Splitting them is what keeps the
+/// "window already gone" short-circuit from swallowing a kill.
+///
+/// `KillGroup` carries the window action anyway: a group already dead leaves a
+/// window that is still mapped whenever the app re-parented itself, and dropping
+/// it there would leave the output occupied for ever — every retry would find
+/// the same dead group and the same window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeardownStep {
+    Window(WindowAction),
+    KillGroup {
+        group: SpawnedGroup,
+        fallback: WindowAction,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowAction {
     Restore,
     Close,
-    Kill(u32),
 }
 
-fn validate_teardown_flags(spawned_pid: Option<u32>, kill: bool, close: bool) -> Result<(), Error> {
+/// A process group already gone is an idempotent success, like every other
+/// teardown step (§6): `--kill` now runs even when the window disappeared
+/// first, which is exactly when the group is most often already dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupKill {
+    Signalled,
+    AlreadyGone,
+}
+
+fn validate_teardown_flags(spawned: bool, kill: bool, close: bool) -> Result<(), Error> {
     if kill && close {
         return Err(Error::Invalid {
             what: "teardown flags",
@@ -1829,14 +2170,14 @@ fn validate_teardown_flags(spawned_pid: Option<u32>, kill: bool, close: bool) ->
             hint: "--kill and --close are mutually exclusive".to_owned(),
         });
     }
-    if kill && spawned_pid.is_none() {
+    if kill && !spawned {
         return Err(Error::Invalid {
             what: "teardown flag",
             value: "--kill".to_owned(),
             hint: "--kill requires a spawned session with a spawned_pid".to_owned(),
         });
     }
-    if close && spawned_pid.is_some() {
+    if close && spawned {
         return Err(Error::Invalid {
             what: "teardown flag",
             value: "--close".to_owned(),
@@ -1847,35 +2188,41 @@ fn validate_teardown_flags(spawned_pid: Option<u32>, kill: bool, close: bool) ->
     Ok(())
 }
 
+fn disposition_action(disposition: Disposition) -> WindowAction {
+    match disposition {
+        Disposition::Restore => WindowAction::Restore,
+        Disposition::Close => WindowAction::Close,
+    }
+}
+
 fn teardown_plan(
     session: &Shared,
     kill: bool,
     close: bool,
-) -> Result<Vec<(&TrackedWindow, WindowAction)>, Error> {
-    validate_teardown_flags(session.spawned_pid, kill, close)?;
-    let kill_pid = kill.then_some(session.spawned_pid).flatten();
+) -> Result<Vec<(&TrackedWindow, TeardownStep)>, Error> {
+    validate_teardown_flags(session.spawned.is_some(), kill, close)?;
+    let kill_group = kill.then_some(session.spawned).flatten();
     Ok(session
         .windows
         .iter()
         .rev()
         .map(|window| {
-            let action = if window.address == session.primary_address {
-                let default = if close {
+            let step = if window.address == session.primary_address {
+                let action = if close {
                     WindowAction::Close
                 } else {
-                    match window.teardown {
-                        Disposition::Restore => WindowAction::Restore,
-                        Disposition::Close => WindowAction::Close,
-                    }
+                    disposition_action(window.teardown)
                 };
-                kill_pid.map_or(default, WindowAction::Kill)
+                kill_group.map_or(TeardownStep::Window(action), |group| {
+                    TeardownStep::KillGroup {
+                        group,
+                        fallback: action,
+                    }
+                })
             } else {
-                match window.teardown {
-                    Disposition::Restore => WindowAction::Restore,
-                    Disposition::Close => WindowAction::Close,
-                }
+                TeardownStep::Window(disposition_action(window.teardown))
             };
-            (window, action)
+            (window, step)
         })
         .collect())
 }
@@ -1885,8 +2232,42 @@ fn close_window(address: &str, hint: &str) -> Result<(), Error> {
     wait_window_gone(address, hint)
 }
 
-fn restore_window(window: &TrackedWindow) -> Result<(), Error> {
-    let selector = workspace_selector(&window.origin_workspace);
+/// Where a window came from, as both state shapes can describe it: the current
+/// one, and the identity-less one only `teardown` reads.
+struct Restoration<'a> {
+    address: &'a str,
+    origin_workspace: &'a str,
+    origin_at: [i32; 2],
+    origin_size: [i32; 2],
+    origin_floating: bool,
+}
+
+impl TrackedWindow {
+    fn restoration(&self) -> Restoration<'_> {
+        Restoration {
+            address: &self.address,
+            origin_workspace: &self.origin_workspace,
+            origin_at: self.origin_at,
+            origin_size: self.origin_size,
+            origin_floating: self.origin_floating,
+        }
+    }
+}
+
+impl IdentitylessWindow {
+    fn restoration(&self) -> Restoration<'_> {
+        Restoration {
+            address: &self.address,
+            origin_workspace: &self.origin_workspace,
+            origin_at: self.origin_at,
+            origin_size: self.origin_size,
+            origin_floating: self.origin_floating,
+        }
+    }
+}
+
+fn restore_window(window: &Restoration<'_>) -> Result<(), Error> {
+    let selector = workspace_selector(window.origin_workspace);
     hypr::dispatch(&[
         "movetoworkspacesilent",
         &format!("{selector},address:{}", window.address),
@@ -1913,16 +2294,158 @@ fn restore_window(window: &TrackedWindow) -> Result<(), Error> {
     Ok(())
 }
 
+/// The compositor and process effects of a shared teardown, injected so the
+/// guards around them are testable without a live session — the same seam the
+/// agent desktop's `Sweep` uses.
+struct TeardownEffects<'a> {
+    presence: &'a dyn Fn(&TrackedWindow) -> Result<Presence, Error>,
+    restore: &'a dyn Fn(&Restoration<'_>) -> Result<(), Error>,
+    close: &'a dyn Fn(&str) -> Result<(), Error>,
+    kill_group: &'a dyn Fn(&SpawnedGroup) -> Result<GroupKill, Error>,
+    wait_gone: &'a dyn Fn(&TrackedWindow) -> Result<(), Error>,
+}
+
+/// What teardown found at a tracked window's address, without borrowing the
+/// client list the seam above hides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Presence {
+    Live,
+    Gone,
+    /// Another window answers to that address now — the session's window is
+    /// gone and this one is a stranger's.
+    Replaced {
+        title: String,
+    },
+}
+
+fn presence_now(tracked: &TrackedWindow) -> Result<Presence, Error> {
+    let clients = hypr::clients()?;
+    Ok(match tracked_now(&clients, tracked) {
+        Tracked::Live(_) => Presence::Live,
+        Tracked::Gone => Presence::Gone,
+        Tracked::Replaced(other) => Presence::Replaced {
+            title: other.title.clone(),
+        },
+    })
+}
+
+fn live_teardown_effects() -> TeardownEffects<'static> {
+    TeardownEffects {
+        presence: &presence_now,
+        restore: &restore_window,
+        close: &|address| {
+            close_window(
+                address,
+                "app may be prompting — retry with --kill if spawned",
+            )
+        },
+        kill_group: &kill_spawned_group,
+        wait_gone: &|window| wait_tracked_gone(window, "after kill"),
+    }
+}
+
 fn teardown_shared(session: &Shared, kill: bool, close: bool) -> Result<Vec<String>, Error> {
+    teardown_shared_with(session, kill, close, &live_teardown_effects())
+}
+
+fn teardown_shared_with(
+    session: &Shared,
+    kill: bool,
+    close: bool,
+    effects: &TeardownEffects<'_>,
+) -> Result<Vec<String>, Error> {
     let mut notes = Vec::new();
-    for (window, action) in teardown_plan(session, kill, close)? {
+    for (window, step) in teardown_plan(session, kill, close)? {
+        // Never gated on the window: an app whose window closed on its own can
+        // still hold a live process group, and `--kill` is the flag that
+        // promises to take it down.
+        let action = match step {
+            TeardownStep::KillGroup { group, fallback } => match (effects.kill_group)(&group)? {
+                GroupKill::Signalled => {
+                    (effects.wait_gone)(window)?;
+                    notes.push(format!("killed spawned process group {}", group.pid));
+                    continue;
+                }
+                // The group died on its own, which says nothing about its
+                // window: an app that re-parented itself leaves one mapped, and
+                // it is what keeps the output occupied.
+                GroupKill::AlreadyGone => {
+                    notes.push(format!("spawned process group {} already gone", group.pid));
+                    fallback
+                }
+            },
+            TeardownStep::Window(action) => action,
+        };
+
+        match (effects.presence)(window)? {
+            Presence::Gone => {
+                notes.push(format!("window {} already gone", window.address));
+                continue;
+            }
+            // The session's window died and Hyprland handed its address to
+            // someone else's: restoring or closing it here would move or kill a
+            // window this session never adopted.
+            Presence::Replaced { title } => {
+                notes.push(format!(
+                    "window {} was replaced by `{title}` — left untouched",
+                    window.address
+                ));
+                continue;
+            }
+            Presence::Live => {}
+        }
+        match action {
+            WindowAction::Restore => {
+                (effects.restore)(&window.restoration())?;
+                notes.push(format!(
+                    "restored window {} to workspace {}",
+                    window.address, window.origin_workspace
+                ));
+            }
+            WindowAction::Close => {
+                (effects.close)(&window.address)?;
+                notes.push(format!("closed window {}", window.address));
+            }
+        }
+    }
+    Ok(notes)
+}
+
+/// Teardown of a multi-window state written before window identity existed. The
+/// dispositions are the current ones; the guard is not, because the state has
+/// nothing to check an address against — the build that wrote it did the same.
+fn teardown_identityless(
+    session: &IdentitylessShared,
+    kill: bool,
+    close: bool,
+) -> Result<Vec<String>, Error> {
+    validate_teardown_flags(session.spawned_pid.is_some(), kill, close)?;
+    let kill_pid = kill.then_some(session.spawned_pid).flatten();
+    let mut notes = Vec::new();
+    for window in session.windows.iter().rev() {
+        let primary = window.address == session.primary_address;
+        if let (true, Some(pid)) = (primary, kill_pid) {
+            notes.push(match kill_process_group(pid)? {
+                GroupKill::Signalled => {
+                    wait_window_gone(&window.address, "after kill")?;
+                    format!("killed spawned process group {pid}")
+                }
+                GroupKill::AlreadyGone => format!("spawned process group {pid} already gone"),
+            });
+            continue;
+        }
         if !window_exists(&window.address)? {
             notes.push(format!("window {} already gone", window.address));
             continue;
         }
+        let action = if primary && close {
+            WindowAction::Close
+        } else {
+            disposition_action(window.teardown)
+        };
         match action {
             WindowAction::Restore => {
-                restore_window(window)?;
+                restore_window(&window.restoration())?;
                 notes.push(format!(
                     "restored window {} to workspace {}",
                     window.address, window.origin_workspace
@@ -1935,26 +2458,26 @@ fn teardown_shared(session: &Shared, kill: bool, close: bool) -> Result<Vec<Stri
                 )?;
                 notes.push(format!("closed window {}", window.address));
             }
-            WindowAction::Kill(pid) => {
-                kill_process_group(pid)?;
-                wait_window_gone(&window.address, "after kill")?;
-                notes.push(format!("killed spawned process group {pid}"));
-            }
         }
     }
     Ok(notes)
 }
 
 fn teardown_legacy(session: &LegacySession, kill: bool, close: bool) -> Result<Vec<String>, Error> {
-    validate_teardown_flags(session.spawned_pid, kill, close)?;
+    validate_teardown_flags(session.spawned_pid.is_some(), kill, close)?;
+    // Same order as `teardown_shared`: the process group first, since it can
+    // outlive the window the check below would short-circuit on.
+    if let (true, Some(pid)) = (kill, session.spawned_pid) {
+        return Ok(vec![match kill_process_group(pid)? {
+            GroupKill::Signalled => {
+                wait_window_gone(&session.window_address, "after kill")?;
+                format!("killed spawned process group {pid}")
+            }
+            GroupKill::AlreadyGone => format!("spawned process group {pid} already gone"),
+        }]);
+    }
     if !window_exists(&session.window_address)? {
         return Ok(vec!["window already gone".to_owned()]);
-    }
-
-    if let (true, Some(pid)) = (kill, session.spawned_pid) {
-        kill_process_group(pid)?;
-        wait_window_gone(&session.window_address, "after kill")?;
-        return Ok(vec![format!("killed spawned process group {pid}")]);
     }
     if close || !session.attached() {
         close_window(
@@ -1976,38 +2499,79 @@ fn teardown_legacy(session: &LegacySession, kill: bool, close: bool) -> Result<V
     )])
 }
 
-fn ensure_output_empty_for_sweep(
+/// What an emptiness check does with a client whose monitor the compositor
+/// cannot name (`monitor: -1`, or an id no monitor claims). It may be sitting on
+/// the output about to be removed, and nothing in the answer says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnplacedClients {
+    /// The orphan sweep: no state, so nothing can attribute that client — it is
+    /// treated as occupancy.
+    Refuse,
+    /// A teardown: everything this session tracked has just been restored or
+    /// closed, so a client that is not reported on the output is not the
+    /// session's business, and refusing here would strand the session instead.
+    Ignore,
+}
+
+/// Nothing of the user's may be on an output when it goes: `hyprctl output
+/// remove` rehomes whatever is left onto a workspace they did not choose. Both
+/// removals go through this — the orphan sweep, which has no state to compare
+/// against, and a normal teardown, which has just restored or closed everything
+/// it tracked and so expects the output to be empty.
+fn ensure_output_empty(
     output: &hypr::Monitor,
     monitors: &[hypr::Monitor],
     clients: &[hypr::Client],
+    unplaced: UnplacedClients,
 ) -> Result<(), Error> {
-    if output.id < 0 {
-        return Err(Error::SweepRefused {
+    let occupied = |reason: String| {
+        Err(Error::OutputOccupied {
             output: output.name.clone(),
-            reason: format!("output reports unexpected monitor id {}", output.id),
-        });
+            reason,
+        })
+    };
+    if output.id < 0 {
+        return occupied(format!(
+            "output reports unexpected monitor id {}",
+            output.id
+        ));
     }
     for client in clients {
         if client.monitor == output.id {
-            return Err(Error::SweepRefused {
-                output: output.name.clone(),
-                reason: format!(
-                    "client {} (`{}`) still reports monitor {}",
-                    client.address, client.title, client.monitor
-                ),
-            });
+            return occupied(format!(
+                "client {} (`{}`) still reports monitor {}",
+                client.address, client.title, client.monitor
+            ));
         }
-        if client.monitor < 0 || !monitors.iter().any(|monitor| monitor.id == client.monitor) {
-            return Err(Error::SweepRefused {
-                output: output.name.clone(),
-                reason: format!(
-                    "client {} (`{}`) reports unexpected monitor {}",
-                    client.address, client.title, client.monitor
-                ),
-            });
+        let placed = client.monitor >= 0 && monitors.iter().any(|m| m.id == client.monitor);
+        if !placed && unplaced == UnplacedClients::Refuse {
+            return occupied(format!(
+                "client {} (`{}`) reports unexpected monitor {}",
+                client.address, client.title, client.monitor
+            ));
         }
     }
     Ok(())
+}
+
+/// The emptiness check of an output this crate is about to remove, with the
+/// grace a compositor needs: a window closed a few milliseconds ago can still be
+/// listed by `hyprctl clients`, so a still-occupied output is only a refusal
+/// once it stays that way. An output already gone needs no check at all.
+fn wait_for_empty_output(output_name: &str) -> Result<(), Error> {
+    let deadline = Instant::now() + WINDOW_CLOSE_TIMEOUT;
+    loop {
+        let monitors = hypr::monitors()?;
+        let Some(output) = monitors.iter().find(|m| m.name == output_name) else {
+            return Ok(());
+        };
+        let clients = hypr::clients()?;
+        match ensure_output_empty(output, &monitors, &clients, UnplacedClients::Ignore) {
+            Ok(()) => return Ok(()),
+            Err(refusal) if Instant::now() >= deadline => return Err(refusal),
+            Err(_) => thread::sleep(POLL_INTERVAL),
+        }
+    }
 }
 
 fn sweep_orphan_output() -> Result<String, Error> {
@@ -2016,7 +2580,7 @@ fn sweep_orphan_output() -> Result<String, Error> {
         return Err(Error::NoSession);
     };
     let clients = hypr::clients()?;
-    ensure_output_empty_for_sweep(output, &monitors, &clients)?;
+    ensure_output_empty(output, &monitors, &clients, UnplacedClients::Refuse)?;
     // The orphan sweep removes an output too, so it owes the user the same
     // cursor (fact §2.8).
     let removal = remove_output_restoring_cursor(OUTPUT_NAME, None)?;
@@ -2069,6 +2633,9 @@ fn finish_teardown(
     mut failures: Vec<RestoreFailure>,
 ) -> Result<String, Error> {
     if output_created {
+        // Refused before the removal, not after: the state stays on disk so the
+        // teardown can be retried once whatever landed on the output is off it.
+        wait_for_empty_output(output_name)?;
         let removal = remove_output_restoring_cursor(output_name, None)?;
         notes.extend(removal.notes);
         failures.extend(removal.failure);
@@ -2101,6 +2668,7 @@ fn refuse_teardown_flags(kill: bool, close: bool) -> Result<(), Error> {
 }
 
 pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
+    let _lock = lock_session(name)?;
     match load_from(&session_path(name)?) {
         Ok(session) => {
             let location = StateLocation::Session(session_dir(name)?);
@@ -2133,8 +2701,66 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
         // The v3 layout moved, so teardown stays the one command that can still
         // clean up what an older build left at the old location.
         Err(Error::NoSession) => teardown_pre_v3(kill, close),
+        // Same duty at the current location: window identity (v4) changed the
+        // shape of a state a running build may have written minutes earlier, and
+        // that session is holding a window of the user's on a hidden output.
+        Err(Error::UnsupportedSessionVersion {
+            path,
+            found: Some(PRE_IDENTITY_VERSION),
+        }) => teardown_pre_identity_at(&path, name, kill, close),
         Err(error) => Err(error),
     }
+}
+
+/// The last schema written without window identity, at the current location.
+const PRE_IDENTITY_VERSION: u32 = 3;
+
+fn teardown_pre_identity_at(
+    path: &Path,
+    name: &str,
+    kill: bool,
+    close: bool,
+) -> Result<String, Error> {
+    let raw = read_from(path)?;
+    let corrupt = |error: Error| Error::CorruptSession {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    };
+    let value: serde_json::Value = parse_json(&raw, path).map_err(&corrupt)?;
+    let location = StateLocation::Session(session_dir(name)?);
+    let migrated = format!(
+        "cleaned schema v{PRE_IDENTITY_VERSION} state at {}",
+        path.display()
+    );
+
+    // The agent desktop payload is unchanged across the two schemas, so only the
+    // shared window table needs the identity-less reading.
+    if value.get("mode").and_then(serde_json::Value::as_str) == Some("isolated") {
+        refuse_teardown_flags(kill, close)?;
+        let isolated: Isolated = parse_json_value(value, path).map_err(corrupt)?;
+        let brought_down = crate::isolated::teardown(name, &isolated)?;
+        let mut notes = vec![migrated];
+        notes.extend(brought_down.notes);
+        return finish_teardown(
+            &location,
+            &isolated.output,
+            true,
+            notes,
+            brought_down.failures,
+        );
+    }
+
+    let shared: IdentitylessShared = parse_json_value(value, path).map_err(corrupt)?;
+    check_identityless_primary(&shared, path)?;
+    let mut notes = vec![migrated];
+    notes.extend(teardown_identityless(&shared, kill, close)?);
+    finish_teardown(
+        &location,
+        &shared.output,
+        shared.output_created,
+        notes,
+        Vec::new(),
+    )
 }
 
 fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
@@ -2149,7 +2775,7 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
     match state {
         PreV3Session::V2(shared) => {
             let mut notes = vec![migrated];
-            notes.extend(teardown_shared(&shared, kill, close)?);
+            notes.extend(teardown_identityless(&shared, kill, close)?);
             finish_teardown(
                 &location,
                 &shared.output,
@@ -2174,19 +2800,23 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::GroupKill;
     use super::{
         Criteria, DEFAULT_SESSION_NAME, Disposition, Escalation, Instance, Isolated, Mode,
-        ModeState, Placement, PreV3Session, Rect, Resolution, SCHEMA_VERSION, Session, Shared,
-        StateLocation, Step, TargetLookup, TargetMode, TrackedWindow, WindowAction,
-        ambiguous_error, clear_state, effective_output_size, ensure_output_empty_for_sweep,
-        exact_layout_integer, find_shared_session_in, load_from, load_pre_v3_from, parse_size,
-        persist_target_before_activation, place, refuse_pre_v3_state_at, refuse_teardown_flags,
-        report_teardown, resize_has_applied, resize_unsupported, resolve, resolve_name_from,
-        save_isolated, save_new_to, save_over, target_disposition, target_layout_is_verified,
-        target_lookup, teardown_plan, workspace_selector,
+        ModeState, Placement, PreV3Session, Presence, Rect, Resolution, Restoration,
+        SCHEMA_VERSION, Session, Shared, SpawnedGroup, StateLocation, Step, TargetLookup,
+        TargetMode, TeardownEffects, TeardownStep, Tracked, TrackedWindow, UnplacedClients,
+        WindowAction, ambiguous_error, clear_state, effective_output_size, ensure_output_empty,
+        exact_layout_integer, find_shared_session_in, load_from, load_pre_v3_from, lock_session_in,
+        parse_size, persist_target_before_activation, place, refuse_pre_v3_state_at,
+        refuse_teardown_flags, replaced_error, report_teardown, resize_has_applied,
+        resize_unsupported, resolve, resolve_name_from, save_isolated, save_new_to, save_over,
+        target_disposition, target_layout_is_verified, target_lookup, teardown_plan,
+        teardown_shared_with, tracked_now, workspace_selector,
     };
     use crate::error::{Error, RestoreFailure};
     use crate::guard;
+    use std::cell::RefCell;
     use std::error::Error as StdError;
     use std::time::Duration;
 
@@ -2207,12 +2837,16 @@ mod tests {
             active_workspace: "hyprpilot".to_owned(),
             parking_workspace: "special:hyprpilot-parked".to_owned(),
             size: [1600, 1000],
-            spawned_pid: Some(42),
+            spawned: Some(SpawnedGroup {
+                pid: 42,
+                started_at_ticks: 4242,
+            }),
             initial_user_focus: Some("0xdef".to_owned()),
             primary_address: "0xabc".to_owned(),
             active_address: "0xabc".to_owned(),
             windows: vec![TrackedWindow {
                 address: "0xabc".to_owned(),
+                stable_id: "9001".to_owned(),
                 title_at_adoption: "App".to_owned(),
                 origin_workspace: "3".to_owned(),
                 origin_at: [120, 80],
@@ -2275,6 +2909,7 @@ mod tests {
     fn tracked_client(client: &Client) -> TrackedWindow {
         TrackedWindow {
             address: client.address.clone(),
+            stable_id: client.stable_id.clone(),
             title_at_adoption: client.title.clone(),
             origin_workspace: client.workspace.name.clone(),
             origin_at: client.at,
@@ -2282,6 +2917,32 @@ mod tests {
             origin_floating: client.floating,
             teardown: Disposition::Restore,
         }
+    }
+
+    /// Hyprland formats a client's address from the window object itself, so a
+    /// closed window's address comes back on another window. Anything this
+    /// session drives by that address has to notice.
+    #[test]
+    fn a_recycled_address_is_told_apart_from_the_adopted_window() -> Result<(), Box<dyn StdError>> {
+        let clients = matching_clients()?;
+        let adopted = tracked_client(&clients[0]);
+
+        assert!(matches!(tracked_now(&clients, &adopted), Tracked::Live(_)));
+        assert!(matches!(tracked_now(&[], &adopted), Tracked::Gone));
+
+        let mut successor = clients[0].clone();
+        successor.stable_id = "18009999".to_owned();
+        successor.title = "Someone else".to_owned();
+        let Tracked::Replaced(other) = tracked_now(std::slice::from_ref(&successor), &adopted)
+        else {
+            return Err("a window that inherited the address passed as the adopted one".into());
+        };
+        assert_eq!(other.title, "Someone else");
+
+        let message = replaced_error(&adopted, other).to_string();
+        assert!(message.contains("never adopted"), "{message}");
+        assert!(message.contains("nothing was sent to it"), "{message}");
+        Ok(())
     }
 
     #[test]
@@ -2578,8 +3239,12 @@ mod tests {
     }
 
     #[test]
-    fn resize_rejects_stale_pre_keyword_dimensions() {
-        assert!(!resize_has_applied([300, 200], [1200, 800], [300, 200]));
+    fn resize_waits_for_the_requested_size_not_merely_a_changed_one() {
+        // The pre-`keyword` read, and the intermediate mode a compositor can
+        // report between the two, are both refused.
+        assert!(!resize_has_applied([1200, 800], [300, 200]));
+        assert!(!resize_has_applied([1200, 800], [1280, 720]));
+        assert!(resize_has_applied([1200, 800], [1200, 800]));
     }
 
     #[test]
@@ -2655,13 +3320,19 @@ mod tests {
             teardown_plan(&spawned, false, false)
                 .ok()
                 .and_then(|plan| plan.first().map(|step| step.1)),
-            Some(WindowAction::Close)
+            Some(TeardownStep::Window(WindowAction::Close))
         );
         assert_eq!(
             teardown_plan(&spawned, true, false)
                 .ok()
                 .and_then(|plan| plan.first().map(|step| step.1)),
-            Some(WindowAction::Kill(42))
+            Some(TeardownStep::KillGroup {
+                group: SpawnedGroup {
+                    pid: 42,
+                    started_at_ticks: 4242
+                },
+                fallback: WindowAction::Close
+            })
         );
         let spawned_close = teardown_plan(&spawned, false, true)
             .err()
@@ -2669,19 +3340,19 @@ mod tests {
         assert!(spawned_close.to_string().contains("attached primary"));
 
         let mut attached = sample_shared();
-        attached.spawned_pid = None;
+        attached.spawned = None;
         attached.windows[0].teardown = Disposition::Restore;
         assert_eq!(
             teardown_plan(&attached, false, false)
                 .ok()
                 .and_then(|plan| plan.first().map(|step| step.1)),
-            Some(WindowAction::Restore)
+            Some(TeardownStep::Window(WindowAction::Restore))
         );
         assert_eq!(
             teardown_plan(&attached, false, true)
                 .ok()
                 .and_then(|plan| plan.first().map(|step| step.1)),
-            Some(WindowAction::Close)
+            Some(TeardownStep::Window(WindowAction::Close))
         );
         let attached_kill = teardown_plan(&attached, true, false)
             .err()
@@ -2801,6 +3472,7 @@ mod tests {
         let mut session = sample_shared();
         session.windows.push(TrackedWindow {
             address: "0xaux".to_owned(),
+            stable_id: "9002".to_owned(),
             title_at_adoption: "Auxiliary".to_owned(),
             origin_workspace: "special:notes".to_owned(),
             origin_at: [300, 200],
@@ -2811,9 +3483,138 @@ mod tests {
 
         let plan = teardown_plan(&session, false, false)?;
         assert_eq!(plan[0].0.address, "0xaux");
-        assert_eq!(plan[0].1, WindowAction::Restore);
+        assert_eq!(plan[0].1, TeardownStep::Window(WindowAction::Restore));
         assert_eq!(plan[1].0.address, "0xabc");
-        assert_eq!(plan[1].1, WindowAction::Close);
+        assert_eq!(plan[1].1, TeardownStep::Window(WindowAction::Close));
+        Ok(())
+    }
+
+    /// The window is gone and the process group is not: the case that used to
+    /// return "window already gone" without ever signalling the app.
+    #[test]
+    fn kill_runs_on_a_session_whose_window_is_already_gone() -> Result<(), Box<dyn StdError>> {
+        let session = sample_shared();
+        let killed = RefCell::new(Vec::new());
+        let waited_for = RefCell::new(Vec::new());
+        let gone = |_: &TrackedWindow| Ok(Presence::Gone);
+        let unexpected_window_effect = |_: &str| Err(Error::NoSession);
+        let unexpected_restore = |_: &Restoration<'_>| Err(Error::NoSession);
+        let kill_group = |group: &SpawnedGroup| {
+            killed.borrow_mut().push(group.pid);
+            Ok(GroupKill::Signalled)
+        };
+        let wait_gone = |window: &TrackedWindow| {
+            waited_for.borrow_mut().push(window.address.clone());
+            Ok(())
+        };
+
+        let notes = teardown_shared_with(
+            &session,
+            true,
+            false,
+            &TeardownEffects {
+                presence: &gone,
+                restore: &unexpected_restore,
+                close: &unexpected_window_effect,
+                kill_group: &kill_group,
+                wait_gone: &wait_gone,
+            },
+        )?;
+
+        assert_eq!(killed.into_inner(), vec![42]);
+        assert_eq!(waited_for.into_inner(), vec!["0xabc"]);
+        assert!(
+            notes.iter().any(|note| note.contains("killed spawned")),
+            "{notes:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_process_group_already_gone_is_a_complete_teardown() -> Result<(), Box<dyn StdError>> {
+        let session = sample_shared();
+        let notes = teardown_shared_with(
+            &session,
+            true,
+            false,
+            &TeardownEffects {
+                presence: &|_| Ok(Presence::Gone),
+                restore: &|_| Err(Error::NoSession),
+                close: &|_| Err(Error::NoSession),
+                kill_group: &|_| Ok(GroupKill::AlreadyGone),
+                wait_gone: &|_| Err(Error::NoSession),
+            },
+        )?;
+
+        assert!(
+            notes.iter().any(|note| note.contains("already gone")),
+            "{notes:?}"
+        );
+        Ok(())
+    }
+
+    /// An app that re-parents itself leaves the recorded group dead and its
+    /// window mapped. Stopping at the dead group would leave that window on the
+    /// output, which the removal then refuses — for every retry.
+    #[test]
+    fn a_window_outliving_its_killed_group_is_still_disposed_of() -> Result<(), Box<dyn StdError>> {
+        let session = sample_shared();
+        let closed = RefCell::new(Vec::new());
+        let live = |_: &TrackedWindow| Ok(Presence::Live);
+        let unexpected_restore = |_: &Restoration<'_>| Err(Error::NoSession);
+        let close = |address: &str| {
+            closed.borrow_mut().push(address.to_owned());
+            Ok(())
+        };
+        let dead_group = |_: &SpawnedGroup| Ok(GroupKill::AlreadyGone);
+        let unexpected_wait = |_: &TrackedWindow| Err(Error::NoSession);
+
+        let notes = teardown_shared_with(
+            &session,
+            true,
+            false,
+            &TeardownEffects {
+                presence: &live,
+                restore: &unexpected_restore,
+                close: &close,
+                kill_group: &dead_group,
+                wait_gone: &unexpected_wait,
+            },
+        )?;
+
+        assert_eq!(closed.into_inner(), vec!["0xabc"]);
+        assert!(
+            notes.iter().any(|note| note.contains("already gone")),
+            "{notes:?}"
+        );
+        Ok(())
+    }
+
+    /// Two `target` runs interleaving is how a parked window stops being
+    /// tracked: each persists a table it read before the other's write.
+    #[test]
+    fn one_mutating_command_at_a_time_per_session() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let session = dir.path().join("default");
+
+        assert!(
+            lock_session_in(&session, "default")?.is_none(),
+            "a session that does not exist has nothing to serialise"
+        );
+
+        std::fs::create_dir_all(&session)?;
+        let held = lock_session_in(&session, "default")?
+            .ok_or("an existing session directory was not locked")?;
+        assert!(matches!(
+            lock_session_in(&session, "default"),
+            Err(Error::SessionBusy { .. })
+        ));
+
+        drop(held);
+        assert!(
+            lock_session_in(&session, "default")?.is_some(),
+            "the lock outlived the command that took it"
+        );
         Ok(())
     }
 
@@ -2830,7 +3631,7 @@ mod tests {
         assert_eq!(loaded.primary_address, "0xabc");
         assert_eq!(loaded.active_address, "0xabc");
         assert_eq!(loaded.size, [1600, 1000]);
-        assert_eq!(loaded.spawned_pid, Some(42));
+        assert_eq!(loaded.spawned.map(|group| group.pid), Some(42));
         assert_eq!(loaded.windows[0].origin_workspace, "3");
         assert_eq!(loaded.windows[0].origin_at, [120, 80]);
         assert_eq!(loaded.windows[0].origin_size, [900, 600]);
@@ -2915,7 +3716,18 @@ mod tests {
         let path = dir.path().join("session.json");
         save_new_to(&path, &sample_session())?;
         let mut updated = sample_session();
-        updated.shared_mut("target")?.active_address = "0xdef".to_owned();
+        let shared = updated.shared_mut("target")?;
+        shared.windows.push(TrackedWindow {
+            address: "0xdef".to_owned(),
+            stable_id: "9003".to_owned(),
+            title_at_adoption: "Second".to_owned(),
+            origin_workspace: "2".to_owned(),
+            origin_at: [0, 0],
+            origin_size: [400, 300],
+            origin_floating: true,
+            teardown: Disposition::Restore,
+        });
+        shared.active_address = "0xdef".to_owned();
 
         save_over(&path, &updated)?;
 
@@ -3036,14 +3848,14 @@ mod tests {
 
         let error = load_from(&path)
             .err()
-            .ok_or("a v2 state was accepted by a v3 build")?;
+            .ok_or("a v2 state was accepted by a v4 build")?;
         assert!(matches!(
             &error,
             Error::UnsupportedSessionVersion { found: Some(2), .. }
         ));
         let message = error.to_string();
         assert!(message.contains("schema version 2"), "{message}");
-        assert!(message.contains("expects 3"), "{message}");
+        assert!(message.contains("expects 4"), "{message}");
         assert!(message.contains("hyprpilot teardown"), "{message}");
         assert!(message.contains("no output was removed"), "{message}");
         assert!(message.contains("hyprpilot windows"), "{message}");
@@ -3060,7 +3872,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("session.json");
         let mut value = serde_json::to_value(sample_session())?;
-        value["schema_version"] = serde_json::json!(4);
+        value["schema_version"] = serde_json::json!(99);
         std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
         let Err(error) = load_from(&path) else {
@@ -3068,13 +3880,19 @@ mod tests {
         };
         assert!(matches!(
             &error,
-            Error::UnsupportedSessionVersion { found: Some(4), .. }
+            Error::UnsupportedSessionVersion {
+                found: Some(99),
+                ..
+            }
         ));
         assert!(error.to_string().contains("no output was removed"));
         assert!(error.to_string().contains("hyprpilot windows"));
         assert!(matches!(
             load_pre_v3_from(&path),
-            Err(Error::UnsupportedSessionVersion { found: Some(4), .. })
+            Err(Error::UnsupportedSessionVersion {
+                found: Some(99),
+                ..
+            })
         ));
         Ok(())
     }
@@ -3245,7 +4063,7 @@ mod tests {
     #[test]
     fn sweep_refuses_occupied_output_fixture() -> Result<(), Box<dyn StdError>> {
         let (monitors, clients) = sweep_fixture(SWEEP_OCCUPIED_JSON)?;
-        let error = ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)
+        let error = ensure_output_empty(&monitors[1], &monitors, &clients, UnplacedClients::Refuse)
             .err()
             .ok_or("occupied output unexpectedly accepted for sweep")?;
         assert!(error.to_string().contains("still reports monitor 1"));
@@ -3255,17 +4073,34 @@ mod tests {
     #[test]
     fn sweep_accepts_empty_output_fixture() -> Result<(), Box<dyn StdError>> {
         let (monitors, clients) = sweep_fixture(SWEEP_EMPTY_JSON)?;
-        ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)?;
+        ensure_output_empty(&monitors[1], &monitors, &clients, UnplacedClients::Refuse)?;
         Ok(())
     }
 
     #[test]
     fn sweep_refuses_monitor_minus_one_fixture() -> Result<(), Box<dyn StdError>> {
         let (monitors, clients) = sweep_fixture(SWEEP_MINUS_ONE_JSON)?;
-        let error = ensure_output_empty_for_sweep(&monitors[1], &monitors, &clients)
+        let error = ensure_output_empty(&monitors[1], &monitors, &clients, UnplacedClients::Refuse)
             .err()
             .ok_or("monitor -1 unexpectedly accepted for sweep")?;
         assert!(error.to_string().contains("unexpected monitor -1"));
+        Ok(())
+    }
+
+    /// A teardown knows what it tracked and has just disposed of it, so a window
+    /// the compositor places nowhere must not be able to strand the session on
+    /// its hidden output — only a window reported *on* that output stops it.
+    #[test]
+    fn teardown_removal_only_refuses_a_client_on_the_output() -> Result<(), Box<dyn StdError>> {
+        let (monitors, clients) = sweep_fixture(SWEEP_MINUS_ONE_JSON)?;
+        ensure_output_empty(&monitors[1], &monitors, &clients, UnplacedClients::Ignore)?;
+
+        let (monitors, clients) = sweep_fixture(SWEEP_OCCUPIED_JSON)?;
+        assert!(
+            ensure_output_empty(&monitors[1], &monitors, &clients, UnplacedClients::Ignore)
+                .is_err(),
+            "a client on the output was accepted"
+        );
         Ok(())
     }
 }

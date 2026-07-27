@@ -197,6 +197,10 @@ pub fn start(
     size: &str,
 ) -> Result<String, Error> {
     refuse_when_nested()?;
+    // Held for the whole build: a `teardown` of this name would otherwise clear
+    // the state between two of the steps below, and everything acquired after
+    // that point would outlive any record of it.
+    let _lock = session::lock_new_session(name)?;
     let command = app.ok_or_else(|| Error::Invalid {
         what: "session start --isolated",
         value: "(no --app)".to_owned(),
@@ -1773,6 +1777,12 @@ fn live_instance_in<'a>(
 
 /// The window an isolated command acts on: the one the start recorded, or the
 /// one `target` last selected.
+// TODO: record the window's `stableId` next to its address, as the shared window
+// table does since schema v4, and check it here. A nested compositor recycles
+// addresses like any other, so a window that closes can hand its address to
+// another window of the app under test, and input then reaches the wrong one.
+// Bounded to the agent's own desktop, which is why it is not part of the
+// identity fix on the shared path.
 pub fn recorded_window<'a>(session: &str, isolated: &'a Isolated) -> Result<&'a str, Error> {
     isolated
         .active_address
