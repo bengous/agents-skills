@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
+use crate::host;
 use crate::hypr;
 
 /// Shared mode drives the user's windows on this single output; it is a
@@ -1239,7 +1240,7 @@ fn effective_output_size(output: &hypr::Monitor) -> Result<[u32; 2], Error> {
 /// its own here would be the one path able to address a compositor the `Ctl`
 /// layer never routed (see the `hypr` module note).
 fn resize_monitor(output: &hypr::Monitor, width: u32, height: u32) -> Result<(), Error> {
-    hypr::keyword_monitor_at(
+    host::keyword_monitor_at(
         &output.name,
         width,
         height,
@@ -1444,11 +1445,10 @@ fn evacuate_stray_workspace(output_name: &str, workspace_name: &str) -> Result<(
             command: "hyprctl monitors".to_owned(),
             message: "no other monitor to evacuate the stray workspace to".to_owned(),
         })?;
-    hypr::dispatch(&[
-        "moveworkspacetomonitor",
+    host::move_workspace_to_monitor(
         &workspace_selector(&ours.active_workspace.name),
         &refuge.name,
-    ])
+    )
 }
 
 fn park_window(
@@ -1468,11 +1468,7 @@ fn place_session_window(
     output_name: &str,
     workspace_name: &str,
 ) -> Result<Option<Placement>, Error> {
-    hypr::dispatch(&[
-        "moveworkspacetomonitor",
-        &format!("name:{workspace_name}"),
-        output_name,
-    ])?;
+    host::move_workspace_to_monitor(&format!("name:{workspace_name}"), output_name)?;
     evacuate_stray_workspace(output_name, workspace_name)?;
 
     let (window, output) = wait_for_session_workspace(address, output_name, workspace_name)?;
@@ -1562,7 +1558,7 @@ fn wait_for_target_layout(session: &Shared) -> Result<(), Error> {
 }
 
 fn activate_persisted_target(session: &Shared) -> Result<(), Error> {
-    hypr::keyword_workspace(&session.parking_workspace, &session.output)?;
+    host::keyword_workspace(&session.parking_workspace, &session.output)?;
 
     let clients = hypr::clients()?;
     for tracked in &session.windows {
@@ -1918,9 +1914,9 @@ pub fn start(
     }
 
     if output_created {
-        hypr::output_create_headless(OUTPUT_NAME)?;
+        host::output_create_headless(OUTPUT_NAME)?;
     }
-    hypr::keyword_monitor(OUTPUT_NAME, width, height)?;
+    host::keyword_monitor(OUTPUT_NAME, width, height)?;
 
     if matches!(
         park_window(&window.address, OUTPUT_NAME, WORKSPACE_NAME)?,
@@ -1972,7 +1968,7 @@ pub fn remove_output_restoring_cursor(
         Ok(cursor) => Ok(cursor),
         Err(error) => fallback.ok_or(error),
     };
-    hypr::output_remove(output)?;
+    host::output_remove(output)?;
     let mut notes = vec![format!("removed output {output}")];
     let failure = match saved {
         Ok(cursor) => match restore_cursor(cursor) {

@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::capture;
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
+use crate::host;
 use crate::hypr::{self, Ctl};
 use crate::session::{self, Instance, Isolated, ModeState, Session};
 
@@ -317,13 +318,13 @@ impl Start<'_> {
     /// §4.2. Resolution *and* scale are imposed: a headless output otherwise
     /// inherits a non-trivial scale (fact §2.10).
     fn create_output(&self, acquired: &mut Acquired) -> Result<(), Error> {
-        hypr::output_create_headless(&self.output)?;
+        host::output_create_headless(&self.output)?;
         // The output exists from this line on, whether or not the mode-set below
         // applies and whether or not the check ever passes: the rollback has to
         // remove it either way, or it stays in the user's layout with no session
         // state left to find it (§4.1).
         acquired.output = true;
-        hypr::keyword_monitor(&self.output, self.size[0], self.size[1])?;
+        host::keyword_monitor(&self.output, self.size[0], self.size[1])?;
         let [width, height] = self.size;
         poll_until(
             session::WINDOW_PLACE_TIMEOUT,
@@ -369,7 +370,7 @@ impl Start<'_> {
             });
         }
 
-        hypr::dispatch(&["renameworkspace", &current.id.to_string(), &self.workspace])?;
+        host::rename_workspace(current.id, &self.workspace)?;
         poll_until(
             session::WINDOW_PLACE_TIMEOUT,
             || {
@@ -390,7 +391,7 @@ impl Start<'_> {
         // workspace is destroyed while the console is shown, `hide` recreates it
         // with `movetoworkspacesilent`, and without the rule that recreation
         // lands on the monitor the console currently sits on — the user's.
-        hypr::keyword_workspace(&self.workspace, &self.output)
+        host::keyword_workspace(&self.workspace, &self.output)
     }
 
     /// §4.4. The keymap is the only dynamic part, so it is read from the host,

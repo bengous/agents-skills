@@ -331,11 +331,17 @@ fn parse_cursor_pos(raw: &str) -> Option<(i32, i32)> {
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
-pub fn output_create_headless(name: &str) -> Result<(), Error> {
+/// The five functions below are the crate's only durable host mutations, and
+/// `pub(in crate::host)` is what makes that structural: outside `src/host/` they
+/// do not exist, so no module can pose one without going through the ledger that
+/// records how to undo it. `dispatch` stays visible to the crate — 21 legitimate
+/// sites — so the same invariant holds for the two mutating dispatchers by
+/// source sweep instead (`no_module_outside_host_dispatches_...`).
+pub(in crate::host) fn output_create_headless(name: &str) -> Result<(), Error> {
     expect_ok(&["output", "create", "headless", name])
 }
 
-pub fn output_remove(name: &str) -> Result<(), Error> {
+pub(in crate::host) fn output_remove(name: &str) -> Result<(), Error> {
     expect_ok(&["output", "remove", name])
 }
 
@@ -346,7 +352,7 @@ pub fn headless_monitor_rule(name: &str, width: u32, height: u32) -> String {
     format!("{name},{width}x{height}@60,auto,1")
 }
 
-pub fn keyword_monitor(name: &str, width: u32, height: u32) -> Result<(), Error> {
+pub(in crate::host) fn keyword_monitor(name: &str, width: u32, height: u32) -> Result<(), Error> {
     expect_ok(&[
         "keyword",
         "monitor",
@@ -362,7 +368,7 @@ pub fn monitor_rule_at(name: &str, width: u32, height: u32, at: (i32, i32), scal
     format!("{name},{width}x{height}@60,{x}x{y},{scale}")
 }
 
-pub fn keyword_monitor_at(
+pub(in crate::host) fn keyword_monitor_at(
     name: &str,
     width: u32,
     height: u32,
@@ -376,12 +382,16 @@ pub fn keyword_monitor_at(
     ])
 }
 
-pub fn keyword_workspace(workspace: &str, monitor: &str) -> Result<(), Error> {
-    expect_ok(&[
-        "keyword",
-        "workspace",
-        &format!("{workspace}, monitor:{monitor}"),
-    ])
+pub(in crate::host) fn keyword_workspace(workspace: &str, monitor: &str) -> Result<(), Error> {
+    expect_ok(&["keyword", "workspace", &workspace_rule(workspace, monitor)])
+}
+
+/// The rule text `keyword workspace` takes, and the one
+/// `WorkspaceRuleSet::apply` compares against `hyprctl workspacerules` to keep
+/// from posing the same rule twice (Hyprland stacks a repeated rule instead of
+/// replacing it, and the first one keeps precedence — hyprwm/Hyprland#2268).
+pub(in crate::host) fn workspace_rule(workspace: &str, monitor: &str) -> String {
+    format!("{workspace}, monitor:{monitor}")
 }
 
 pub fn version_on(ctl: Ctl<'_>) -> Result<String, Error> {
@@ -400,9 +410,9 @@ mod tests {
     };
     use std::error::Error;
 
-    const CLIENTS_JSON: &str = include_str!("../fixtures/clients.json");
-    const MONITORS_JSON: &str = include_str!("../fixtures/monitors.json");
-    const DEVICES_JSON: &str = include_str!("../fixtures/devices.json");
+    const CLIENTS_JSON: &str = include_str!("../../fixtures/clients.json");
+    const MONITORS_JSON: &str = include_str!("../../fixtures/monitors.json");
+    const DEVICES_JSON: &str = include_str!("../../fixtures/devices.json");
 
     #[test]
     fn parses_real_clients_fixture() -> Result<(), Box<dyn Error>> {
