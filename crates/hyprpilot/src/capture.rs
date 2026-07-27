@@ -442,10 +442,12 @@ pub fn parse_timeout(raw: &str) -> Result<Duration, Error> {
     }
     let seconds = trimmed.strip_suffix('s').unwrap_or(trimmed);
     let value: f64 = seconds.trim().parse().map_err(|_| invalid())?;
-    if !value.is_finite() || value <= 0.0 {
+    if value <= 0.0 {
         return Err(invalid());
     }
-    Ok(Duration::from_secs_f64(value))
+    // `try_from_secs_f64` is what rejects infinities and anything past
+    // `Duration`'s range; its infallible sibling panics on both.
+    Duration::try_from_secs_f64(value).map_err(|_| invalid())
 }
 
 /// §4.7 of the isolated design: `ready` means the window is capturable, so an
@@ -652,6 +654,15 @@ mod tests {
         assert!(parse_timeout("0ms").is_err());
         assert!(parse_timeout("0").is_err());
         assert!(parse_timeout("fast").is_err());
+    }
+
+    #[test]
+    fn timeout_out_of_duration_range_is_rejected_not_panicked() {
+        // Finite, positive, and still past `Duration`'s range: the infallible
+        // conversion panics on these instead of reporting a bad flag value.
+        assert!(parse_timeout("2e19s").is_err());
+        assert!(parse_timeout("1e400s").is_err());
+        assert!(parse_timeout("nans").is_err());
     }
 
     #[test]

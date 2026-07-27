@@ -1,3 +1,5 @@
+use std::panic::{self, AssertUnwindSafe};
+
 use crate::error::{Error, RestoreFailure};
 use crate::hypr;
 
@@ -24,8 +26,20 @@ fn run_with<S, P, R, E>(
 ) -> Result<R, E> {
     let snapshot = snapshot()?;
     let prepared = prepare()?;
-    let action = focus().and_then(|()| action(&prepared));
-    restore(snapshot, &prepared, action)
+    // A panic between the focus change and the restoration would otherwise
+    // unwind straight past it, leaving the user's desktop focused on the
+    // session window with the cursor parked wherever the action left it. The
+    // desktop is put back first, then the panic resumes on its way out.
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+        focus().and_then(|()| action(&prepared))
+    }));
+    match outcome {
+        Ok(action) => restore(snapshot, &prepared, action),
+        Err(panicked) => {
+            let _ = restore(snapshot, &prepared, Ok(()));
+            panic::resume_unwind(panicked)
+        }
+    }
 }
 
 pub fn run<P>(
@@ -144,6 +158,8 @@ pub fn restore(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::run_with;
 
@@ -182,6 +198,33 @@ mod tests {
         assert_eq!(
             calls.into_inner(),
             ["snapshot", "prepare", "focus", "action", "restore"]
+        );
+    }
+
+    /// The desktop is the user's, whatever happens to the action: a panic must
+    /// still give the focus and the cursor back before it leaves the process.
+    #[test]
+    #[expect(clippy::panic, reason = "the panicking action is what this covers")]
+    fn a_panicking_action_still_restores_the_desktop_before_unwinding() {
+        let restored = AtomicBool::new(false);
+
+        let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_with(
+                || Ok::<_, ()>("desktop"),
+                || Ok::<_, ()>("target"),
+                || Ok(()),
+                |_| panic!("the action blew up"),
+                |_, _, _| {
+                    restored.store(true, Ordering::SeqCst);
+                    Ok("restored")
+                },
+            )
+        }));
+
+        assert!(panicked.is_err(), "the panic must not be swallowed");
+        assert!(
+            restored.load(Ordering::SeqCst),
+            "the desktop was not restored"
         );
     }
 }
