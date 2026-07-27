@@ -138,6 +138,10 @@ scripts/publish-live <skill-name>...
 The shared publisher refuses dirty, detached, non-default, divergent, or
 unpushed source and verifies the installed content before succeeding.
 
+This covers a skill that is already published. A skill published for the first
+time has no store yet, so `publish-live` fails on its own: follow the
+`## First publication` section of [`skill-sync`](skill-sync/SKILL.md).
+
 ## License
 
 [MIT](LICENSE)
