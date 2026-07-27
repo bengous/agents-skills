@@ -14,7 +14,7 @@ use crate::session;
 use crate::{hypr, session::ModeState};
 
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(150);
-/// §5: every capture, shared or isolated, runs under a bounded deadline — grim
+/// Every capture, shared or isolated, runs under a bounded deadline — grim
 /// blocks for ever on a compositor that stopped answering screencopy, and no
 /// `wait` loop timeout can interrupt that.
 const CAPTURE_ESCALATION: session::Escalation = session::Escalation {
@@ -173,7 +173,7 @@ fn grim(display: Option<&str>, args: &[&str], blocked: &Blocked) -> Result<(), E
         .stderr(Stdio::piped());
     if let Some(display) = display {
         // The agent desktop's own socket: grim then talks to the nested
-        // compositor, in the nested layout's coordinates (§5).
+        // compositor, in the nested layout's coordinates.
         command.env("WAYLAND_DISPLAY", display);
     }
     let mut child = command.spawn().map_err(|source| Error::Io {
@@ -197,7 +197,7 @@ fn grim(display: Option<&str>, args: &[&str], blocked: &Blocked) -> Result<(), E
 }
 
 /// What a blocked capture means, which differs by mode: in an agent desktop it
-/// has one documented cause (fact §2.2).
+/// has one documented cause.
 enum Blocked {
     Host {
         output: String,
@@ -275,7 +275,7 @@ fn ensure_capture_visible(expected_workspace: &str, monitor: &hypr::Monitor) -> 
 impl Frame {
     /// Routed by mode before the first compositor read: an agent desktop is
     /// captured through its own compositor, so asking the host would produce a
-    /// plausible, wrong image (§5).
+    /// plausible, wrong image.
     fn for_session(name: &str, full: bool) -> Result<Self, Error> {
         let session = session::load(name)?;
         match &session.state {
@@ -309,8 +309,8 @@ impl Frame {
         })
     }
 
-    /// §5: grim on the nested compositor's display, framed on the session's
-    /// window inside it; `--full` is the whole agent desktop.
+    /// Grim on the nested compositor's display, framed on the session's window
+    /// inside it; `--full` is the whole agent desktop.
     fn agent(name: &str, isolated: &session::Isolated, full: bool) -> Result<Self, Error> {
         let target = isolated::capture_target(name, isolated)?;
         let geometry = if full {
@@ -450,12 +450,11 @@ pub fn parse_timeout(raw: &str) -> Result<Duration, Error> {
     Duration::try_from_secs_f64(value).map_err(|_| invalid())
 }
 
-/// §4.7 of the isolated design: `ready` means the window is capturable, so an
-/// agent desktop start proves it with a real capture through the socket it just
-/// recorded rather than inferring it from what the compositors answer. The image
-/// is thrown away — what it proves is that grim reached that `WAYLAND_DISPLAY`
-/// and got a frame out of it, which is what a socket attributed to the wrong
-/// instance fails at.
+/// `ready` means the window is capturable, so an agent desktop start proves it
+/// with a real capture through the socket it just recorded rather than
+/// inferring it from what the compositors answer. The image is thrown away —
+/// what it proves is that grim reached that `WAYLAND_DISPLAY` and got a frame
+/// out of it, which is what a socket attributed to the wrong instance fails at.
 pub fn probe(session_name: &str) -> Result<(), Error> {
     let frame = Frame::for_session(session_name, false)?;
     let dir = session::session_dir(session_name)?;
@@ -703,7 +702,7 @@ mod tests {
         assert!(!a.identical(&b));
     }
 
-    /// The real deadline is 5s (§5); these tests need the same ladder, faster.
+    /// The real deadline is 5s; these tests need the same ladder, faster.
     const TEST_ESCALATION: Escalation = Escalation {
         polite: Duration::from_millis(60),
         term: Duration::from_millis(60),
@@ -833,7 +832,7 @@ mod tests {
 
         assert!(error.contains("produced no frame within 7000ms"), "{error}");
         assert!(error.contains("SIGKILL"), "{error}");
-        // Fact §2.2 and the documented host-side fallback (§5).
+        // The frame-callback cause and the documented host-side fallback.
         assert!(error.contains("frame callbacks"), "{error}");
         assert!(error.contains("grim -o hyprpilot-alpha"), "{error}");
     }

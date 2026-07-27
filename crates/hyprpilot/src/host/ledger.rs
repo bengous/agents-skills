@@ -76,8 +76,8 @@ pub enum Undo {
     Impossible { what: String, remedy: &'static str },
 }
 
-/// The cursor-preserving output removal both modes' teardown already share
-/// (fact §2.8), as a type so the seam below stays readable.
+/// The cursor-preserving output removal both modes' teardown already share, as
+/// a type so the seam below stays readable.
 type RemoveOutput<'a> =
     &'a dyn Fn(&str, Option<(i32, i32)>) -> Result<session::OutputRemoval, Error>;
 
@@ -130,8 +130,8 @@ impl HostMutation {
 
     /// How this mutation comes back. `cursor` is the position to warp back to
     /// when `output remove` re-centres it and `cursorpos` cannot be read at the
-    /// last moment (fact §2.8): a rolled-back start passes the snapshot it took
-    /// before its first mutation, a teardown has none to offer.
+    /// last moment: a rolled-back start passes the snapshot it took before its
+    /// first mutation, a teardown has none to offer.
     ///
     /// Only the output removal propagates an `Err`, because it is the one undo
     /// whose failure must stop the caller — the session state has to survive for

@@ -39,8 +39,8 @@ const VERIFIED_PLACEMENT_READS: u8 = 2;
 
 /// Bounded escalation for anything this crate has to bring down: the polite
 /// request gets `polite`, then `SIGTERM`, then `SIGKILL`, then the caller gives
-/// up. Shared by the agent desktop's exit (§6) and by a blocked capture (§5);
-/// the timings are parameters so the ladder is testable without a live process.
+/// up. Shared by the agent desktop's exit and by a blocked capture; the timings
+/// are parameters so the ladder is testable without a live process.
 #[derive(Debug, Clone, Copy)]
 pub struct Escalation {
     pub polite: Duration,
@@ -140,7 +140,7 @@ pub struct Isolated {
     /// (`session show`).
     pub shown: bool,
     /// Address, inside the instance, of the window commands act on. `None`
-    /// until the app is launched (§4.7).
+    /// until the app is launched.
     pub active_address: Option<String>,
     pub instance: Instance,
     /// Every durable change this start made to the user's compositor, written
@@ -159,9 +159,9 @@ pub enum Instance {
     Pending,
     /// The compositor registered itself in the host's instance table, but the
     /// console window it maps has not been identified yet. The signature is
-    /// what names the runtime directory it already leaves behind (fact §2.9):
-    /// without this stage a start killed between the two persists `Pending`,
-    /// and that directory has no name left to remove it by.
+    /// what names the runtime directory it already leaves behind: without this
+    /// stage a start killed between the two persists `Pending`, and that
+    /// directory has no name left to remove it by.
     Spawned { signature: String },
     Live {
         /// `HYPRLAND_INSTANCE_SIGNATURE` of the nested compositor.
@@ -175,8 +175,8 @@ pub enum Instance {
     },
 }
 
-/// Why an agent desktop is the only session that can be revealed or hidden
-/// (§5): a shared session drives windows the user is already looking at.
+/// Why an agent desktop is the only session that can be revealed or hidden: a
+/// shared session drives windows the user is already looking at.
 const AGENT_ONLY_HINT: &str = "it moves the console window of a nested agent desktop between its \
                                hidden headless output and the user's workspace; a shared session \
                                drives the user's own windows, which are already on their desktop";
@@ -1842,7 +1842,7 @@ pub fn target(
     let mut session = load(name)?;
     // Routed before the first compositor read, so an isolated session resolves
     // its target among the clients of its own instance instead of on a host
-    // query that means nothing to it (§5).
+    // query that means nothing to it.
     if let ModeState::Isolated(isolated) = &mut session.state {
         return crate::isolated::target(
             name,
@@ -1952,16 +1952,15 @@ pub fn resize(name: &str, size: &str) -> Result<String, Error> {
     ))
 }
 
-/// `session show` (§5): the console window of the agent desktop goes to the
-/// workspace the user is on. Shared mode gets its own refusal, not a
-/// "not implemented".
+/// `session show`: the console window of the agent desktop goes to the
+/// workspace the user is on. Shared mode gets its own refusal, not a "not
+/// implemented".
 pub fn show(name: &str) -> Result<String, Error> {
     on_agent_desktop(name, "session show", crate::isolated::show)
 }
 
-/// `session hide` (§5): the console goes back to `agent-<name>`, which must
-/// stay the active workspace of the headless output or every later capture
-/// freezes (fact §2.2).
+/// `session hide`: the console goes back to `agent-<name>`, which must stay the
+/// active workspace of the headless output or every later capture freezes.
 pub fn hide(name: &str) -> Result<String, Error> {
     on_agent_desktop(name, "session hide", crate::isolated::hide)
 }
@@ -1993,7 +1992,7 @@ pub fn claim_preflight(name: &str, path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// The shared output is a singleton (§3), so only isolated sessions may run
+/// The shared output is a singleton, so only isolated sessions may run
 /// alongside another session.
 fn refuse_second_shared_session(name: &str) -> Result<(), Error> {
     if let Some(other) = find_shared_session_in(&sessions_dir()?, name)? {
@@ -2152,13 +2151,13 @@ pub struct OutputRemoval {
 }
 
 /// Removes an output this crate created and puts the user's cursor back where
-/// it was: `hyprctl output remove` re-centres it (fact §2.8 of the isolated
-/// design), and reading `cursorpos` immediately before the removal restores it
-/// to the pixel. This is the one mechanism both modes' teardown use — it is
-/// what lifts the v2 limitation "teardown does not restore the cursor".
+/// it was: `hyprctl output remove` re-centres it, and reading `cursorpos`
+/// immediately before the removal restores it to the pixel. This is the one
+/// mechanism both modes' teardown use — it is what lifts the v2 limitation
+/// "teardown does not restore the cursor".
 ///
-/// An output already gone is an idempotent success (§6), and needs no warp:
-/// nothing moved the cursor. `fallback` is the position to warp back to when
+/// An output already gone is an idempotent success, and needs no warp: nothing
+/// moved the cursor. `fallback` is the position to warp back to when
 /// `cursorpos` cannot be read at the last moment; the isolated start passes the
 /// snapshot it took before its first mutation.
 pub fn remove_output_restoring_cursor(
@@ -2357,8 +2356,8 @@ enum WindowAction {
 }
 
 /// A process group already gone is an idempotent success, like every other
-/// teardown step (§6): `--kill` now runs even when the window disappeared
-/// first, which is exactly when the group is most often already dead.
+/// teardown step: `--kill` now runs even when the window disappeared first,
+/// which is exactly when the group is most often already dead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GroupKill {
     Signalled,
@@ -2785,7 +2784,7 @@ fn sweep_orphan_output() -> Result<String, Error> {
     let clients = hypr::clients()?;
     ensure_output_empty(output, &monitors, &clients, UnplacedClients::Refuse)?;
     // The orphan sweep removes an output too, so it owes the user the same
-    // cursor (fact §2.8).
+    // cursor.
     let removal = remove_output_restoring_cursor(OUTPUT_NAME, None)?;
     let summary = format!(
         "no active session, removed empty orphan output {OUTPUT_NAME} — {}",
@@ -2809,7 +2808,7 @@ enum StateLocation {
     PreV3(PathBuf),
 }
 
-/// State already gone is an idempotent success (§6).
+/// State already gone is an idempotent success.
 fn clear_state(location: &StateLocation) -> Result<(), Error> {
     let (path, result) = match location {
         StateLocation::Session(dir) => (dir, fs::remove_dir_all(dir)),
@@ -2838,10 +2837,10 @@ fn legacy_ledger(output_name: &str, output_created: bool) -> Vec<HostMutation> {
     }
 }
 
-/// The last two steps both modes share (§6.4 and §6.5): the host ledger is
-/// unwound, the output goes with the cursor put back, then the state.
-/// `failures` carries what earlier steps could not undo, so the message reports
-/// every one of them at once.
+/// The last two steps both modes share: the host ledger is unwound, the output
+/// goes with the cursor put back, then the state. `failures` carries what
+/// earlier steps could not undo, so the message reports every one of them at
+/// once.
 fn finish_teardown(
     location: &StateLocation,
     output_name: &str,
@@ -2886,7 +2885,7 @@ fn finish_teardown(
 }
 
 /// An agent desktop has no window dispositions to choose from, so the shared
-/// flags are refused rather than silently ignored (§6.1).
+/// flags are refused rather than silently ignored.
 fn refuse_teardown_flags(kill: bool, close: bool) -> Result<(), Error> {
     let flag = if kill {
         "--kill"
@@ -2915,7 +2914,7 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
                     finish_teardown(&location, &shared.output, &shared.host, notes, Vec::new())
                 }
                 // The whole desktop goes: the instance dies first, then the
-                // output it rendered into, in that order only (§6).
+                // output it rendered into, in that order only.
                 ModeState::Isolated(isolated) => {
                     refuse_teardown_flags(kill, close)?;
                     let brought_down = crate::isolated::teardown(name, isolated)?;
@@ -3660,8 +3659,8 @@ mod tests {
 
     #[test]
     fn the_cursor_check_of_teardown_keeps_the_warp_tolerance() {
-        // §6.4 verifies the restored cursor with the tolerance the warps already
-        // use, never with an exact compare.
+        // Teardown verifies the restored cursor with the tolerance the warps
+        // already use, never with an exact compare.
         assert_eq!(guard::WARP_TOLERANCE, 1);
         assert!(guard::cursor_near((4652, 1066), (4652, 1066)));
         assert!(guard::cursor_near((4653, 1067), (4652, 1066)));

@@ -21,7 +21,7 @@ pub struct ActiveWorkspace {
 
 /// The workspace the user is on, with the monitor showing it: `session show`
 /// needs both, since a waybar click can leave the focus on an agent desktop's
-/// own headless output (§7 of the isolated design).
+/// own headless output.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FocusedWorkspace {
     pub name: String,
@@ -269,9 +269,9 @@ pub fn monitors() -> Result<Vec<Monitor>, Error> {
 }
 
 /// Every workspace the host knows, by name. The isolated start snapshots this
-/// before it creates its output: a workspace that already existed belongs to the
-/// user, whatever it holds, so only one the new output brought with it may be
-/// renamed (§12.1 of the isolated design).
+/// before it creates its output: a workspace that already existed belongs to
+/// the user, whatever it holds, so only one the new output brought with it may
+/// be renamed.
 pub fn workspace_names() -> Result<BTreeSet<String>, Error> {
     let workspaces: Vec<WorkspaceRef> = run_json_on(Ctl::Host, &["workspaces"])?;
     Ok(workspaces
@@ -346,8 +346,8 @@ pub(in crate::host) fn output_remove(name: &str) -> Result<(), Error> {
 }
 
 /// Mode-set rule for a headless output. The trailing `1` forces scale 1: a
-/// headless output otherwise inherits a non-trivial scale from the layout
-/// (fact §2.10 of the isolated design), which would skew every coordinate.
+/// headless output otherwise inherits a non-trivial scale from the layout,
+/// which would skew every coordinate.
 pub fn headless_monitor_rule(name: &str, width: u32, height: u32) -> String {
     format!("{name},{width}x{height}@60,auto,1")
 }

@@ -241,9 +241,9 @@ pub fn run() -> Result<String, Error> {
     let cli = Cli::parse();
     // The precondition of every command, not only of a start: inside an agent
     // desktop `hyprctl` answers for the nested compositor — an output created
-    // there stays 0x0 (fact §2.7) and captures of it are silently blank — and
-    // every process around, this one's own shell included, carries that desktop's
-    // session marker.
+    // there stays 0x0 and captures of it are silently blank — and every process
+    // around, this one's own shell included, carries that desktop's session
+    // marker.
     isolated::refuse_when_nested()?;
     let session_name = session::resolve_name(cli.session.as_deref())?;
     let name = session_name.as_str();
@@ -342,8 +342,8 @@ enum WindowSession {
     Absent,
     Shared(session::Shared),
     /// An agent desktop records one window at a time instead of a list of
-    /// adopted ones (§5), so the recorded window is both the tracked and the
-    /// active one.
+    /// adopted ones, so the recorded window is both the tracked and the active
+    /// one.
     Agent(Option<String>),
     Unknown,
 }
@@ -446,9 +446,9 @@ fn windows(name: &str) -> Result<String, Error> {
     serialize_windows(&clients, focused.as_ref(), &session)
 }
 
-/// §5: the clients of the instance, with the same fields and the same
-/// annotations as on the host. `focused` comes from the instance's own active
-/// window, so it answers about the agent desktop's seat and not the user's.
+/// The clients of the instance, with the same fields and the same annotations
+/// as on the host. `focused` comes from the instance's own active window, so it
+/// answers about the agent desktop's seat and not the user's.
 fn agent_windows(name: &str, isolated: &session::Isolated) -> Result<String, Error> {
     let ctl = isolated::live_instance(name, isolated)?.ctl();
     let clients = hypr::clients_on(ctl)?;
@@ -463,14 +463,14 @@ fn agent_windows(name: &str, isolated: &session::Isolated) -> Result<String, Err
 fn status(name: &str) -> Result<String, Error> {
     let session = session::load(name)?;
     // Routed before the first compositor read: an agent desktop's geometry is
-    // read inside its own instance, never on the host (§5).
+    // read inside its own instance, never on the host.
     match &session.state {
         session::ModeState::Shared(shared) => shared_status(&session, shared),
         session::ModeState::Isolated(isolated) => agent_status(name, &session, isolated),
     }
 }
 
-/// §5: mode, session, instance identity, show/hide state, the configured and
+/// Mode, session, instance identity, show/hide state, the configured and
 /// effective size of the agent desktop, and the geometry of its window as the
 /// *instance* reports it. The keys are a contract, asserted by a test.
 fn agent_status(
@@ -491,7 +491,7 @@ fn agent_status(
         session,
         isolated,
         instance,
-        // The nested config gives an agent desktop exactly one output (§4.4).
+        // The nested config gives an agent desktop exactly one output.
         outputs.first(),
         window,
         host_output.as_ref(),
@@ -544,8 +544,8 @@ fn agent_status_value(
             "active_workspace": monitor.active_workspace.name,
             "special_workspace": monitor.special_workspace,
         })),
-        // The host side of fact §2.2: captures only work while `workspace` is
-        // the active one on this output.
+        // The host side of the frame-callback invariant: captures only work
+        // while `workspace` is the active one on this output.
         "output": host_output.map(|monitor| serde_json::json!({
             "id": monitor.id,
             "name": monitor.name,
@@ -711,9 +711,9 @@ struct AgentProbe {
     sessions_dir: PathBuf,
     sessions_writable: bool,
     /// `$XDG_RUNTIME_DIR/hypr`, where every compositor keeps its instance
-    /// directory and its `.socket.sock`: a start discovers its nested compositor
-    /// by diffing this directory (§4.5) and every `hyprctl -i` reaches it through
-    /// the socket inside.
+    /// directory and its `.socket.sock`: a start discovers its nested
+    /// compositor by diffing this directory and every `hyprctl -i` reaches it
+    /// through the socket inside.
     instances_dir: PathBuf,
     instances_listable: bool,
     /// Whether the *host's* own instance socket is in there, i.e. whether that
@@ -1077,8 +1077,8 @@ mod tests {
 
         assert!(isolated);
         assert_eq!(session.as_deref(), Some("agent-1"));
-        // An agent desktop defaults to 1920x1080 (spec §4.2), the shared output
-        // to 1600x1000, and an explicit `--size` wins over both.
+        // An agent desktop defaults to 1920x1080, the shared output to
+        // 1600x1000, and an explicit `--size` wins over both.
         assert_eq!(session::parse_size(&size)?, (1920, 1080));
         assert_eq!(started_size(&["--match-title", "T"])?, (1600, 1000));
         assert_eq!(
@@ -1264,7 +1264,7 @@ mod tests {
         let host = clients_rows(&clients, Some(&clients[1]), &WindowSession::Absent)?;
         let agent = clients_rows(
             &clients,
-            // `focused` comes from the *instance's* active window (§5).
+            // `focused` comes from the *instance's* active window.
             Some(&clients[3]),
             &WindowSession::Agent(Some(clients[1].address.clone())),
         )?;
@@ -1430,7 +1430,8 @@ mod tests {
         assert_eq!(value["configured_size"], serde_json::json!([1920, 1080]));
         assert_eq!(value["effective_size"], serde_json::json!([1600.0, 1000.0]));
         assert_eq!(value["size_mismatch"], true);
-        // The host side of fact §2.2 is readable from `output` alone.
+        // The host side of the frame-callback invariant is readable from
+        // `output` alone.
         assert_eq!(value["output"]["name"], "headless-ci");
         assert_eq!(value["output"]["active_workspace"], "proto");
         Ok(())
@@ -1516,9 +1517,10 @@ mod tests {
         assert!(report.contains("session start --isolated"), "{report}");
         assert!(report.contains("is not writable"), "{report}");
 
-        // §5 lists the sockets: a start discovers its nested compositor by diffing
-        // $XDG_RUNTIME_DIR/hypr, and every `hyprctl -i` reaches it through the
-        // socket inside — neither is possible if that directory cannot be read.
+        // `doctor` lists the sockets: a start discovers its compositor by
+        // diffing $XDG_RUNTIME_DIR/hypr, and every `hyprctl -i` reaches it
+        // through the socket inside — neither is possible if that directory
+        // cannot be read.
         let report = lines(&probe(true, Some("Hyprland 0.56.0"), true))?;
         assert!(
             report.contains("ok    /run/user/1000/hypr is listable"),
