@@ -24,6 +24,32 @@ fi
 SCENARIOS=()
 SCENARIO_LINES=()
 
+# Exit status of a scenario, or of the whole gate, that did not run: green means
+# "the behaviour was exercised and held", and coverage that never ran is neither
+# green nor a defect. `main` keeps it distinct from a failure so an explicitly
+# requested gate cannot look passed while it did nothing.
+readonly SKIP_STATUS=3
+
+# What a scenario subshell exits with when a signal reached it: its own traps
+# turn INT and TERM into these, and an interrupted run is neither a pass nor a
+# defect of the crate.
+readonly INT_STATUS=130
+readonly TERM_STATUS=143
+
+# One run of this gate at a time on a machine: two of them share the user's
+# desktop, the reserved workspaces and the single shared session, so the second
+# one would tear down the first one's windows.
+readonly GATE_LOCK="${XDG_RUNTIME_DIR:-}/hyprpilot-e2e-gate.lock"
+
+# Suffix that makes every window this run creates its own, so a scenario can
+# never attach to — and then close — a window that was already on the desktop
+# under the same name.
+readonly RUN_TAG=$$
+
+# Set by the top-level INT/TERM trap; the runner stops after the scenario that
+# was in flight has cleaned up.
+GATE_ABORTED=""
+
 fail() {
 	printf 'FAIL: %s\n' "$*"
 }
@@ -32,9 +58,26 @@ note() {
 	printf 'NOTE: %s\n' "$*"
 }
 
+# A scenario that drops one of its assertions and keeps going still prints PASS,
+# so the drop has to leave a trace the runner can count: a scenario runs in a
+# subshell and cannot touch a counter of its parent, hence the file.
+note_degraded() {
+	note "$*"
+	[[ -n ${GATE_DEGRADED_LOG:-} ]] || return 0
+	printf '%s\n' "$*" >>"${GATE_DEGRADED_LOG}" || true
+}
+
+degraded_count() {
+	[[ -n ${GATE_DEGRADED_LOG:-} && -s ${GATE_DEGRADED_LOG} ]] || {
+		printf '0'
+		return 0
+	}
+	wc -l <"${GATE_DEGRADED_LOG}" | tr -d ' '
+}
+
 skip() {
 	printf 'SKIP: %s\n' "$*"
-	exit 0
+	exit "${SKIP_STATUS}"
 }
 
 read_active_address() {
@@ -1574,7 +1617,7 @@ assert_console_reaped_before_output() {
 	fi
 	removal=$(grep -n -m1 -e "^monitorremoved.*${output}" -- "${path}") || removal=""
 	if [[ -z ${removal} ]]; then
-		note "${label}: aucun evenement monitorremoved pour ${output}, preuve d'ordre indisponible"
+		note_degraded "${label}: aucun evenement monitorremoved pour ${output}, preuve d'ordre indisponible"
 		return 0
 	fi
 	close=$(grep -n -m1 -e "^closewindow>>.*${suffix}" -- "${path}") || close=""
@@ -1664,6 +1707,9 @@ scenario_start_offscreen() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -1872,7 +1918,7 @@ scenario_start_offscreen() (
 scenario_windows_ambiguous() (
 	local cleanup_failed=0
 	local zenity_one_pid="" zenity_two_pid=""
-	local title=hyprpilot-e2e-ambiguous
+	local title="hyprpilot-e2e-ambiguous-${RUN_TAG}"
 	local addresses_json="" command_output="" cleanup_output="" last_line=""
 	local windows_json="" active_address="" session_file=""
 
@@ -1898,6 +1944,9 @@ scenario_windows_ambiguous() (
 			cleanup_failed=1
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2021,6 +2070,9 @@ scenario_target_lifecycle() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2189,6 +2241,9 @@ scenario_target_close() (
 			cleanup_failed=1
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2277,6 +2332,7 @@ scenario_target_close() (
 
 scenario_guard_click() (
 	local scenario_tmp=""
+	local title="hyprpilot-e2e-guard-${RUN_TAG}"
 	local cleanup_failed=0
 	local before_focus after_focus before_x before_y after_x after_y
 	local delta_x delta_y command_output cleanup_output
@@ -2311,6 +2367,9 @@ scenario_guard_click() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2382,8 +2441,8 @@ scenario_guard_click() (
 
 	if ! command_output=$(
 		"${HYPRPILOT}" session start \
-			--app "zenity --entry --title=hyprpilot-e2e-guard" \
-			--match-title hyprpilot-e2e-guard 2>&1
+			--app "zenity --entry --title=${title}" \
+			--match-title "${title}" 2>&1
 	); then
 		fail "session start guard_click observe=echec (${command_output}); attendu=succes"
 		return 1
@@ -2502,6 +2561,9 @@ scenario_focus_type() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2645,6 +2707,9 @@ scenario_resize() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2787,7 +2852,7 @@ scenario_resize() (
 scenario_teardown_restore() (
 	local cleanup_failed=0
 	local zenity_pid="" window_address=""
-	local title=hyprpilot-e2e-teardown-restore
+	local title="hyprpilot-e2e-teardown-restore-${RUN_TAG}"
 	local command_output cleanup_output attempt
 	local initial_x initial_y initial_width initial_height initial_workspace
 	local initial_floating initial_monitor monitor_x monitor_y
@@ -2816,6 +2881,9 @@ scenario_teardown_restore() (
 			cleanup_failed=1
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -2952,7 +3020,7 @@ scenario_teardown_restore() (
 
 scenario_teardown_kill() (
 	local cleanup_failed=0
-	local title=hyprpilot-e2e-teardown-kill
+	local title="hyprpilot-e2e-teardown-kill-${RUN_TAG}"
 	local command_output cleanup_output status_json spawned_pid="" window_address=""
 	local status_window_re status_pid_re attempt process_gone=0
 
@@ -2974,6 +3042,9 @@ scenario_teardown_kill() (
 			cleanup_failed=1
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3033,7 +3104,7 @@ scenario_teardown_kill() (
 
 scenario_teardown_corrupt() (
 	local cleanup_failed=0
-	local title=hyprpilot-e2e-teardown-corrupt
+	local title="hyprpilot-e2e-teardown-corrupt-${RUN_TAG}"
 	local command_output status_json spawned_pid="" window_address="" session_file=""
 	local status_window_re status_pid_re
 	local before_x before_y before_width before_height before_workspace before_floating before_monitor
@@ -3045,7 +3116,10 @@ scenario_teardown_corrupt() (
 		local monitors cleanup_output
 		trap - EXIT INT TERM
 
-		if [[ -n ${window_address} ]] && client_present "${window_address}"; then
+		# Only ever the window this scenario spawned: an empty spawned_pid means
+		# `session start` attached to a window that was already on the desktop,
+		# and closing that one destroys the user's work.
+		if [[ -n ${spawned_pid} && -n ${window_address} ]] && client_present "${window_address}"; then
 			hyprctl dispatch closewindow "address:${window_address}" >/dev/null 2>&1 ||
 				cleanup_failed=1
 		fi
@@ -3072,6 +3146,9 @@ scenario_teardown_corrupt() (
 			cleanup_failed=1
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3193,6 +3270,9 @@ scenario_shared_teardown_cursor() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3275,6 +3355,9 @@ scenario_isolated_start_bad_size() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3374,6 +3457,9 @@ scenario_isolated_start_match_failure() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3407,7 +3493,7 @@ scenario_isolated_start_match_failure() (
 	if start_host_event_tap tap_pid "${tap_log}"; then
 		tap_ready=1
 	else
-		note "isolated_start_match_failure: socket2 non observable (socat absent?), preuve d'ordre remplacee par l'echantillonnage seul"
+		note_degraded "isolated_start_match_failure: socket2 non observable (socat absent?), preuve d'ordre remplacee par l'echantillonnage seul"
 	fi
 	move_cursor_offcenter offcenter_x offcenter_y \
 		"precondition curseur isolated_start_match_failure" || return 1
@@ -3488,7 +3574,7 @@ scenario_isolated_start_match_failure() (
 	tap_pid=""
 	if ((tap_ready == 1)); then
 		if [[ -z ${console_address} ]]; then
-			note "isolated_start_match_failure: console jamais nommee dans l'etat, preuve d'ordre indisponible"
+			note_degraded "isolated_start_match_failure: console jamais nommee dans l'etat, preuve d'ordre indisponible"
 		else
 			assert_console_reaped_before_output "${tap_log}" "hyprpilot-${session}" \
 				"${console_address}" "rollback isolated_start_match_failure" || return 1
@@ -3526,6 +3612,9 @@ scenario_isolated_output() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3562,7 +3651,7 @@ scenario_isolated_output() (
 			fail "session start isolated_output observe=echec (${command_output}); attendu=output hyprpilot-${session} cree"
 			return 1
 		fi
-		note "isolated_output: start incomplet (${command_output}); output en place, assertions poursuivies"
+		note_degraded "isolated_output: start incomplet (${command_output}); output en place, assertions poursuivies"
 	fi
 
 	read_named_output "hyprpilot-${session}" output_width output_height output_scale \
@@ -3622,6 +3711,9 @@ scenario_isolated_spawn() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3716,6 +3808,9 @@ scenario_isolated_config_clean() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3791,6 +3886,9 @@ scenario_isolated_teardown() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -3909,6 +4007,9 @@ scenario_isolated_no_marked_survivor() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4004,6 +4105,9 @@ scenario_isolated_app() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4097,6 +4201,9 @@ scenario_isolated_shot() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4228,6 +4335,9 @@ scenario_isolated_input() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4359,6 +4469,9 @@ scenario_isolated_target() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4520,6 +4633,9 @@ scenario_isolated_show_hide() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4668,6 +4784,9 @@ scenario_isolated_show_occluded() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4814,6 +4933,9 @@ scenario_isolated_status() (
 		fi
 		restore_cursor_best_effort "${entry_x}" "${entry_y}"
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -4949,6 +5071,9 @@ scenario_isolated_nested_killed() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -5112,6 +5237,9 @@ scenario_host_intact() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -5238,6 +5366,9 @@ scenario_isolated_parallel() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -5457,6 +5588,9 @@ scenario_isolated_start_concurrent() (
 			fi
 		fi
 
+		if ((scenario_status == SKIP_STATUS && cleanup_failed == 0)); then
+			exit "${SKIP_STATUS}"
+		fi
 		if ((scenario_status != 0 || cleanup_failed != 0)); then
 			exit 1
 		fi
@@ -5662,11 +5796,66 @@ preflight() {
 	done
 	[[ -x ${HYPRPILOT} ]] ||
 		skip "binaire hyprpilot absent ou non executable: ${HYPRPILOT}; lancez cargo build --release -p hyprpilot"
+	refuse_foreign_session
+	# The same baseline the runner demands between scenarios: an output left by
+	# a crashed run makes the first scenario compute output_created=false, and
+	# its teardown then declines to remove the very output that broke it.
+	desktop_is_back_to_baseline "prevol" || exit 1
+}
+
+# Every scenario cleans up with `hyprpilot teardown --kill`, which takes down
+# whatever session is active — so a session this run did not create must stop the
+# gate before its first side effect, not be killed by its first cleanup.
+refuse_foreign_session() {
+	local sessions_dir="${XDG_RUNTIME_DIR:-}/hyprpilot/sessions"
+	local entry name
+
+	[[ -n ${XDG_RUNTIME_DIR:-} && -d ${sessions_dir} ]] || return 0
+	for entry in "${sessions_dir}"/*/session.json; do
+		[[ -e ${entry} ]] || continue
+		name=${entry%/session.json}
+		name=${name##*/}
+		fail "prevol: session hyprpilot deja active (${name}); le gate demonte des sessions, il ne peut pas partager la machine avec la votre. Lancez 'hyprpilot --session ${name} teardown' d'abord"
+		exit 1
+	done
+	if [[ -e "${XDG_RUNTIME_DIR}/hyprpilot/session.json" ]]; then
+		fail "prevol: etat hyprpilot pre-v3 present (${XDG_RUNTIME_DIR}/hyprpilot/session.json); lancez 'hyprpilot teardown' d'abord"
+		exit 1
+	fi
+}
+
+# A window living on a workspace the crate reserves is dragged to the headless
+# output with it, and rehomed wherever the compositor pleases when that output
+# goes. It is the user's window, so the gate refuses to start on it — and refuses
+# to keep going if a scenario put one there.
+reserved_workspaces_are_empty() {
+	local label=$1
+	local clients workspace occupied
+
+	if ! clients=$(hyprctl clients -j 2>&1); then
+		fail "${label}: hyprctl clients observe=erreur (${clients}); attendu=JSON"
+		return 1
+	fi
+	for workspace in hyprpilot special:hyprpilot-parked; do
+		if ! occupied=$(jq -r --arg ws "${workspace}" \
+			'[.[] | select(.workspace.name == $ws) | .address] | join(" ")' \
+			<<<"${clients}"); then
+			fail "${label}: lecture du workspace ${workspace} observe=jq en echec; attendu=liste"
+			return 1
+		fi
+		if [[ -n ${occupied} ]]; then
+			fail "${label}: workspace reserve ${workspace} observe=occupe par ${occupied}; attendu=vide"
+			return 1
+		fi
+	done
 }
 
 main() {
-	local requested scenario
+	local requested scenario status
 	local failures=0
+	local skipped=0
+	local passed=0
+	local degraded=0
 	local requested_known=0
 
 	discover_scenarios
@@ -5684,21 +5873,133 @@ main() {
 		return 2
 	fi
 
+	trap 'gate_abort INT' INT
+	trap 'gate_abort TERM' TERM
+	hold_gate_lock
+	open_degraded_log
 	preflight
 	if [[ ${requested} != "all" ]]; then
-		"scenario_${requested}"
-		return
+		status=0
+		"scenario_${requested}" {GATE_LOCK_FD}>&- || status=$?
+		desktop_is_back_to_baseline "apres ${requested}" ||
+			fail "le bureau n'est pas revenu a son etat de depart apres ${requested}"
+		return "${status}"
 	fi
 
 	for scenario in "${SCENARIOS[@]}"; do
-		if "scenario_${scenario}"; then
+		status=0
+		"scenario_${scenario}" {GATE_LOCK_FD}>&- || status=$?
+		case "${status}" in
+		0)
 			printf 'PASS: %s\n' "${scenario}"
-		else
+			passed=$((passed + 1))
+			;;
+		"${SKIP_STATUS}")
+			printf 'SKIP: %s\n' "${scenario}"
+			skipped=$((skipped + 1))
+			;;
+		"${INT_STATUS}" | "${TERM_STATUS}")
+			printf 'ABORT: %s (signal recu pendant le scenario)\n' "${scenario}"
+			GATE_ABORTED=${GATE_ABORTED:-$((status == INT_STATUS ? 2 : 15))}
+			;;
+		*)
 			printf 'FAIL: %s\n' "${scenario}"
-			failures=1
+			failures=$((failures + 1))
+			;;
+		esac
+		# A scenario that left an output, a session or a reserved workspace
+		# behind has moved the ground the next one measures against: every
+		# later result would be about that debris, not about the crate.
+		if ! desktop_is_back_to_baseline "apres ${scenario}"; then
+			fail "suite interrompue: le bureau n'est pas revenu a son etat de depart apres ${scenario}"
+			((status == 0)) && failures=$((failures + 1))
+			break
+		fi
+		if [[ -n ${GATE_ABORTED} ]]; then
+			break
 		fi
 	done
-	return "${failures}"
+	degraded=$(degraded_count)
+	printf 'TOTAL: %d passes, %d echecs, %d non joues, %d assertions degradees (sur %d scenarios)\n' \
+		"${passed}" "${failures}" "${skipped}" "${degraded}" "${#SCENARIOS[@]}"
+	if [[ -n ${GATE_ABORTED} ]]; then
+		note "suite interrompue par un signal: la couverture est incomplete"
+		return "${INT_STATUS}"
+	fi
+	((failures == 0)) || return 1
+	# Coverage that did not run keeps the gate off green: it was asked to prove
+	# something, and part of it was never exercised — whether a whole scenario
+	# was skipped or a single assertion inside one was dropped.
+	((skipped == 0 && degraded == 0)) || return "${SKIP_STATUS}"
+	return 0
+}
+
+# What every scenario owes the next one: no session state, no output of the
+# reserved namespace, nothing on the reserved workspaces. Checked between
+# scenarios so a leak is attributed to the scenario that caused it.
+desktop_is_back_to_baseline() {
+	local label=$1
+	local monitors leftover
+
+	if ! monitors=$(hyprctl monitors -j 2>&1); then
+		fail "${label}: monitors observes=erreur hyprctl (${monitors}); attendu=liste"
+		return 1
+	fi
+	if ! leftover=$(jq -r '[.[] | select(.name | startswith("hyprpilot")) | .name] | join(" ")' \
+		<<<"${monitors}"); then
+		fail "${label}: lecture des outputs observe=jq en echec; attendu=liste"
+		return 1
+	fi
+	if [[ -n ${leftover} ]]; then
+		fail "${label}: output observe=${leftover}; attendu=aucun output hyprpilot*"
+		return 1
+	fi
+	if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+		leftover=$(find "${XDG_RUNTIME_DIR}/hyprpilot" -maxdepth 3 -name session.json 2>/dev/null |
+			tr '\n' ' ')
+		if [[ -n ${leftover// /} ]]; then
+			fail "${label}: etat observe=${leftover}; attendu=aucune session"
+			return 1
+		fi
+	fi
+	reserved_workspaces_are_empty "${label}"
+}
+
+# A signal aimed at this script alone would otherwise kill it while a scenario
+# subshell keeps driving the user's windows. Bash defers the trap until the
+# foreground scenario returns — which is exactly what is wanted: its own cleanup
+# runs first, then the suite stops.
+gate_abort() {
+	GATE_ABORTED=$1
+}
+
+# Where scenarios record an assertion they had to drop. Removed with the run, so
+# nothing of it outlives the gate.
+open_degraded_log() {
+	GATE_DEGRADED_LOG=$(mktemp -- "${XDG_RUNTIME_DIR}/hyprpilot-e2e-degraded.XXXXXX") || {
+		fail "prevol: journal des assertions degradees inaccessible"
+		exit 1
+	}
+	export GATE_DEGRADED_LOG
+	# shellcheck disable=SC2064 # The path must be expanded now, not at trap time.
+	trap "rm -f -- '${GATE_DEGRADED_LOG}'" EXIT
+}
+
+# `flock` on a descriptor the whole run holds: it goes when the script does,
+# whatever kills it.
+hold_gate_lock() {
+	[[ -n ${XDG_RUNTIME_DIR:-} ]] ||
+		skip "XDG_RUNTIME_DIR est vide: le gate ne sait pas ou poser son verrou"
+	command -v flock >/dev/null 2>&1 ||
+		skip "binaire flock absent du PATH: deux runs du gate se demonteraient mutuellement"
+	exec {GATE_LOCK_FD}>"${GATE_LOCK}" || {
+		fail "prevol: verrou du gate inaccessible (${GATE_LOCK})"
+		exit 1
+	}
+	if ! flock -n "${GATE_LOCK_FD}"; then
+		fail "prevol: un autre run du gate tient ${GATE_LOCK}; ils partagent le bureau et se demonteraient mutuellement"
+		exit 1
+	fi
 }
 
 main "$@"
