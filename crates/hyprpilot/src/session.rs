@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
 use crate::host;
+use crate::host::ledger::HostMutation;
 use crate::hypr;
 
 /// Shared mode drives the user's windows on this single output; it is a
@@ -26,7 +27,7 @@ use crate::hypr;
 pub const OUTPUT_NAME: &str = "hyprpilot";
 pub const WORKSPACE_NAME: &str = "hyprpilot";
 const PARKING_WORKSPACE_NAME: &str = "special:hyprpilot-parked";
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 pub const DEFAULT_SESSION_NAME: &str = "default";
 const SESSION_ENV: &str = "HYPRPILOT_SESSION";
 const SESSION_NAME_MAX: usize = 32;
@@ -94,12 +95,9 @@ pub enum Mode {
     Isolated,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shared {
     pub output: String,
-    /// False when an output with our name already existed and was reused —
-    /// teardown then leaves it in place.
-    pub output_created: bool,
     pub active_workspace: String,
     pub parking_workspace: String,
     pub size: [u32; 2],
@@ -111,6 +109,14 @@ pub struct Shared {
     pub primary_address: String,
     pub active_address: String,
     pub windows: Vec<TrackedWindow>,
+    /// Every durable change this session made to the user's compositor, in the
+    /// order it made them and written down before each was posed. It is what
+    /// says whether the shared output was created here or merely reused: the
+    /// `output_created` flag it replaced could be `true` with no `output create`
+    /// behind it, which is how a teardown ends up removing an output the user
+    /// had before the session.
+    #[serde(default)]
+    pub host: Vec<HostMutation>,
 }
 
 /// An agent desktop: a nested Hyprland whose console window lives on the
@@ -137,15 +143,26 @@ pub struct Isolated {
     /// until the app is launched (§4.7).
     pub active_address: Option<String>,
     pub instance: Instance,
+    /// Every durable change this start made to the user's compositor, written
+    /// down before each was posed. The rollback and the teardown both unwind it.
+    #[serde(default)]
+    pub host: Vec<HostMutation>,
 }
 
-/// The nested compositor is acquired after the output, so the state has to
-/// describe a session whose instance does not exist yet: `teardown` must be
-/// able to clean up either stage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The nested compositor is acquired in three steps, and the state has to
+/// describe a session stopped at any of them: `teardown` must be able to clean
+/// up whichever one it finds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "lowercase")]
 pub enum Instance {
+    #[default]
     Pending,
+    /// The compositor registered itself in the host's instance table, but the
+    /// console window it maps has not been identified yet. The signature is
+    /// what names the runtime directory it already leaves behind (fact §2.9):
+    /// without this stage a start killed between the two persists `Pending`,
+    /// and that directory has no name left to remove it by.
+    Spawned { signature: String },
     Live {
         /// `HYPRLAND_INSTANCE_SIGNATURE` of the nested compositor.
         signature: String,
@@ -224,7 +241,7 @@ pub struct SpawnedGroup {
     started_at_ticks: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackedWindow {
     pub address: String,
     /// Recorded at adoption next to the address, because the address alone is a
@@ -894,6 +911,94 @@ pub fn load(name: &str) -> Result<Session, Error> {
         }
         result => result,
     }
+}
+
+/// A session payload that carries a host ledger. One implementation per mode,
+/// so the write-ahead below is written once and neither mode can drift from it.
+pub trait Recorded: Clone {
+    fn ledger_mut(&mut self) -> &mut Vec<HostMutation>;
+    fn state(&self) -> ModeState;
+}
+
+impl Recorded for Shared {
+    fn ledger_mut(&mut self) -> &mut Vec<HostMutation> {
+        &mut self.host
+    }
+
+    fn state(&self) -> ModeState {
+        ModeState::Shared(self.clone())
+    }
+}
+
+impl Recorded for Isolated {
+    fn ledger_mut(&mut self) -> &mut Vec<HostMutation> {
+        &mut self.host
+    }
+
+    fn state(&self) -> ModeState {
+        ModeState::Isolated(self.clone())
+    }
+}
+
+/// A session payload and the file it lives in, tied together so a durable host
+/// mutation cannot be posed without first being written down. Both starts build
+/// one and drive every compositor change through `apply`.
+pub struct Ledger<'a, P: Recorded> {
+    path: &'a Path,
+    name: &'a str,
+    pub payload: P,
+}
+
+impl<'a, P: Recorded> Ledger<'a, P> {
+    pub fn new(path: &'a Path, name: &'a str, payload: P) -> Self {
+        Self {
+            path,
+            name,
+            payload,
+        }
+    }
+
+    fn session(&self) -> Session {
+        Session {
+            schema_version: SCHEMA_VERSION,
+            name: self.name.to_owned(),
+            state: self.payload.state(),
+        }
+    }
+
+    /// The atomic claim: the state already names every resource the start will
+    /// acquire, so `teardown` can clean up from here onwards.
+    pub fn claim(&self) -> Result<(), Error> {
+        save_new_to(self.path, &self.session())
+    }
+
+    pub fn record(&self) -> Result<(), Error> {
+        save_over(self.path, &self.session())
+    }
+
+    /// Write-ahead, and the one order that keeps the promise: the mutation is
+    /// in the state on disk *before* it is on the host. A crash in between
+    /// leaves a state claiming more than the compositor holds, and every undo
+    /// is idempotent, so `teardown` cleans up either way. The other order
+    /// leaves a mutation nothing records — the defect the ledger exists for.
+    pub fn apply(
+        &mut self,
+        mutation: HostMutation,
+        post: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.payload.ledger_mut().push(mutation);
+        self.record()?;
+        post()
+    }
+}
+
+/// Whether this session is the one that created its output, read off the ledger
+/// rather than off a flag beside it. A flag can say `true` with no
+/// `output create` behind it; an entry cannot.
+pub fn output_was_created(ledger: &[HostMutation]) -> bool {
+    ledger
+        .iter()
+        .any(|mutation| matches!(mutation, HostMutation::OutputCreated { .. }))
 }
 
 /// Persists an updated agent desktop payload. The schema version is this
@@ -1886,12 +1991,11 @@ pub fn start(
 
     let output_created = find_output(OUTPUT_NAME)?.is_none();
     let teardown = spawned.map_or(Disposition::Restore, |_| Disposition::Close);
-    let session = Session {
-        schema_version: SCHEMA_VERSION,
-        name: name.to_owned(),
-        state: ModeState::Shared(Shared {
+    let mut ledger = Ledger::new(
+        &path,
+        name,
+        Shared {
             output: OUTPUT_NAME.to_owned(),
-            output_created,
             active_workspace: WORKSPACE_NAME.to_owned(),
             parking_workspace: PARKING_WORKSPACE_NAME.to_owned(),
             size: [width, height],
@@ -1900,13 +2004,14 @@ pub fn start(
             primary_address: window.address.clone(),
             active_address: window.address.clone(),
             windows: vec![TrackedWindow::adopt(&window, teardown)],
-        }),
-    };
+            host: Vec::new(),
+        },
+    );
     // Lock + persist before touching the compositor: if anything below
     // fails, `hyprpilot teardown` can still clean up from this state. A claim
     // that could not be published leaves no state to clean up from, so the app
     // this start launched goes with it — whatever made the write fail.
-    if let Err(error) = save_new_to(&path, &session) {
+    if let Err(error) = ledger.claim() {
         if let Some(group) = &spawned {
             let _ = kill_spawned_group(group);
         }
@@ -1914,9 +2019,19 @@ pub fn start(
     }
 
     if output_created {
-        host::output_create_headless(OUTPUT_NAME)?;
+        ledger.apply(
+            HostMutation::OutputCreated {
+                output: OUTPUT_NAME.to_owned(),
+            },
+            || host::output_create_headless(OUTPUT_NAME),
+        )?;
     }
-    host::keyword_monitor(OUTPUT_NAME, width, height)?;
+    ledger.apply(
+        HostMutation::MonitorRuleSet {
+            rule: hypr::headless_monitor_rule(OUTPUT_NAME, width, height),
+        },
+        || host::keyword_monitor(OUTPUT_NAME, width, height),
+    )?;
 
     if matches!(
         park_window(&window.address, OUTPUT_NAME, WORKSPACE_NAME)?,
@@ -2674,7 +2789,7 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
                     finish_teardown(
                         &location,
                         &shared.output,
-                        shared.output_created,
+                        output_was_created(&shared.host),
                         notes,
                         Vec::new(),
                     )
@@ -2687,7 +2802,7 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
                     finish_teardown(
                         &location,
                         &isolated.output,
-                        true,
+                        output_was_created(&isolated.host),
                         brought_down.notes,
                         brought_down.failures,
                     )
@@ -2697,23 +2812,36 @@ pub fn teardown(name: &str, kill: bool, close: bool) -> Result<String, Error> {
         // The v3 layout moved, so teardown stays the one command that can still
         // clean up what an older build left at the old location.
         Err(Error::NoSession) => teardown_pre_v3(kill, close),
-        // Same duty at the current location: window identity (v4) changed the
-        // shape of a state a running build may have written minutes earlier, and
-        // that session is holding a window of the user's on a hidden output.
+        // Same duty at the current location: window identity (v4) and the host
+        // ledger (v5) each changed the shape of a state a running build may have
+        // written minutes earlier, and that session is holding a window of the
+        // user's on a hidden output — or a whole agent desktop alive.
         Err(Error::UnsupportedSessionVersion {
             path,
-            found: Some(PRE_IDENTITY_VERSION),
-        }) => teardown_pre_identity_at(&path, name, kill, close),
+            found: Some(found @ (PRE_IDENTITY_VERSION | PRE_LEDGER_VERSION)),
+        }) => teardown_superseded_at(&path, name, found, kill, close),
         Err(error) => Err(error),
     }
 }
 
 /// The last schema written without window identity, at the current location.
 const PRE_IDENTITY_VERSION: u32 = 3;
+/// The last schema written without the host ledger. It carries window identity,
+/// so its teardown keeps the identity guard — only the ledger is missing, and
+/// `output_created` is still there to stand in for it.
+const PRE_LEDGER_VERSION: u32 = 4;
 
-fn teardown_pre_identity_at(
+/// A shared session as v4 wrote it: window identity, no ledger, and the
+/// `output_created` flag the ledger replaced.
+#[derive(Debug, Deserialize)]
+struct PreLedgerShared {
+    output_created: bool,
+}
+
+fn teardown_superseded_at(
     path: &Path,
     name: &str,
+    found: u32,
     kill: bool,
     close: bool,
 ) -> Result<String, Error> {
@@ -2724,13 +2852,11 @@ fn teardown_pre_identity_at(
     };
     let value: serde_json::Value = parse_json(&raw, path).map_err(&corrupt)?;
     let location = StateLocation::Session(session_dir(name)?);
-    let migrated = format!(
-        "cleaned schema v{PRE_IDENTITY_VERSION} state at {}",
-        path.display()
-    );
+    let migrated = format!("cleaned schema v{found} state at {}", path.display());
 
-    // The agent desktop payload is unchanged across the two schemas, so only the
-    // shared window table needs the identity-less reading.
+    // The agent desktop payload only ever gained fields, all of them defaulted,
+    // so both superseded schemas parse with the current struct — and neither
+    // carries a ledger, so the output it named is one this crate created.
     if value.get("mode").and_then(serde_json::Value::as_str) == Some("isolated") {
         refuse_teardown_flags(kill, close)?;
         let isolated: Isolated = parse_json_value(value, path).map_err(corrupt)?;
@@ -2743,6 +2869,24 @@ fn teardown_pre_identity_at(
             true,
             notes,
             brought_down.failures,
+        );
+    }
+
+    // v4 recorded window identity, so its teardown gets the same guard a current
+    // session gets: reading it through the identity-less shape would dispose of
+    // the user's windows by address alone, which is exactly what v4 fixed.
+    if found == PRE_LEDGER_VERSION {
+        let created: PreLedgerShared = parse_json_value(value.clone(), path).map_err(&corrupt)?;
+        let shared: Shared = parse_json_value(value, path).map_err(corrupt)?;
+        check_window_table(&shared, path)?;
+        let mut notes = vec![migrated];
+        notes.extend(teardown_shared(&shared, kill, close)?);
+        return finish_teardown(
+            &location,
+            &shared.output,
+            created.output_created,
+            notes,
+            Vec::new(),
         );
     }
 
@@ -2798,12 +2942,13 @@ fn teardown_pre_v3(kill: bool, close: bool) -> Result<String, Error> {
 mod tests {
     use super::GroupKill;
     use super::{
-        Criteria, DEFAULT_SESSION_NAME, Disposition, Escalation, Instance, Isolated, Mode,
-        ModeState, Placement, PreV3Session, Presence, Rect, Resolution, Restoration,
-        SCHEMA_VERSION, Session, Shared, SpawnedGroup, StateLocation, Step, TargetLookup,
-        TargetMode, TeardownEffects, TeardownStep, Tracked, TrackedWindow, UnplacedClients,
-        WindowAction, ambiguous_error, clear_state, effective_output_size, ensure_output_empty,
-        exact_layout_integer, find_shared_session_in, load_from, load_pre_v3_from, lock_session_in,
+        Criteria, DEFAULT_SESSION_NAME, Disposition, Escalation, HostMutation, Instance, Isolated,
+        Ledger, Mode, ModeState, PRE_LEDGER_VERSION, Placement, PreLedgerShared, PreV3Session,
+        Presence, Rect, Resolution, Restoration, SCHEMA_VERSION, Session, Shared, SpawnedGroup,
+        StateLocation, Step, TargetLookup, TargetMode, TeardownEffects, TeardownStep, Tracked,
+        TrackedWindow, UnplacedClients, WindowAction, ambiguous_error, clear_state,
+        effective_output_size, ensure_output_empty, exact_layout_integer, find_shared_session_in,
+        load_from, load_pre_v3_from, lock_session_in, output_was_created, parse_json_value,
         parse_size, persist_target_before_activation, place, refuse_pre_v3_state_at,
         refuse_teardown_flags, replaced_error, report_teardown, resize_has_applied,
         resize_unsupported, resolve, resolve_name_from, save_isolated, save_new_to, save_over,
@@ -2814,6 +2959,8 @@ mod tests {
     use crate::guard;
     use std::cell::RefCell;
     use std::error::Error as StdError;
+    use std::fs;
+    use std::path::Path;
     use std::time::Duration;
 
     use crate::hypr::{self, Client, Monitor};
@@ -2829,7 +2976,6 @@ mod tests {
     fn sample_shared() -> Shared {
         Shared {
             output: "hyprpilot".to_owned(),
-            output_created: true,
             active_workspace: "hyprpilot".to_owned(),
             parking_workspace: "special:hyprpilot-parked".to_owned(),
             size: [1600, 1000],
@@ -2849,6 +2995,9 @@ mod tests {
                 origin_size: [900, 600],
                 origin_floating: true,
                 teardown: Disposition::Close,
+            }],
+            host: vec![HostMutation::OutputCreated {
+                output: "hyprpilot".to_owned(),
             }],
         }
     }
@@ -2877,6 +3026,7 @@ mod tests {
                 shown: false,
                 active_address: active.map(str::to_owned),
                 instance,
+                host: Vec::new(),
             }),
         }
     }
@@ -3634,7 +3784,200 @@ mod tests {
         assert!(loaded.windows[0].origin_floating);
         assert_eq!(loaded.windows[0].teardown, Disposition::Close);
         assert_eq!(loaded.initial_user_focus.as_deref(), Some("0xdef"));
-        assert!(loaded.output_created);
+        assert!(output_was_created(&loaded.host));
+        Ok(())
+    }
+
+    fn agent_ledger() -> Vec<HostMutation> {
+        vec![
+            HostMutation::OutputCreated {
+                output: "hyprpilot-alpha".to_owned(),
+            },
+            HostMutation::WorkspaceRenamed {
+                id: 3,
+                from: "3".to_owned(),
+                to: "agent-alpha".to_owned(),
+            },
+        ]
+    }
+
+    /// `save_isolated` rebuilds a whole `Session` from `(name, &Isolated)`, and
+    /// every `session show` and every `target` goes through it. A ledger held
+    /// beside the payload instead of inside it would be erased by the first one
+    /// of those — on a success path, out of reach of the write-ahead.
+    #[test]
+    fn a_show_does_not_drop_the_host_ledger() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut isolated = Isolated {
+            output: "hyprpilot-alpha".to_owned(),
+            workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
+            size: [1920, 1080],
+            shown: false,
+            active_address: None,
+            instance: Instance::Pending,
+            host: agent_ledger(),
+        };
+        save_new_to(
+            &path,
+            &Session {
+                schema_version: SCHEMA_VERSION,
+                name: "alpha".to_owned(),
+                state: ModeState::Isolated(isolated.clone()),
+            },
+        )?;
+
+        // Exactly what `persist_visibility` does.
+        isolated.shown = true;
+        save_isolated(&path, "alpha", &isolated)?;
+
+        let ModeState::Isolated(loaded) = load_from(&path)?.state else {
+            return Err("isolated state loaded as shared".into());
+        };
+        assert!(loaded.shown);
+        assert_eq!(loaded.host, agent_ledger());
+        Ok(())
+    }
+
+    /// The write-ahead, asserted where it matters: the entry is readable on
+    /// disk from inside the very call that poses the mutation. The other order
+    /// leaves a mutation nothing records if the process dies in between.
+    #[test]
+    fn a_ledger_entry_is_on_disk_before_its_mutation_runs() -> Result<(), Box<dyn StdError>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.json");
+        let mut ledger = Ledger::new(&path, "alpha", sample_shared());
+        ledger.payload.host.clear();
+        ledger.claim()?;
+
+        let seen = RefCell::new(None);
+        ledger.apply(
+            HostMutation::OutputCreated {
+                output: "hyprpilot".to_owned(),
+            },
+            || {
+                let raw = fs::read_to_string(&path).map_err(|source| Error::Io {
+                    context: "reading the state back mid-apply".to_owned(),
+                    source,
+                })?;
+                *seen.borrow_mut() = Some(raw.contains("output_created"));
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            seen.into_inner(),
+            Some(true),
+            "the mutation ran before its entry reached the disk"
+        );
+
+        let ModeState::Shared(loaded) = load_from(&path)?.state else {
+            return Err("shared state loaded as isolated".into());
+        };
+        assert!(output_was_created(&loaded.host));
+        Ok(())
+    }
+
+    /// `output_created` could be `true` with no `output create` behind it. An
+    /// entry cannot: it is written by the call that poses the mutation.
+    #[test]
+    fn the_output_removal_is_decided_by_the_ledger_not_a_flag() {
+        assert!(!output_was_created(&[]), "a reused output is not ours");
+        assert!(
+            !output_was_created(&[HostMutation::MonitorRuleSet {
+                rule: "hyprpilot,1600x1000@60,auto,1".to_owned(),
+            }]),
+            "mode-setting an output the user already had does not make it ours"
+        );
+        assert!(output_was_created(&agent_ledger()));
+    }
+
+    /// v4 is what runs on this machine today, so a v5 binary started in the
+    /// same session has to be able to take down what a v4 one left alive — an
+    /// agent desktop above all. Both payloads parse with the current structs,
+    /// and the shared one keeps the window identity v4 recorded rather than
+    /// falling back to disposing of the user's windows by address alone.
+    #[test]
+    fn a_v4_session_is_torn_down_not_refused() -> Result<(), Box<dyn StdError>> {
+        assert_eq!(
+            PRE_LEDGER_VERSION + 1,
+            SCHEMA_VERSION,
+            "the teardown arm has to cover the schema immediately before this one"
+        );
+
+        let dir = tempfile::tempdir()?;
+        let agent = dir.path().join("agent.json");
+        fs::write(
+            &agent,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": PRE_LEDGER_VERSION,
+                "name": "alpha",
+                "mode": "isolated",
+                "output": "hyprpilot-alpha",
+                "workspace": "agent-alpha",
+                "size": [1920, 1080],
+                "instance_nonce": "4242-1700000000000000000",
+                "shown": false,
+                "active_address": null,
+                "instance": {"stage": "pending"},
+            }))?,
+        )?;
+        assert!(matches!(
+            load_from(&agent),
+            Err(Error::UnsupportedSessionVersion {
+                found: Some(PRE_LEDGER_VERSION),
+                ..
+            })
+        ));
+        let parsed: Isolated =
+            parse_json_value(serde_json::from_str(&fs::read_to_string(&agent)?)?, &agent)?;
+        assert_eq!(parsed.output, "hyprpilot-alpha");
+        assert!(parsed.host.is_empty(), "v4 carried no ledger");
+
+        let shared_path = dir.path().join("shared.json");
+        let mut value = serde_json::to_value(sample_shared())?;
+        value["schema_version"] = serde_json::json!(PRE_LEDGER_VERSION);
+        value["name"] = serde_json::json!("alpha");
+        value["mode"] = serde_json::json!("shared");
+        value["output_created"] = serde_json::json!(true);
+        value
+            .as_object_mut()
+            .ok_or("shared state is an object")?
+            .remove("host");
+        fs::write(&shared_path, serde_json::to_vec_pretty(&value)?)?;
+
+        let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(&shared_path)?)?;
+        let created: PreLedgerShared = parse_json_value(raw.clone(), &shared_path)?;
+        assert!(created.output_created, "the flag the ledger replaced");
+        let shared: Shared = parse_json_value(raw, &shared_path)?;
+        assert!(shared.host.is_empty());
+        assert_eq!(
+            shared.windows[0].stable_id, "9001",
+            "v4 recorded window identity, and its teardown has to keep it"
+        );
+        Ok(())
+    }
+
+    /// The agent desktop payload only ever gained defaulted fields, which is
+    /// what lets the superseded teardown arms read v3 with the current struct.
+    #[test]
+    fn a_v3_isolated_payload_still_parses_without_a_ledger() -> Result<(), Box<dyn StdError>> {
+        let path = Path::new("v3.json");
+        let parsed: Isolated = parse_json_value(
+            serde_json::json!({
+                "output": "hyprpilot-alpha",
+                "workspace": "agent-alpha",
+                "size": [1920, 1080],
+                "instance_nonce": "4242-1700000000000000000",
+                "shown": false,
+                "active_address": null,
+                "instance": {"stage": "pending"},
+            }),
+            path,
+        )?;
+        assert_eq!(parsed.workspace, "agent-alpha");
+        assert!(parsed.host.is_empty());
+        assert!(matches!(parsed.instance, Instance::Pending));
         Ok(())
     }
 
@@ -3840,18 +4183,24 @@ mod tests {
         let path = dir.path().join("session.json");
         let mut value = serde_json::to_value(sample_shared())?;
         value["schema_version"] = serde_json::json!(2);
+        // v2 said with a flag what the ledger now says with an entry, and the
+        // pre-v3 reader still expects the flag.
+        value["output_created"] = serde_json::json!(true);
         std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
         let error = load_from(&path)
             .err()
-            .ok_or("a v2 state was accepted by a v4 build")?;
+            .ok_or("a v2 state was accepted by the current build")?;
         assert!(matches!(
             &error,
             Error::UnsupportedSessionVersion { found: Some(2), .. }
         ));
         let message = error.to_string();
         assert!(message.contains("schema version 2"), "{message}");
-        assert!(message.contains("expects 4"), "{message}");
+        assert!(
+            message.contains(&format!("expects {SCHEMA_VERSION}")),
+            "{message}"
+        );
         assert!(message.contains("hyprpilot teardown"), "{message}");
         assert!(message.contains("no output was removed"), "{message}");
         assert!(message.contains("hyprpilot windows"), "{message}");

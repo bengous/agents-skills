@@ -23,8 +23,9 @@ use crate::capture;
 use crate::error::{Error, RestoreFailure};
 use crate::guard;
 use crate::host;
+use crate::host::ledger::{self, HostMutation, Undo};
 use crate::hypr::{self, Ctl};
-use crate::session::{self, Instance, Isolated, ModeState, Session};
+use crate::session::{self, Instance, Isolated, Ledger};
 
 /// Injected into the nested compositor's environment at spawn and refused at the
 /// top of every command: an output created *inside* a nested Hyprland stays 0x0
@@ -154,18 +155,6 @@ impl Live {
     }
 }
 
-/// Host resources acquired so far, so a failure undoes exactly what exists.
-#[derive(Default)]
-struct Acquired {
-    output: bool,
-    /// Kept as soon as the spawn's runtime directory is discovered, before the
-    /// console is identified: the nested compositor leaves that directory behind
-    /// (fact §2.9), and a start that fails between the two must still be able to
-    /// address it and remove it.
-    signature: Option<String>,
-    instance: Option<Live>,
-}
-
 /// What the start must leave untouched (§4.6): the workspace active on every
 /// host output and the user's focused window. The cursor is where
 /// `output remove` has to warp back to (fact §2.8).
@@ -239,32 +228,38 @@ pub fn start(
     ensure_output_absent(&hypr::monitors()?, &start.output, name)?;
     // Read before the first mutation and re-read at §4.6.
     let host = host_snapshot()?;
-    start.claim()?;
 
-    let mut acquired = Acquired::default();
-    match start.build(&mut acquired, &host) {
+    // The state is the only record of what this start acquires, so it is also
+    // the only thing the rollback and a later `teardown` can work from: what
+    // used to be an in-memory `Acquired` beside it could disagree with it, and
+    // never survived a kill.
+    let mut ledger = Ledger::new(&start.path, name, start.initial_payload());
+    ledger.claim()?;
+
+    match start.build(&mut ledger, &host) {
         Ok(message) => Ok(message),
-        Err(error) => Err(start.rolled_back(error, &acquired, &host)),
+        Err(error) => Err(start.rolled_back(error, &ledger.payload, &host)),
     }
 }
 
+type Build<'a> = Ledger<'a, Isolated>;
+
 impl Start<'_> {
     /// Steps 2 to 7 of §4, each persisting what it acquired before moving on.
-    fn build(&self, acquired: &mut Acquired, host: &HostSnapshot) -> Result<String, Error> {
-        self.create_output(acquired)?;
-        self.persist(Instance::Pending, None)?;
-
-        self.rename_workspace(host)?;
+    fn build(&self, state: &mut Build<'_>, host: &HostSnapshot) -> Result<String, Error> {
+        self.create_output(state)?;
+        self.rename_workspace(state, host)?;
         let config = self.write_config()?;
 
-        let live = self.spawn_instance(&config, acquired)?;
-        acquired.instance = Some(live.clone());
-        self.persist(live.instance(), None)?;
+        let live = self.spawn_instance(state, &config)?;
+        state.payload.instance = live.instance();
+        state.record()?;
 
         check_host(host)?;
 
         let window = self.launch_app(&live.signature)?;
-        self.persist(live.instance(), Some(window.address.clone()))?;
+        state.payload.active_address = Some(window.address.clone());
+        state.record()?;
         self.wait_until_ready(&live, &window.address)?;
         // §4.7: `ready` = the window is capturable, so the start proves it with a
         // real capture through the socket it recorded instead of inferring it
@@ -289,42 +284,39 @@ impl Start<'_> {
         ))
     }
 
-    fn state(&self, instance: Instance, active_address: Option<String>) -> Session {
-        Session {
-            schema_version: session::SCHEMA_VERSION,
-            name: self.name.to_owned(),
-            state: ModeState::Isolated(Isolated {
-                output: self.output.clone(),
-                workspace: self.workspace.clone(),
-                instance_nonce: self.nonce.clone(),
-                size: self.size,
-                shown: false,
-                active_address,
-                instance,
-            }),
+    /// The state as the claim publishes it: every resource named, none acquired.
+    fn initial_payload(&self) -> Isolated {
+        Isolated {
+            output: self.output.clone(),
+            workspace: self.workspace.clone(),
+            instance_nonce: self.nonce.clone(),
+            size: self.size,
+            shown: false,
+            active_address: None,
+            instance: Instance::Pending,
+            host: Vec::new(),
         }
-    }
-
-    /// The atomic claim (§4.1): the state already names every resource this
-    /// start will acquire, so `teardown` can clean up from here onwards.
-    fn claim(&self) -> Result<(), Error> {
-        session::save_new_to(&self.path, &self.state(Instance::Pending, None))
-    }
-
-    fn persist(&self, instance: Instance, active_address: Option<String>) -> Result<(), Error> {
-        session::save_over(&self.path, &self.state(instance, active_address))
     }
 
     /// §4.2. Resolution *and* scale are imposed: a headless output otherwise
     /// inherits a non-trivial scale (fact §2.10).
-    fn create_output(&self, acquired: &mut Acquired) -> Result<(), Error> {
-        host::output_create_headless(&self.output)?;
-        // The output exists from this line on, whether or not the mode-set below
-        // applies and whether or not the check ever passes: the rollback has to
-        // remove it either way, or it stays in the user's layout with no session
-        // state left to find it (§4.1).
-        acquired.output = true;
-        host::keyword_monitor(&self.output, self.size[0], self.size[1])?;
+    fn create_output(&self, state: &mut Build<'_>) -> Result<(), Error> {
+        // The ledger entry is on disk before the output exists, whether or not
+        // the mode-set below applies and whether or not the check ever passes:
+        // the rollback has to remove it either way, or it stays in the user's
+        // layout with no session state left to find it (§4.1).
+        state.apply(
+            HostMutation::OutputCreated {
+                output: self.output.clone(),
+            },
+            || host::output_create_headless(&self.output),
+        )?;
+        state.apply(
+            HostMutation::MonitorRuleSet {
+                rule: hypr::headless_monitor_rule(&self.output, self.size[0], self.size[1]),
+            },
+            || host::keyword_monitor(&self.output, self.size[0], self.size[1]),
+        )?;
         let [width, height] = self.size;
         poll_until(
             session::WINDOW_PLACE_TIMEOUT,
@@ -350,7 +342,7 @@ impl Start<'_> {
     /// §4.3. Renaming the workspace the host made active on the headless output
     /// is what keeps it active; `moveworkspacetomonitor` would leave it
     /// inactive and freeze every capture (fact §2.3).
-    fn rename_workspace(&self, host: &HostSnapshot) -> Result<(), Error> {
+    fn rename_workspace(&self, state: &mut Build<'_>, host: &HostSnapshot) -> Result<(), Error> {
         let monitor = self.host_output()?.ok_or_else(|| Error::Tool {
             command: "hyprctl monitors".to_owned(),
             message: format!(
@@ -370,7 +362,17 @@ impl Start<'_> {
             });
         }
 
-        host::rename_workspace(current.id, &self.workspace)?;
+        // `from` goes in the ledger before the rename happens: it is the only
+        // record of the name the workspace had, and losing it is what left a
+        // dead `agent-*` label in the user's bar until waybar was restarted.
+        state.apply(
+            HostMutation::WorkspaceRenamed {
+                id: current.id,
+                from: current.name.clone(),
+                to: self.workspace.clone(),
+            },
+            || host::rename_workspace(current.id, &self.workspace),
+        )?;
         poll_until(
             session::WINDOW_PLACE_TIMEOUT,
             || {
@@ -391,7 +393,12 @@ impl Start<'_> {
         // workspace is destroyed while the console is shown, `hide` recreates it
         // with `movetoworkspacesilent`, and without the rule that recreation
         // lands on the monitor the console currently sits on — the user's.
-        host::keyword_workspace(&self.workspace, &self.output)
+        state.apply(
+            HostMutation::WorkspaceRuleSet {
+                rule: host::workspace_rule(&self.workspace, &self.output),
+            },
+            || host::keyword_workspace(&self.workspace, &self.output),
+        )
     }
 
     /// §4.4. The keymap is the only dynamic part, so it is read from the host,
@@ -411,7 +418,7 @@ impl Start<'_> {
     /// §4.5. The one-shot window rules keep the spawn from stealing focus
     /// (fact §2.4); discovery then identifies the instance by diffing what the
     /// spawn created.
-    fn spawn_instance(&self, config: &Path, acquired: &mut Acquired) -> Result<Live, Error> {
+    fn spawn_instance(&self, state: &mut Build<'_>, config: &Path) -> Result<Live, Error> {
         let log = self.dir.join(NESTED_LOG_FILE);
         let command = spawn_command(&self.marker(), &self.workspace, config, &log)?;
         let windows_before = hypr::clients()?
@@ -429,10 +436,13 @@ impl Start<'_> {
         // could claim one, and the single-entry case attributed without ever
         // checking whose it was.
         let instance = self.wait_for_marked_instance(&log)?;
-        // Kept before the console is looked for: from here on the compositor has
-        // a runtime directory to exit politely and to remove (fact §2.9), and a
-        // failure below must not throw that away.
-        acquired.signature = Some(instance.instance.clone());
+        // Persisted before the console is looked for: from here on the compositor
+        // has a runtime directory to exit politely and to remove (fact §2.9), and
+        // neither a failure below nor a kill of this process may throw that away.
+        state.payload.instance = Instance::Spawned {
+            signature: instance.instance.clone(),
+        };
+        state.record()?;
         let console = self.wait_for_console(&windows_before, &log)?;
         let (signature, wayland_display) = (instance.instance, instance.wl_socket);
         if !console.title.starts_with(CONSOLE_TITLE_PREFIX) {
@@ -645,14 +655,14 @@ impl Start<'_> {
     /// Undoes what exists, in the order that never drops a live window onto the
     /// user's desktop, and reports the original failure alongside whatever the
     /// rollback could not undo.
-    fn rolled_back(&self, error: Error, acquired: &Acquired, host: &HostSnapshot) -> Error {
+    fn rolled_back(&self, error: Error, state: &Isolated, host: &HostSnapshot) -> Error {
         // The rollback is about to remove the session directory the failure message
         // points at, so the tail of the nested compositor's log is emitted here or
         // lost with it. Without it a start that fails leaves nothing to diagnose,
         // which is exactly how a console window that never mapped stayed
         // unexplained on the third gate run.
         warn_with_nested_log_tail(&self.dir);
-        let restore = self.rollback(acquired, host);
+        let restore = self.rollback(state, host);
         if restore.is_empty() {
             error
         } else {
@@ -663,8 +673,11 @@ impl Start<'_> {
         }
     }
 
-    fn rollback(&self, acquired: &Acquired, host: &HostSnapshot) -> Vec<RestoreFailure> {
-        if let Err(failure) = self.terminate(acquired) {
+    /// The order is written out rather than drained blindly, because three of
+    /// its steps deliberately stop and leave the state on disk for `teardown` to
+    /// resume from — which a loop over the ledger cannot express.
+    fn rollback(&self, state: &Isolated, host: &HostSnapshot) -> Vec<RestoreFailure> {
+        if let Err(failure) = self.terminate(state) {
             // The console still lives on the headless output: removing that
             // output would drop the window onto the user's desktop, and the
             // state has to survive for `teardown`.
@@ -677,7 +690,7 @@ impl Start<'_> {
         // directory with, so this is the only place that can. Hence before the
         // console wait, which is about another resource and may time out. The log
         // stays where the spawn redirected it.
-        if let Some(signature) = &acquired.signature {
+        if let Some(signature) = instance_signature(&state.instance) {
             let (_, failure) = clear_instance_runtime(signature, None);
             failures.extend(failure);
         }
@@ -685,7 +698,7 @@ impl Start<'_> {
         // reaps it asynchronously: `output remove` before that hands it to one of
         // the user's monitors for as long as it survives. Same wait, same reason,
         // as the teardown path.
-        if let Err(error) = wait_console_reaped(&self.output, console_of(acquired)) {
+        if let Err(error) = wait_console_reaped(&self.output, console_of(&state.instance)) {
             failures.push(RestoreFailure {
                 what: "agent console window",
                 expected: format!(
@@ -697,23 +710,20 @@ impl Start<'_> {
             // The output stays where it is, and so does the state `teardown` needs.
             return failures;
         }
-        if acquired.output {
-            // Same cursor-preserving removal as either mode's teardown
-            // (fact §2.8); the snapshot is the fallback if `cursorpos` cannot be
-            // read at the last moment.
-            match session::remove_output_restoring_cursor(&self.output, Some(host.cursor)) {
-                Ok(removal) => failures.extend(removal.failure),
-                Err(error) => {
-                    // The state has to survive for `teardown`, so the session
-                    // directory below is left alone.
-                    failures.push(RestoreFailure {
-                        what: "agent output",
-                        expected: format!("{} removed", self.output),
-                        actual: error.to_string(),
-                    });
-                    return failures;
-                }
-            }
+        // Only now: every undo that removes the output has to run after the
+        // console it renders is gone. The snapshot is the cursor to warp back to
+        // if `cursorpos` cannot be read at the last moment (fact §2.8).
+        let unwound = unwind(&ledger::live_undo_effects(), &state.host, Some(host.cursor));
+        // A rolled-back start returns no notes — its whole output is the failure
+        // it reports — so what it took back, and what it could not, is said here
+        // or nowhere.
+        warn_unwound(&unwound);
+        failures.extend(unwound.failures);
+        if let Some(stopped) = unwound.stopped {
+            // The state has to survive for `teardown`, so the session directory
+            // below is left alone.
+            failures.push(stopped);
+            return failures;
         }
         if let Err(source) = fs::remove_dir_all(&self.dir) {
             failures.push(RestoreFailure {
@@ -730,21 +740,96 @@ impl Start<'_> {
     /// lets the nested compositor exit on its own and clean up its runtime
     /// directory (fact §2.9); the marker sweep is what proves the desktop is
     /// gone, including a compositor spawned but never identified.
-    fn terminate(&self, acquired: &Acquired) -> Result<(), RestoreFailure> {
-        if let Some(signature) = &acquired.signature {
+    fn terminate(&self, state: &Isolated) -> Result<(), RestoreFailure> {
+        if let Some(signature) = instance_signature(&state.instance) {
             let _ = hypr::dispatch_on(Ctl::Instance(signature), &["exit"]);
         }
         terminate_marked(&self.marker()).map(|_| ())
     }
 }
 
+/// What unwinding the ledger did, and what it could not.
+#[derive(Default)]
+pub struct Unwound {
+    /// What actually changed on the host, for the teardown message.
+    pub notes: Vec<String>,
+    /// What Hyprland cannot retract while it runs, each with the command that
+    /// clears it. Not failures: they are the documented cost of a `keyword`
+    /// (hyprwm/Hyprland#5691), and the point of listing them is that the leak
+    /// is visible instead of silent.
+    pub leaked: Vec<String>,
+    pub failures: Vec<RestoreFailure>,
+    /// Set when an undo could not run at all. Everything still ahead of it in
+    /// the ledger is untouched, so the state has to stay on disk for a later
+    /// `teardown` to resume from.
+    pub stopped: Option<RestoreFailure>,
+}
+
+fn warn_unwound(unwound: &Unwound) {
+    let mut stderr = std::io::stderr();
+    for note in &unwound.notes {
+        let _ = writeln!(stderr, "hyprpilot: rolled back: {note}");
+    }
+    for leak in &unwound.leaked {
+        let _ = writeln!(stderr, "hyprpilot: warning: {leak}");
+    }
+}
+
+/// Undoes the ledger in reverse, which is the only order that holds: a
+/// workspace gets its name back, and a workspace comes back to the monitor it
+/// was pushed off, *before* the output that caused either is removed.
+pub fn unwind(
+    effects: &ledger::UndoEffects<'_>,
+    ledger: &[HostMutation],
+    cursor: Option<(i32, i32)>,
+) -> Unwound {
+    let mut unwound = Unwound::default();
+    for mutation in ledger.iter().rev() {
+        match mutation.undo(effects, cursor) {
+            Ok(Undo::Done { notes, failure }) => {
+                unwound.notes.extend(notes);
+                unwound.failures.extend(failure);
+            }
+            Ok(Undo::Impossible { what, remedy }) => unwound
+                .leaked
+                .push(format!("{what} stays until `{remedy}`")),
+            Err(error) => {
+                unwound.stopped = Some(RestoreFailure {
+                    what: "agent host mutation",
+                    expected: format!("{mutation:?} undone"),
+                    actual: error.to_string(),
+                });
+                return unwound;
+            }
+        }
+    }
+    unwound
+}
+
 /// The console of a start that got far enough to identify one: its address plus
 /// the pid that owns it, since an address alone is a reusable pointer.
-fn console_of(acquired: &Acquired) -> Option<Console<'_>> {
-    acquired.instance.as_ref().map(|live| Console {
-        address: &live.console_address,
-        pid: live.pid,
-    })
+fn console_of(instance: &Instance) -> Option<Console<'_>> {
+    match instance {
+        Instance::Pending | Instance::Spawned { .. } => None,
+        Instance::Live {
+            pid,
+            console_address,
+            ..
+        } => Some(Console {
+            address: console_address,
+            pid: *pid,
+        }),
+    }
+}
+
+/// The signature of a compositor that reached at least the `Spawned` stage —
+/// the name of the runtime directory it leaves behind (fact §2.9) and the only
+/// way to address it.
+fn instance_signature(instance: &Instance) -> Option<&str> {
+    match instance {
+        Instance::Pending => None,
+        Instance::Spawned { signature } | Instance::Live { signature, .. } => Some(signature),
+    }
 }
 
 /// Unique to this start on this machine, and not a secret: it only has to be
@@ -778,6 +863,40 @@ struct Registered<'a> {
     display: &'a str,
 }
 
+/// The nested compositor as the state knows it, at the two stages that have one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compositor<'a> {
+    /// Registered in the host's instance table, its console not identified yet.
+    /// The signature is enough for the two steps that matter — `dispatch exit`
+    /// and the runtime directory it already leaves behind (fact §2.9) — and the
+    /// marker sweep is what proves the desktop is gone. There is no pid to
+    /// signal and no console whose reaping the output removal can wait on, so
+    /// the wait falls back to the output being vacated.
+    Spawned { signature: &'a str },
+    /// Fully identified: a pid to signal, a console whose death gates the output
+    /// removal, and a socket to unlink.
+    Live(Registered<'a>),
+}
+
+impl<'a> Compositor<'a> {
+    fn signature(self) -> &'a str {
+        match self {
+            Self::Spawned { signature } => signature,
+            Self::Live(registered) => registered.signature,
+        }
+    }
+
+    fn console(self) -> Option<Console<'a>> {
+        match self {
+            Self::Spawned { .. } => None,
+            Self::Live(registered) => Some(Console {
+                address: registered.console,
+                pid: registered.pid,
+            }),
+        }
+    }
+}
+
 /// What §6 has to undo, decided from the state alone so it can be asserted
 /// without a compositor. Steps 4 (output and cursor) and 5 (state) are
 /// unconditional and belong to `session::finish_teardown`.
@@ -786,23 +905,24 @@ struct TeardownPlan<'a> {
     /// Window to close politely, inside the instance (step 1).
     close: Option<&'a str>,
     /// Compositor to exit, then whose runtime directory to clear (steps 2, 3).
-    instance: Option<Registered<'a>>,
+    instance: Option<Compositor<'a>>,
 }
 
 fn teardown_plan(isolated: &Isolated) -> TeardownPlan<'_> {
     let instance = match &isolated.instance {
         Instance::Pending => None,
+        Instance::Spawned { signature } => Some(Compositor::Spawned { signature }),
         Instance::Live {
             signature,
             pid,
             console_address,
             wayland_display,
-        } => Some(Registered {
+        } => Some(Compositor::Live(Registered {
             signature,
             pid: *pid,
             console: console_address,
             display: wayland_display,
-        }),
+        })),
     };
     TeardownPlan {
         // A recorded window with no compositor to close it in is nothing to do.
@@ -835,7 +955,7 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
     // user had moved the mouse themselves. Sending the console back to the agent
     // workspace first is the whole fix: it then dies where nothing of the user's
     // looks, which is the path a hidden desktop already took.
-    if let Some(instance) = plan.instance {
+    if let Some(Compositor::Live(instance)) = plan.instance {
         notes.extend(park_console_before_death(
             session,
             isolated,
@@ -845,18 +965,40 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
 
     match plan.instance {
         None => notes.push("nested compositor was never spawned".to_owned()),
-        Some(instance) => {
+        Some(compositor) => {
             if let Some(address) = plan.close {
-                notes.push(close_app(instance.signature, address));
+                notes.push(close_app(compositor.signature(), address));
             }
-            notes.extend(stop_registered(&instance, &marker)?);
-            let (cleared, failure) =
-                clear_instance_runtime(instance.signature, Some(&session::session_dir(session)?));
+            match compositor {
+                Compositor::Live(instance) => {
+                    notes.extend(stop_registered(&instance, &marker)?);
+                    let (unlinked, failure) =
+                        clear_stale_socket(&session::runtime_root()?, instance.display);
+                    notes.extend(unlinked);
+                    failures.extend(failure);
+                }
+                // No pid recorded to escalate against and no socket name to
+                // unlink: ask it to go, and let the marker sweep below prove it
+                // did — it is the authority at every stage anyway.
+                Compositor::Spawned { signature } => notes.push(
+                    match hypr::dispatch_on(Ctl::Instance(signature), &["exit"]) {
+                        Ok(()) => format!(
+                            "nested compositor {signature} was asked to exit; it never named its \
+                             console window"
+                        ),
+                        Err(error) => {
+                            format!(
+                                "nested compositor {signature} refused `dispatch exit` ({error})"
+                            )
+                        }
+                    },
+                ),
+            }
+            let (cleared, failure) = clear_instance_runtime(
+                compositor.signature(),
+                Some(&session::session_dir(session)?),
+            );
             notes.extend(cleared);
-            failures.extend(failure);
-            let (unlinked, failure) =
-                clear_stale_socket(&session::runtime_root()?, instance.display);
-            notes.extend(unlinked);
             failures.extend(failure);
         }
     }
@@ -883,10 +1025,7 @@ pub fn teardown(session: &str, isolated: &Isolated) -> Result<Teardown, Error> {
     // console: a spawn the start could not identify still maps one.
     notes.push(wait_console_reaped(
         &isolated.output,
-        plan.instance.map(|instance| Console {
-            address: instance.console,
-            pid: instance.pid,
-        }),
+        plan.instance.and_then(Compositor::console),
     )?);
 
     Ok(Teardown { notes, failures })
@@ -1739,20 +1878,29 @@ fn live_instance_in<'a>(
     session: &str,
     isolated: &'a Isolated,
 ) -> Result<LiveInstance<'a>, Error> {
-    let Instance::Live {
-        signature,
-        wayland_display,
-        pid,
-        console_address,
-    } = &isolated.instance
-    else {
-        return Err(Error::AgentDesktopUnready {
+    let unfinished = |what: &str| {
+        Err(Error::AgentDesktopUnready {
             session: session.to_owned(),
             reason: format!(
-                "its nested compositor was never spawned (`session start --isolated` did not \
-                 finish) — run `hyprpilot --session {session} teardown` and start it again"
+                "{what} (`session start --isolated` did not finish) — run `hyprpilot --session \
+                 {session} teardown` and start it again"
             ),
-        });
+        })
+    };
+    let (signature, wayland_display, pid, console_address) = match &isolated.instance {
+        Instance::Live {
+            signature,
+            wayland_display,
+            pid,
+            console_address,
+        } => (signature, wayland_display, pid, console_address),
+        Instance::Pending => return unfinished("its nested compositor was never spawned"),
+        Instance::Spawned { .. } => {
+            return unfinished(
+                "its nested compositor was spawned but never mapped a console window this start \
+                 could identify",
+            );
+        }
     };
     // The markers are liveness *and* identity: a dead pid has no readable
     // environment and a recycled one carries neither marker of this start, so no
@@ -2666,18 +2814,20 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AGENT_SESSION_ENV, Console, ConsoleWant, Exit, FrameSite, HostSnapshot, Keymap,
+        AGENT_SESSION_ENV, Compositor, Console, ConsoleWant, Exit, FrameSite, HostSnapshot, Keymap,
         LiveInstance, Marker, Registered, Sweep, TeardownPlan, Visibility, active_workspaces,
         capturable, capture_target, clear_runtime_dir, clear_stale_socket, console_reaped,
         console_settled, deviation, ensure_output_absent, frame_site, frames_reason, frozen_reason,
-        instance_dir, instance_match, instance_nonce, keep_instance_log, keymap_of,
-        live_instance_in, marked_instance, marked_pids_in, nested_config, output_is_configured,
-        output_vacated, persist_visibility, plain_signature, recorded_window, refuse_disposition,
-        refuse_nested_marker, refuse_untracked, remove_instance_dir, renameable, select_console,
-        shell_path, shown_where_the_user_looks, spawn_command, stop_instance, teardown_plan,
-        terminate_marked_in, user_workspace, visibility, workspace_occupants,
+        instance_dir, instance_match, instance_nonce, instance_signature, keep_instance_log,
+        keymap_of, live_instance_in, marked_instance, marked_pids_in, nested_config,
+        output_is_configured, output_vacated, persist_visibility, plain_signature, recorded_window,
+        refuse_disposition, refuse_nested_marker, refuse_untracked, remove_instance_dir,
+        renameable, select_console, shell_path, shown_where_the_user_looks, spawn_command,
+        stop_instance, teardown_plan, terminate_marked_in, unwind, user_workspace, visibility,
+        workspace_occupants,
     };
     use crate::error::Error;
+    use crate::host::ledger::{self, HostMutation};
     use crate::hypr::{Client, Devices, FocusedWorkspace, Monitor};
     use crate::session::{self, Escalation, Instance, Isolated};
 
@@ -3518,6 +3668,7 @@ mod tests {
             shown: false,
             active_address: active.map(str::to_owned),
             instance,
+            host: Vec::new(),
         }
     }
 
@@ -3533,17 +3684,45 @@ mod tests {
             "an output-only session has nothing to exit and nothing to close"
         );
 
+        // A compositor that registered itself but never named its console: there
+        // is a signature to exit and a runtime directory to remove, and nothing
+        // else. Without this stage the state would say `Pending`, and that
+        // directory would have no name left to remove it by (fact §2.9).
+        let spawned = agent_state(
+            Instance::Spawned {
+                signature: "beef_1700000000".to_owned(),
+            },
+            None,
+        );
+        assert_eq!(
+            teardown_plan(&spawned),
+            TeardownPlan {
+                close: None,
+                instance: Some(Compositor::Spawned {
+                    signature: "beef_1700000000"
+                }),
+            }
+        );
+        assert_eq!(
+            teardown_plan(&spawned)
+                .instance
+                .and_then(Compositor::console),
+            None,
+            "no console was ever identified, so the output removal waits on the \
+             output being vacated instead"
+        );
+
         let live = agent_state(live_instance(), Some("0xapp"));
         assert_eq!(
             teardown_plan(&live),
             TeardownPlan {
                 close: Some("0xapp"),
-                instance: Some(Registered {
+                instance: Some(Compositor::Live(Registered {
                     signature: "beef_1700000000",
                     pid: 4242,
                     console: "0xc0ff33",
                     display: "wayland-3",
-                }),
+                })),
             }
         );
 
@@ -3551,6 +3730,143 @@ mod tests {
         let plan = teardown_plan(&launched_nothing);
         assert_eq!(plan.close, None, "no window recorded, nothing to close");
         assert!(plan.instance.is_some());
+    }
+
+    /// Before the `Spawned` stage a start killed between the spawn and the
+    /// console wait persisted `Pending`, and the runtime directory the
+    /// compositor had already created (fact §2.9) had no name left to remove it
+    /// by. The stage is what gives a later `teardown` that name.
+    #[test]
+    fn a_start_that_fails_before_its_console_still_names_its_runtime_directory()
+    -> Result<(), Box<dyn StdError>> {
+        let pending = agent_state(Instance::Pending, None);
+        assert_eq!(instance_signature(&pending.instance), None);
+
+        let spawned = agent_state(
+            Instance::Spawned {
+                signature: "beef_1700000000".to_owned(),
+            },
+            None,
+        );
+        let signature =
+            instance_signature(&spawned.instance).ok_or("a spawned compositor has a signature")?;
+        assert_eq!(
+            instance_dir(Path::new("/run/user/1000/hypr"), signature)?,
+            Path::new("/run/user/1000/hypr/beef_1700000000")
+        );
+        Ok(())
+    }
+
+    /// Reverse order is the whole correctness of the unwind: a workspace has to
+    /// get its name back, and a pushed-off workspace has to come home, *while*
+    /// the output that caused either still exists. Removing the output first
+    /// would leave the rename standing — which is the waybar defect.
+    #[test]
+    fn the_ledger_is_unwound_in_reverse_so_the_output_goes_last() {
+        let acted = RefCell::new(Vec::new());
+        let remove_output = |output: &str, _cursor: Option<(i32, i32)>| {
+            acted.borrow_mut().push(format!("remove {output}"));
+            Ok(session::OutputRemoval {
+                notes: vec![format!("removed output {output}")],
+                failure: None,
+            })
+        };
+        let dispatch = |args: &[&str]| {
+            acted.borrow_mut().push(args.join(" "));
+            Ok(())
+        };
+        // The ledger as an isolated start writes it, in order.
+        let ledger = vec![
+            HostMutation::OutputCreated {
+                output: "hyprpilot-alpha".to_owned(),
+            },
+            HostMutation::MonitorRuleSet {
+                rule: "hyprpilot-alpha,1920x1080@60,auto,1".to_owned(),
+            },
+            HostMutation::WorkspaceRenamed {
+                id: 3,
+                from: "3".to_owned(),
+                to: "agent-alpha".to_owned(),
+            },
+            HostMutation::WorkspaceRuleSet {
+                rule: "agent-alpha, monitor:hyprpilot-alpha".to_owned(),
+            },
+        ];
+        let unwound = unwind(
+            &ledger::UndoEffects {
+                remove_output: &remove_output,
+                dispatch: &dispatch,
+            },
+            &ledger,
+            None,
+        );
+
+        assert_eq!(
+            acted.borrow().as_slice(),
+            [
+                "renameworkspace 3 3".to_owned(),
+                "remove hyprpilot-alpha".to_owned()
+            ],
+            "the workspace gets its name back while its output is still there"
+        );
+        assert!(unwound.stopped.is_none());
+        assert!(unwound.failures.is_empty());
+        assert_eq!(
+            unwound.leaked.len(),
+            2,
+            "both keywords are unretractable and both have to be named: {:?}",
+            unwound.leaked
+        );
+        assert!(
+            unwound
+                .leaked
+                .iter()
+                .all(|leak| leak.contains("hyprctl reload")),
+            "a leak with no remedy is a leak the user cannot clear: {:?}",
+            unwound.leaked
+        );
+    }
+
+    /// An undo that could not run at all stops the unwind: everything still
+    /// ahead of it in the ledger is on the host, and the state has to stay on
+    /// disk for `teardown` to resume from.
+    #[test]
+    fn an_undo_that_cannot_run_stops_the_unwind() -> Result<(), Box<dyn StdError>> {
+        let dispatched = Cell::new(0_u32);
+        let remove_output = |_: &str, _: Option<(i32, i32)>| {
+            Err(Error::Tool {
+                command: "hyprctl output remove".to_owned(),
+                message: "output is busy".to_owned(),
+            })
+        };
+        let dispatch = |_: &[&str]| {
+            dispatched.set(dispatched.get() + 1);
+            Ok(())
+        };
+        let ledger = vec![
+            HostMutation::OutputCreated {
+                output: "hyprpilot-alpha".to_owned(),
+            },
+            HostMutation::WorkspaceRenamed {
+                id: 3,
+                from: "3".to_owned(),
+                to: "agent-alpha".to_owned(),
+            },
+        ];
+        let unwound = unwind(
+            &ledger::UndoEffects {
+                remove_output: &remove_output,
+                dispatch: &dispatch,
+            },
+            &ledger,
+            None,
+        );
+        assert_eq!(dispatched.get(), 1, "the rename was undone first");
+        let stopped = unwound
+            .stopped
+            .ok_or("an output that would not go has to stop the unwind")?;
+        assert!(stopped.actual.contains("output is busy"), "{stopped:?}");
+        Ok(())
     }
 
     #[test]

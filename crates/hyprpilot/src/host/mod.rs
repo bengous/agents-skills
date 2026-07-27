@@ -11,12 +11,6 @@
 //! What each mutation costs to undo lives next door, in `ledger`.
 
 pub mod hypr;
-// The ledger has no caller until the session state carries it: the type and its
-// undo land first, so the mutations can move behind it one at a time.
-#[expect(
-    dead_code,
-    reason = "persisted and drained by the following lots; the type lands first"
-)]
 pub mod ledger;
 
 use crate::error::Error;
@@ -45,6 +39,12 @@ pub fn keyword_monitor_at(
 
 pub fn keyword_workspace(workspace: &str, monitor: &str) -> Result<(), Error> {
     hypr::keyword_workspace(workspace, monitor)
+}
+
+/// The rule text `keyword_workspace` posts, so a ledger entry records exactly
+/// what went on the host.
+pub fn workspace_rule(workspace: &str, monitor: &str) -> String {
+    hypr::workspace_rule(workspace, monitor)
 }
 
 /// Takes the workspace *id*, never its name: the name is what the rename is

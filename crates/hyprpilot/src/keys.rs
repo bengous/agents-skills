@@ -373,6 +373,7 @@ mod tests {
             shown: false,
             active_address: active_address.map(str::to_owned),
             instance,
+            host: Vec::new(),
         }
     }
 

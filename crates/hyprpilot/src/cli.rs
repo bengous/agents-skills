@@ -928,6 +928,7 @@ mod tests {
                 pid: 4242,
                 console_address: "0xc0ff33".to_owned(),
             },
+            host: Vec::new(),
         }
     }
 
@@ -964,7 +965,6 @@ mod tests {
     fn valid_session(clients: &[Client]) -> Shared {
         Shared {
             output: "hyprpilot".to_owned(),
-            output_created: true,
             active_workspace: "hyprpilot".to_owned(),
             parking_workspace: "special:hyprpilot-parked".to_owned(),
             size: [1600, 1000],
@@ -973,6 +973,7 @@ mod tests {
             primary_address: clients[0].address.clone(),
             active_address: clients[1].address.clone(),
             windows: vec![tracked(&clients[0]), tracked(&clients[1])],
+            host: Vec::new(),
         }
     }
 
