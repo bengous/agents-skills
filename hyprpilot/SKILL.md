@@ -2,8 +2,9 @@
 name: hyprpilot
 description: >-
   Drive and visually inspect a native GUI app (Iced, egui, GTK, winit…) on
-  Hyprland through a headless output, leaving the user's desktop untouched
-  (focus preserved, cursor restored) — or on an agent desktop of its own, a
+  Hyprland through a headless output, leaving the user's desktop as it was
+  (every action puts their focus and cursor back) — or on an agent desktop of
+  its own, a
   nested compositor with its own seat and cursor (`--isolated`). Use when asked
   to "test the GUI", "piloter l'app native", "screenshot the app", "voir le
   rendu", to verify a native app's rendering after a change, to interact (keys,
@@ -144,8 +145,12 @@ inside the desktop and nothing is parked or restored.
 
 Shared mode only; in an agent desktop the flag is accepted and does nothing.
 
-Default: stay focusless (`key`/`type`/`click` as-is) — it works on
-winit/Iced/egui and most GTK apps. Reach for `--focus` when a widget
+Default: no explicit focus (`key`/`type`/`click` as-is) — it works on
+winit/Iced/egui and most GTK apps. `key`/`type` never touch the focus at all
+(they are delivered by window address); `click`/`scroll` inject real pointer
+input, so the compositor may focus the window under the cursor for the length
+of the action — the same restoration envelope puts the user's focus back
+either way. Reach for `--focus` when a widget
 visibly ignores focusless input: portal file choosers, XUL/Firefox menus,
 Chromium chrome shortcuts (`Ctrl+L`…). It focuses the session window for
 one action, then restores the user's focus and cursor strictly (non-zero
@@ -197,12 +202,17 @@ Caveats:
 - Routing: web/Electron **content** → agent-browser; browser **chrome**,
   portals and native windows → hyprpilot. A browser's page DOM is better
   driven semantically; its file-picker dialog is not.
-- Do not run concurrent hyprpilot commands on one session (state file is
-  not a lock). Different sessions in parallel are fine.
+- One changing command at a time per session: `target`, `session resize`,
+  `session show`/`hide` and `teardown` take the session lock and the second
+  one exits non-zero without doing anything. `shot`/`wait`/`status`/`windows`
+  and the input commands never wait for it, so do not fire them while a
+  `target` is still moving windows. Different sessions in parallel are fine.
 - One shared session at a time, whatever its name; agent desktops are
   unlimited. If `session start` reports an existing session, run
-  `hyprpilot teardown` first. A start that failed midway leaves its state on
-  purpose — `teardown` cleans it up.
+  `hyprpilot teardown` first. A start that failed after claiming the session
+  leaves its state on purpose — `teardown` cleans it up; one that failed
+  before the claim takes the app it launched down with it, so there is
+  nothing to clean.
 - File pickers work in shared mode because it drives the user's real desktop.
   An **agent desktop** cannot open them: the nested compositor inherits the
   host D-Bus session, so `FileChooser` portal calls hang with no dialog — every
@@ -211,15 +221,23 @@ Caveats:
   a file picker belongs in shared mode.
 - If an agent desktop's nested compositor dies, every command fails saying so
   and naming `teardown`; `teardown` is what cleans it up.
-- State left by an older build (`schema_version: 2`, or the unversioned
-  format) is refused by every command with the version it holds and the way
-  out; `hyprpilot teardown` still clears it.
+- State left by an older build (any older `schema_version`, or the
+  unversioned format) is refused by every command with the version it holds
+  and the way out; `hyprpilot teardown` still clears it, wherever it lives.
 - Shared `teardown` walks every tracked window in reverse adoption order:
   **attached** windows go back to their origin workspace, position and
   size (`restore`), `close`-disposition windows are actually closed, a
-  **spawned** primary is closed (`--kill` kills its process group,
-  `--close` closes an attached primary instead). Then the output is
-  removed, and the user's cursor is put back where it was. Leaving outputs
-  behind pollutes the user's monitor layout — always tear down. A corrupt
-  state aborts without removing anything and tells you how to recover with
-  `hyprpilot windows` + `hyprctl`.
+  **spawned** primary is closed (`--kill` kills its process group even if the
+  window already vanished, `--close` closes an attached primary instead).
+  Then the output is removed — only if this session created it, and only once
+  nothing sits on it — and the user's cursor is put back where it was.
+  Leaving outputs behind pollutes the user's monitor layout — always tear
+  down. A corrupt state aborts without removing anything and tells you how to
+  recover with `hyprpilot windows` + `hyprctl`.
+- A window that closed while the session was driving it can have its address
+  handed to another window: commands then fail with "never adopted" and send
+  nothing, and `teardown` leaves that window alone. Re-`target` the real one,
+  or tear down.
+- Ctrl-C during an action is the one way to leave the user's focus and cursor
+  displaced: the restoration survives an error or a crash of the command, not
+  a signal. `hyprpilot teardown` puts the desktop back.

@@ -12,8 +12,10 @@ reste le bus de session de l'utilisateur. Sous cet environnement, le file
 picker ne rend jamais la main et aucun dialogue n'apparaît, ni dans le bureau
 agent ni sur le bureau utilisateur.
 
-Limite à documenter pour le cycle : dans un bureau agent, toute app qui passe
-par le portal `FileChooser` reste bloquée sur son dialogue. Cela couvre les
+Limite à documenter pour le cycle : dans un bureau agent lancé avec le bus de
+session hérité de l'hôte — la recette gelée —, toute app qui passe par le
+portal `FileChooser` reste bloquée sur son dialogue. La piste du bus privé
+plus bas lève ce blocage, hors contrat de ce cycle. Cela couvre les
 apps GTK4, dont le picker passe par le portal quel que soit `GTK_USE_PORTAL`
 (voir plus bas).
 

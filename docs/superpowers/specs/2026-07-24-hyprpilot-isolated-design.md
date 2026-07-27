@@ -240,3 +240,25 @@ bloque aucune autre slice.
 3. Le mode partagé reste intact (gate de régression vert) et le README +
    SKILL documentent le routage : partagé = piloter MES fenêtres, isolé =
    bureau agent.
+
+## 13. Écarts entre ce design et ce qui a été livré
+
+Ajouté après la livraison du cycle, pour qu'une lecture de ce document
+n'attribue pas au code des propriétés qu'il n'a pas.
+
+- **Log nested (§6.3)** : le log est bien copié dans `sessions/<name>/`, mais
+  l'étape 5 supprime ce dossier — après un `teardown` réussi il ne reste donc
+  rien. `--out` n'a pas été implémenté. Le log survit là où il sert vraiment :
+  le rollback d'un start raté le conserve et en imprime la fin.
+- **Portails (§8)** : la slice a été jouée, verdict dans
+  `crates/hyprpilot/references/portal-probe.md`. Avec l'environnement gelé
+  (bus D-Bus hérité de l'hôte) : bloqué, donc limite documentée. La piste du
+  bus de session privé a été validée en laboratoire dans le même probe et
+  reste hors périmètre : le cycle de vie §4/§6 ne connaît pas de bus.
+- **Namespace (§7)** : `hyprpilot*` comme préfixe réservé est arrivé avec ce
+  cycle. La v2 ne réservait que le nom exact `hyprpilot`, seul output que son
+  sweep connaissait.
+- **Identité de fenêtre (schema v4)** : une fenêtre suivie est enregistrée avec
+  son `stableId` en plus de son adresse, parce que Hyprland réutilise les
+  adresses. Le design ne parlait que d'adresses ; le mode isolé n'en bénéficie
+  pas encore (TODO dans `isolated.rs`).

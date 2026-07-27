@@ -1,7 +1,9 @@
 # hyprpilot
 
 CLI to drive and visually inspect native GUI apps (Iced, egui, GTK, winit…)
-on Hyprland without touching the user's desktop. Companion binary of the
+on Hyprland while leaving the user's desktop as it was: every action restores
+the focus and the cursor it moved (see *Strict restoration*, which also says
+what `session start` itself does not restore). Companion binary of the
 `hyprpilot` skill (`../../hyprpilot/SKILL.md`).
 
 In shared mode the app's window is parked on a dedicated headless output; keys
@@ -42,14 +44,14 @@ cursor and focus of *its own* instance, never the host's.
 | Command | Role |
 |---|---|
 | `session start [--isolated] --app CMD --match-title T [--match-class C] [--size WxH]` | launch or attach, create the headless output, park the window — or build a whole agent desktop |
-| `session resize WxH` | shared only: resize the headless output in place, re-place the active window (no teardown needed) |
+| `session resize WxH` | shared only: resize the headless output in place and re-place the active window (no teardown needed); it waits for the output to report exactly `WxH` and fails otherwise |
 | `session show` / `session hide` | agent desktops only: bring the console window in front of the user, or send it back to `agent-<session>` |
 | `windows` | JSON array of every client, annotated `tracked`/`active`/`focused` — discovery without `hyprctl`+`jq` |
-| `target [--address A] [--match-title T] [--match-class C] [--pid P] [--untracked] [--wait 10s] [--on-teardown restore\|close]` | adopt another window into the session (or switch back to a tracked one); the previous target is parked, invisible. In an agent desktop it focuses the match instead, and refuses `--untracked` and `--on-teardown` |
+| `target (--address A \| --match-title T \| --match-class C \| --pid P \| --untracked) [--wait 10s] [--on-teardown restore\|close]` | at least one selector is required; adopt another window into the session (or switch back to a tracked one); the previous target is parked, invisible. In an agent desktop it focuses the match instead, and refuses `--untracked` and `--on-teardown` |
 | `key <CHORDS…> [--focus]` | send key chords (`Down`, `Ctrl+c`) without focus |
 | `type "text" [--focus]` | type character by character (US shift pairs, common French accents) |
 | `click X Y [--button b] [--double] [--absolute] [--focus]` | virtual-pointer click (`--double`: two clicks 80 ms apart); cursor + focus restored |
-| `scroll X Y --dy N [--dx N] [--absolute] [--focus]` | wheel detents at that point (positive = down/right); cursor + focus restored |
+| `scroll X Y [--dy N] [--dx N] [--absolute] [--focus]` | wheel detents at that point (positive = down/right), at least one of the two non-zero; cursor + focus restored |
 | `shot [NAME] [--full] [--out DIR]` | window-framed PNG (prints the absolute path) |
 | `wait [--stable\|--changed-from PNG] [--timeout 5s]` | poll captures until stable / changed |
 | `status` | session JSON: schema, mode, tracked windows + dispositions, active target, parked windows, configured vs effective output size. In an agent desktop: instance signature, `WAYLAND_DISPLAY`, pid, console address, `shown`, and the geometry read inside the instance |
@@ -57,8 +59,11 @@ cursor and focus of *its own* instance, never the host's.
 | `teardown [--kill] [--close]` | apply each tracked window's disposition in reverse adoption order (restore workspace + exact geometry, or close), then remove the output and state. An agent desktop is destroyed whole and refuses both flags |
 
 State lives in `$XDG_RUNTIME_DIR/hyprpilot/sessions/<name>/session.json`
-(`schema_version: 3`, one claim per name, multi-window, written atomically);
-captures, `wait` scratch files, the generated nested config and its log sit in
+(`schema_version: 4`, one claim per name, multi-window). It is published by a
+single `hard_link`, which claims the name and makes the file appear complete in
+the same step, so no reader — and no `teardown` — can find a half-written
+session; `session.lock` next to it serialises the commands that change it.
+Captures, `wait` scratch files, the generated nested config and its log sit in
 the same directory, so parallel sessions never share a file. Requires Hyprland
 (shared mode tested on 0.55, agent desktops on 0.56 — `doctor` warns on any
 other version), grim, and zenity+jq for the E2E gate.
@@ -73,11 +78,14 @@ button. Clicking one moves the focus to an invisible headless output, and
 from: looking at an agent desktop is `session show`/`session hide`, never a
 waybar click.
 
-**No state compatibility**: a `schema_version: 2` or unversioned state file
-makes every command fail with the version found, the version expected and the
-way out. Only `teardown` still reads the pre-v3 location
-`$XDG_RUNTIME_DIR/hyprpilot/session.json`, so a session left by an older build
-can be cleaned up.
+**No state compatibility**: a state file from any older schema makes every
+command fail with the version found, the version expected and the way out.
+`teardown` is the exception, in both locations — the pre-v3
+`$XDG_RUNTIME_DIR/hyprpilot/session.json` and a `schema_version: 3` file at the
+current path — so a session left by an older build is never stranded with its
+window parked on a hidden output. Those states recorded no window identity, so
+their teardown disposes of windows by address alone, as the build that wrote
+them did.
 
 ## Agent desktops (`--isolated`)
 
@@ -150,8 +158,13 @@ idempotent success.
 
 Unit tests cover the state, the mode routing, the generated nested config, the
 teardown plan and the escalation ladders; `scripts/hyprland-gate.sh all` plays
-the end-to-end scenarios against a live session (opt-in, never automatic).
-All 29 scenarios pass against Hyprland 0.56, isolated mode included. The run
+the end-to-end scenarios against a live session (opt-in, never automatic). The
+gate refuses to start on a session or a reserved workspace it does not own,
+holds a lock so two runs cannot share the desktop, checks between scenarios that
+the desktop is back to its baseline, and reports scenarios that did not run as
+`SKIP` with a non-zero exit — a gate that covered nothing is not green.
+The 29 scenarios passed against Hyprland 0.56 before the window-identity and
+session-lock changes; they have not been replayed since. The run
 found four defects no unit test could reach: `setfloating` does not clear a
 fullscreen state, so `session show` had to focus the console to drop it;
 attributing a nested compositor by diffing the instance directory is unsound
@@ -166,15 +179,36 @@ nested compositor's log before the rollback removes it.
 
 - **`ready` means capturable**: `session start` (and `target`, and
   `session resize`) only report success after the active window has been
-  placed on the output and re-read from Hyprland — contained if it fits,
-  clamped top-left with a warning suggesting `session resize` if it is
-  larger than the output. Windows are never resized automatically.
+  placed on the output and re-read from Hyprland: on the session workspace,
+  that workspace active on the output, no special workspace in front. For a
+  **floating** window the geometry is verified too — contained if it fits,
+  clamped top-left with a warning suggesting `session resize` if it is larger
+  than the output. A tiled window is laid out by Hyprland, so only its
+  workspace is checked. Windows are never resized automatically.
 - **Strict restoration**: `click`/`scroll` (and every `--focus` action)
   snapshot cursor + user focus, act, restore focus first, cursor last, and
   re-verify both (±1 px). Any restoration failure — including a concurrent
   physical mouse move, or an initial "no focus" state that cannot be
   re-established — makes the command exit non-zero with both the action
-  and restoration errors reported. No retry.
+  and restoration errors reported. No retry. A panic inside the action
+  restores the desktop before it unwinds; `SIGINT`/`SIGTERM` are **not**
+  caught, so killing a command mid-action (Ctrl-C during a long `type
+  --delay-ms`) can leave the focus and the cursor where the action put them
+  — `hyprpilot teardown` puts the desktop back.
+- **Which window a command drives**: a tracked window is recorded as its
+  address *and* Hyprland's `stableId`, because the address is a pointer the
+  compositor reuses. Every action, park, restore and close re-reads both
+  first; if the address now belongs to a window this session never adopted,
+  nothing is sent to it (actions fail naming it, teardown leaves it alone).
+- **One mutating command at a time**: `session start`, `target`,
+  `session resize`, `session show`/`hide` and `teardown` hold the session lock
+  for their whole read → change → persist → drive sequence, so two of them can
+  no longer overwrite each other's window table. `start` also holds a
+  machine-wide `shared.lock` from the singleton check to the published claim,
+  so two starts under different names cannot both take the one shared output.
+  The second command exits non-zero without touching anything. Read-only
+  commands (`shot`, `wait`, `status`, `windows`) and the input commands never
+  wait for it.
 - **`--focus`**: temporarily focuses the session's active window for
   widgets that ignore focusless input (GTK portals, XUL menus), inside the
   same single restoration envelope. The physical keyboard can reach the
@@ -185,17 +219,32 @@ nested compositor's log before the rollback removes it.
 - **Teardown by disposition**: adopted windows are `restore` (workspace,
   then exact position + size for floating windows) or `close` (waits for
   the window to disappear); already-gone windows are idempotent successes.
-  A corrupt or unknown-version state file aborts without touching the
-  output and points to `hyprpilot windows` + raw `hyprctl` commands for
-  manual recovery; the file is kept so teardown stays replayable. Without
-  a state file, an orphan `hyprpilot` output is only swept when no client
-  sits on it (`monitor: -1` counts as occupied).
+  `--kill` targets the spawned process group, not its window, so it still
+  runs when the app closed its window without exiting; a group already dead is
+  a success, and the window's own disposition still applies, so an app that
+  re-parented itself does not leave its window on the output. The group is
+  identified by its pid *and* the start time recorded at spawn: a pid the
+  kernel has since handed to someone else is never signalled. A corrupt or unknown-version state file aborts
+  without touching the output and points to `hyprpilot windows` + raw
+  `hyprctl` commands for manual recovery; the file is kept so teardown stays
+  replayable.
+- **The output only goes when it is empty**: teardown removes the session
+  output it created (one it found already there is left alone) only after
+  re-reading the compositor and finding no client on it — briefly polled, so
+  a window still unmapping is waited for rather than treated as occupancy. A
+  window that landed there by another route stops the removal, and the state
+  is kept so the teardown can be replayed once it is moved off. Without a
+  state file the orphan sweep runs the same check, but stricter: with nothing
+  to attribute a client with, one the compositor places nowhere
+  (`monitor: -1`) counts as occupied.
 
 ## Limits
 
-- Concurrent hyprpilot commands on the same session are out of contract:
-  the state file is not a lock. Concurrency *between* sessions is fine —
-  separate state directories, separate instances.
+- Concurrency *between* sessions is fine — separate state directories,
+  separate instances. On one session, the mutating commands take the session
+  lock (above); the input and capture commands do not, so a `click` fired
+  while a `target` is still moving windows can act on the window that is on
+  its way out.
 - Parked windows live on `special:hyprpilot-parked`, pinned to the session
   output by a `workspace` rule set at parking time; the rule is inert
   after teardown and disappears at the next Hyprland config reload. Never
@@ -241,10 +290,14 @@ Two limits of the shared mode are now lifted, in both modes:
   evacuated to a physical monitor, otherwise grim captures the wallpaper. An
   agent desktop needs the opposite: that workspace is renamed in place so it
   stays the active one.
-- The session file is claimed atomically (`create_new`) and written before
-  any compositor side effect: a start that fails midway stays recoverable
-  with `teardown`, which aborts rather than remove the output while the
-  window is still open.
+- The session file is claimed and written in one step (`hard_link` of a
+  fully-written sibling, which fails if the name is taken), before any
+  compositor side effect: a start that fails after that point stays
+  recoverable with `teardown`, which aborts rather than remove the output
+  while the window is still open. `--app` runs *before* the claim — the app
+  has to map a window for the session to describe it — so a start that fails
+  before the claim kills the process group it spawned instead of leaving it
+  behind, whatever made it fail.
 - Which compositor a command talks to is a value, `hypr::Ctl::{Host,
   Instance(signature)}`, resolved from the session's mode and turned into an
   `hyprctl -i <signature>` prefix: an isolated command has no path to the
