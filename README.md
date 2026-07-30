@@ -112,6 +112,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`targetify`](targetify/)                                       | Rank evidence-backed repo targets before spending scarce premium model attention                                             |
 | [`teach-back`](teach-back/)                                     | Teach a session incrementally and verify the human's understanding before advancing                                           |
 | [`unrepresentable`](unrepresentable/)                           | Make invalid states unrepresentable in new Rust, TypeScript, or Go types: state enums, newtypes, typestate                    |
+| [`update-windows`](update-windows/)                             | Update a Windows PC end to end: winget app upgrades under one elevation, then Windows Update patches and drivers              |
 
 ### Claude Code (`-cc`)
 
