@@ -15,7 +15,7 @@ Routing: `$goalify` produces Codex `/goal` payloads; `$handoff-prompt` briefs an
 You are preparing the premium-model run, not running it.
 
 - User-invoked only: require `$premium-handoff`, `premium-handoff`, or an explicit request for a premium/super/frontier model handoff.
-- Accept a `targetify` Handoff Seed, a manually provided target with objective and evidence, or a design problem with constraints and decisions (e.g. distilled from a `$grill-me` session).
+- Accept a `targetify` Handoff Seed, a manually provided target with objective and evidence, or a design problem with constraints and decisions (e.g. distilled from a `$grilling` session).
 - Do not decide where premium attention should go across the repo; use `targetify` for that.
 - Do not edit code, create branches, stage, commit, push, open PRs, install dependencies, apply live config, or implement.
 - Produce only a handoff prompt or, when requested/needed, a handoff artifact.
@@ -41,7 +41,7 @@ Target mode: confirm there is one selected target.
 
 Design mode: confirm the problem statement and hard constraints exist.
 
-- If constraints, prior decisions, or decision criteria are missing, recommend `$grill-me` to extract them, or ask only the blocking questions.
+- If constraints, prior decisions, or decision criteria are missing, recommend `$grilling` to extract them, or ask only the blocking questions.
 - Do not recommend `$targetify` for design input; repo evidence cannot produce constraints or intent.
 
 Either mode: if the work is mechanical or low-risk enough for a normal model, recommend not spending premium tokens. Ask only for blockers: missing target or problem, missing objective, missing evidence or constraints, unclear side-effect boundary.
@@ -212,5 +212,5 @@ Before final output, verify:
 - every analysis instruction changes default behavior for this target; none restates root-cause analysis, option tradeoffs, or verification in generic form;
 - every candidate, library, or technique named in the handoff was named by the user or appears in a cited artifact; the preparer added none;
 - no generic AI preamble or chain-of-thought request exists;
-- `$targetify` is recommended only in target mode with no selected target; `$grill-me` only when design inputs are missing;
+- `$targetify` is recommended only in target mode with no selected target; `$grilling` only when design inputs are missing;
 - the result is usable manually without any model integration.

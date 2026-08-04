@@ -70,6 +70,6 @@ For `design`, use 3+ independent design passes when the runtime and user authori
 
 ## Decision Gates
 
-At candidate selection and design approval, use a `$grill-me`-style loop: ask questions one at a time and provide the recommended answer.
+At candidate selection and design approval, use a `$grilling`-style loop: ask questions one at a time and provide the recommended answer.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.

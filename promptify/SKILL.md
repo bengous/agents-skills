@@ -1,6 +1,6 @@
 ---
 name: promptify
-description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $promptify or explicitly names this skill with one raw prompt argument. Transform a rough dictated instruction into a clean GPT-5.5-optimized prompt. If blocking ambiguities remain, do not produce the final prompt; route to $grill-me first."
+description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $promptify or explicitly names this skill with one raw prompt argument. Transform a rough dictated instruction into a clean GPT-5.5-optimized prompt. If blocking ambiguities remain, do not produce the final prompt; route to $grilling first."
 ---
 
 # Promptify
@@ -49,17 +49,17 @@ Before writing the final prompt, check for blockers:
 - missing output format;
 - high-stakes or irreversible action without confirmation.
 
-If any blocker remains, do **not** output the final prompt. Instead, invoke `$grill-me` with the smallest clarification brief:
+If any blocker remains, do **not** output the final prompt. Instead, invoke `$grilling` with the smallest clarification brief:
 
 ```text
-$grill-me
+$grilling
 Goal: clarify this raw prompt before Promptify writes the final GPT-5.5 prompt.
 Raw prompt: <raw prompt>
 Blocking ambiguities: <short list>
 Ask one question at a time. Stop when the final prompt can be written safely.
 ```
 
-After `$grill-me` resolves the blockers, resume and produce the final prompt.
+After `$grilling` resolves the blockers, resume and produce the final prompt.
 
 ## Rewrite Rules
 
@@ -86,5 +86,5 @@ If not clear:
 Ambiguites bloquantes:
 - ...
 
-Je lance $grill-me avant de generer le prompt final.
+Je lance $grilling avant de generer le prompt final.
 ```

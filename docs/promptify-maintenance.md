@@ -40,7 +40,7 @@ The skill accepts one parameter, `prompt`, because its input should mirror the u
 
 The final prompt shape is section-based but optional. GPT-5.5 benefits from explicit outcomes, constraints, allowed actions, validation, and stopping rules, but forcing every section into every output would add noise.
 
-The ambiguity gate exists because prompt rewriting can silently invent intent. If blockers remain, the skill routes to `$grill-me` and asks one question at a time before generating the final prompt.
+The ambiguity gate exists because prompt rewriting can silently invent intent. If blockers remain, the skill routes to `$grilling` and asks one question at a time before generating the final prompt.
 
 The manual-only invocation policy exists because this skill changes user intent before another model acts on it. It should run only when Augustin explicitly invokes `$promptify` or names the skill.
 
