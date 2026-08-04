@@ -8,7 +8,7 @@ description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $prem
 
 Turn one selected target or design problem into a compact briefing for an expensive model.
 
-Routing: `$goalify` produces Codex `/goal` payloads; `$handoff-prompt` briefs an ordinary same-tier agent session; this skill briefs a scarce frontier model on one pre-selected target or design problem.
+Routing: `$goalify` produces Codex `/goal` payloads; `/meta-prompt` (claude-meta-tools) briefs an ordinary same-tier agent session; this skill briefs a scarce frontier model on one pre-selected target or design problem.
 
 ## Contract
 
