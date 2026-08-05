@@ -2,7 +2,13 @@
 //! warping over the whole monitor layout (Hyprland maps unbound absolute
 //! motion to the layout bounding box), then restoring the user's cursor
 //! position and focus.
+//!
+//! In an isolated session the pointer is created on the nested compositor of
+//! the agent desktop instead, over its own single-output layout, and nothing is
+//! restored: that seat has no human on it (`Route` and `Seat` below).
 
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,8 +21,10 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 };
 
 use crate::error::Error;
-use crate::hypr;
-use crate::session;
+use crate::guard;
+use crate::hypr::{self, Ctl};
+use crate::isolated;
+use crate::session::{self, Isolated, ModeState};
 
 const VIRTUAL_POINTER_INTERFACE: &str = "zwlr_virtual_pointer_manager_v1";
 const BUTTON_GAP: Duration = Duration::from_millis(30);
@@ -25,7 +33,6 @@ const DOUBLE_CLICK_GAP: Duration = Duration::from_millis(80);
 const DETENT_GAP: Duration = Duration::from_millis(20);
 /// One standard wheel detent in `wl_pointer` continuous-axis units.
 const DETENT_VALUE: f64 = 15.0;
-const WARP_TOLERANCE: i32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MouseButton {
@@ -71,10 +78,43 @@ wayland_client::delegate_noop!(State: ignore ZwlrVirtualPointerManagerV1);
 wayland_client::delegate_noop!(State: ignore ZwlrVirtualPointerV1);
 wayland_client::delegate_noop!(State: ignore wl_seat::WlSeat);
 
+/// Which compositor the virtual pointer is created on: the user's session, from
+/// the environment, or an agent desktop's nested compositor, by socket path.
+/// The socket is passed explicitly because the process environment is never
+/// modified — a shared-mode command in this same binary must keep seeing the
+/// user's `WAYLAND_DISPLAY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seat<'a> {
+    User,
+    Agent(&'a Path),
+}
+
+impl Seat<'_> {
+    fn connect(self) -> Result<Connection, Error> {
+        match self {
+            Self::User => Connection::connect_to_env()
+                .map_err(|e| Error::Pointer(format!("connecting to the Wayland display: {e}"))),
+            Self::Agent(socket) => {
+                let stream = UnixStream::connect(socket).map_err(|e| {
+                    Error::Pointer(format!(
+                        "connecting to the agent desktop socket {}: {e}",
+                        socket.display()
+                    ))
+                })?;
+                Connection::from_socket(stream).map_err(|e| {
+                    Error::Pointer(format!(
+                        "opening a Wayland connection on {}: {e}",
+                        socket.display()
+                    ))
+                })
+            }
+        }
+    }
+}
+
 /// True if the compositor exposes the virtual pointer protocol.
 pub fn probe_virtual_pointer() -> Result<bool, Error> {
-    let conn = Connection::connect_to_env()
-        .map_err(|e| Error::Pointer(format!("connecting to the Wayland display: {e}")))?;
+    let conn = Seat::User.connect()?;
     let (globals, _queue) = registry_queue_init::<State>(&conn)
         .map_err(|e| Error::Pointer(format!("listing Wayland globals: {e}")))?;
     Ok(globals.contents().with_list(|list| {
@@ -93,9 +133,8 @@ struct VirtualPointer {
 }
 
 impl VirtualPointer {
-    fn connect(layout: &hypr::LayoutBox) -> Result<Self, Error> {
-        let conn = Connection::connect_to_env()
-            .map_err(|e| Error::Pointer(format!("connecting to the Wayland display: {e}")))?;
+    fn connect(seat: Seat<'_>, layout: &hypr::LayoutBox) -> Result<Self, Error> {
+        let conn = seat.connect()?;
         let (globals, queue) = registry_queue_init::<State>(&conn)
             .map_err(|e| Error::Pointer(format!("listing Wayland globals: {e}")))?;
         let qh = queue.handle();
@@ -209,21 +248,130 @@ fn f64_to_u32(value: f64) -> u32 {
     value.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-fn near(actual: (i32, i32), expected: (i32, i32)) -> bool {
-    (actual.0 - expected.0).abs() <= WARP_TOLERANCE
-        && (actual.1 - expected.1).abs() <= WARP_TOLERANCE
+/// Which seat the pointer acts on, and whose layout the target coordinates
+/// belong to. An isolated session resolves every read and every pointer event
+/// to its own nested compositor: the user's cursor is never moved.
+enum Route {
+    Shared {
+        window: hypr::Client,
+    },
+    Isolated {
+        signature: String,
+        socket: PathBuf,
+        window: hypr::Client,
+    },
+}
+
+/// The nested compositor an isolated session drives, read from its state alone.
+#[derive(Debug, PartialEq, Eq)]
+struct AgentTarget {
+    signature: String,
+    socket: PathBuf,
+    address: String,
+}
+
+impl AgentTarget {
+    /// `isolated::live_instance` is the one gate for a dead or unfinished agent
+    /// desktop, so no pointer created here can land on the user's seat.
+    fn resolve(name: &str, isolated: &Isolated, runtime_dir: &Path) -> Result<Self, Error> {
+        let instance = isolated::live_instance(name, isolated)?;
+        Ok(Self::of(
+            instance,
+            isolated::recorded_window(name, isolated)?,
+            runtime_dir,
+        ))
+    }
+
+    fn of(instance: isolated::LiveInstance<'_>, address: &str, runtime_dir: &Path) -> Self {
+        Self {
+            signature: instance.signature.to_owned(),
+            socket: socket_path(runtime_dir, instance.wayland_display),
+            address: address.to_owned(),
+        }
+    }
+}
+
+impl Route {
+    fn resolve(name: &str, command: &'static str) -> Result<Self, Error> {
+        match session::load(name)?.state {
+            // Shared mode goes through `session::current_window`, which re-reads
+            // the state and stays the single definition of the window a session
+            // drives on the user's desktop.
+            ModeState::Shared(_) => {
+                let (_, window) = session::current_window(name, command)?;
+                Ok(Self::Shared { window })
+            }
+            ModeState::Isolated(isolated) => {
+                // The nested compositor's socket sits directly in
+                // `$XDG_RUNTIME_DIR`, next to the user's own, not under the
+                // crate's session directory.
+                let target = AgentTarget::resolve(name, &isolated, &session::runtime_root()?)?;
+                let window = agent_window(&target)?;
+                Ok(Self::Isolated {
+                    signature: target.signature,
+                    socket: target.socket,
+                    window,
+                })
+            }
+        }
+    }
+
+    fn window(&self) -> &hypr::Client {
+        match self {
+            Self::Shared { window } | Self::Isolated { window, .. } => window,
+        }
+    }
+
+    fn ctl(&self) -> Ctl<'_> {
+        match self {
+            Self::Shared { .. } => Ctl::Host,
+            Self::Isolated { signature, .. } => Ctl::Instance(signature),
+        }
+    }
+
+    fn seat(&self) -> Seat<'_> {
+        match self {
+            Self::Shared { .. } => Seat::User,
+            Self::Isolated { socket, .. } => Seat::Agent(socket),
+        }
+    }
+
+    /// The window to focus before acting, if any. `--focus` is accepted and
+    /// ignored on an agent desktop: its target window already is the focused
+    /// window of that seat.
+    fn focus_address(&self, focus: bool) -> Option<&str> {
+        match self {
+            Self::Shared { window } => focus.then_some(window.address.as_str()),
+            Self::Isolated { .. } => None,
+        }
+    }
+}
+
+fn socket_path(runtime_dir: &Path, wayland_display: &str) -> PathBuf {
+    runtime_dir.join(wayland_display)
+}
+
+/// The target window as the nested compositor sees it: `at` and `size` are then
+/// in the agent desktop's layout, which is what the warp needs.
+fn agent_window(target: &AgentTarget) -> Result<hypr::Client, Error> {
+    hypr::clients_on(Ctl::Instance(&target.signature))?
+        .into_iter()
+        .find(|client| client.address == target.address)
+        .ok_or_else(|| Error::WindowGone(target.address.clone()))
 }
 
 pub fn click(
+    name: &str,
     x: i32,
     y: i32,
     button: MouseButton,
     double: bool,
     absolute: bool,
+    focus: bool,
 ) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
-    let (gx, gy) = resolve_target(&window, x, y, absolute)?;
-    let (cursor_note, focus_note) = at_target(gx, gy, |pointer| {
+    let route = Route::resolve(name, "click")?;
+    let (gx, gy) = resolve_target(route.window(), x, y, absolute)?;
+    let note = at_target(&route, gx, gy, focus, |pointer| {
         if double {
             pointer.double_click(button)
         } else {
@@ -232,16 +380,24 @@ pub fn click(
     })?;
     let verb = if double { "double-clicked" } else { "clicked" };
     Ok(format!(
-        "{verb} {} at ({gx}, {gy}) — {cursor_note}, {focus_note}",
+        "{verb} {} at ({gx}, {gy}) — {note}",
         button.label()
     ))
 }
 
-pub fn scroll(x: i32, y: i32, dx: i32, dy: i32, absolute: bool) -> Result<String, Error> {
+pub fn scroll(
+    name: &str,
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+    absolute: bool,
+    focus: bool,
+) -> Result<String, Error> {
     let plan = detent_plan(dx, dy)?;
-    let (_, window) = session::current_window()?;
-    let (gx, gy) = resolve_target(&window, x, y, absolute)?;
-    let (cursor_note, focus_note) = at_target(gx, gy, |pointer| pointer.scroll(&plan))?;
+    let route = Route::resolve(name, "scroll")?;
+    let (gx, gy) = resolve_target(route.window(), x, y, absolute)?;
+    let note = at_target(&route, gx, gy, focus, |pointer| pointer.scroll(&plan))?;
     let mut amounts = Vec::new();
     if dy != 0 {
         amounts.push(format!("dy {dy}"));
@@ -250,7 +406,7 @@ pub fn scroll(x: i32, y: i32, dx: i32, dy: i32, absolute: bool) -> Result<String
         amounts.push(format!("dx {dx}"));
     }
     Ok(format!(
-        "scrolled {} at ({gx}, {gy}) — {cursor_note}, {focus_note}",
+        "scrolled {} at ({gx}, {gy}) — {note}",
         amounts.join(", ")
     ))
 }
@@ -302,50 +458,61 @@ fn detent_plan(dx: i32, dy: i32) -> Result<Vec<(wl_pointer::Axis, f64, i32)>, Er
     Ok(plan)
 }
 
-/// Shared warp envelope: records the user's cursor and focus, warps to the
-/// target, verifies the landing position, runs `act`, then always attempts to
-/// warp back and re-focus — even when `act` fails — before reporting the
-/// primary error. Returns the cursor and focus restoration notes.
+/// Warps to the target and acts there, returning the note the command reports.
+/// On the user's seat everything runs inside the guard, which restores cursor
+/// and focus; on an agent desktop's seat there is no human, so nothing is
+/// snapshotted and nothing is restored.
 fn at_target(
+    route: &Route,
     gx: i32,
     gy: i32,
+    focus: bool,
     act: impl FnOnce(&mut VirtualPointer) -> Result<(), Error>,
-) -> Result<(String, String), Error> {
-    let monitors = hypr::monitors()?;
-    let layout = hypr::layout_box(&monitors)?;
-    let before_cursor = hypr::cursor_pos()?;
-    let before_active = hypr::active_window()?;
-
-    let mut pointer = VirtualPointer::connect(&layout)?;
-    pointer.warp(gx, gy)?;
-
-    // From here the cursor has moved: whatever happens next, always attempt
-    // to warp back and re-focus before reporting the primary error.
-    let action = verify_and_act(&mut pointer, gx, gy, act);
-    let warp_back = pointer.warp(before_cursor.0, before_cursor.1);
-    drop(pointer);
-    let focus_note = restore_focus(before_active.map(|w| w.address));
-    action?;
-    warp_back?;
-    let focus_note = focus_note?;
-
-    let restored_cursor = hypr::cursor_pos()?;
-    let cursor_note = if near(restored_cursor, before_cursor) {
-        format!("cursor restored to {restored_cursor:?}")
-    } else {
-        format!("cursor at {restored_cursor:?}, expected {before_cursor:?}")
-    };
-    Ok((cursor_note, focus_note))
+) -> Result<String, Error> {
+    let seat = route.seat();
+    let ctl = route.ctl();
+    match route {
+        Route::Shared { .. } => {
+            let (cursor_note, focus_note) = guard::run(
+                route.focus_address(focus),
+                || {
+                    let monitors = hypr::monitors()?;
+                    hypr::layout_box(&monitors)
+                },
+                |layout| {
+                    let mut pointer = VirtualPointer::connect(seat, layout)?;
+                    pointer.warp(gx, gy)?;
+                    verify_and_act(&mut pointer, ctl, gx, gy, act)
+                },
+                |layout, cursor| {
+                    let mut pointer = VirtualPointer::connect(seat, layout)?;
+                    pointer.warp(cursor.0, cursor.1)
+                },
+            )?;
+            Ok(format!("{cursor_note}, {focus_note}"))
+        }
+        Route::Isolated { .. } => {
+            let monitors = hypr::monitors_on(ctl)?;
+            let layout = hypr::layout_box(&monitors)?;
+            let mut pointer = VirtualPointer::connect(seat, &layout)?;
+            pointer.warp(gx, gy)?;
+            verify_and_act(&mut pointer, ctl, gx, gy, act)?;
+            Ok(format!(
+                "cursor left at ({gx}, {gy}) on the agent desktop seat"
+            ))
+        }
+    }
 }
 
 fn verify_and_act(
     pointer: &mut VirtualPointer,
+    ctl: Ctl<'_>,
     gx: i32,
     gy: i32,
     act: impl FnOnce(&mut VirtualPointer) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let warped = hypr::cursor_pos()?;
-    if !near(warped, (gx, gy)) {
+    let warped = hypr::cursor_pos_on(ctl)?;
+    if !guard::cursor_near(warped, (gx, gy)) {
         return Err(Error::Pointer(format!(
             "warp landed at {warped:?} instead of ({gx}, {gy}) — absolute motion mapping mismatch"
         )));
@@ -355,36 +522,145 @@ fn verify_and_act(
     Ok(())
 }
 
-fn restore_focus(before_address: Option<String>) -> Result<String, Error> {
-    let after_address = hypr::active_window()?.map(|w| w.address);
-    if before_address == after_address {
-        return Ok("focus unchanged".to_owned());
-    }
-    match before_address {
-        Some(address) => {
-            hypr::dispatch(&["focuswindow", &format!("address:{address}")])?;
-            Ok(format!("focus restored to {address}"))
-        }
-        None => Ok("no previous focus to restore".to_owned()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::error::Error as StdError;
+
     use super::*;
+    use crate::session::Instance;
+
+    const SIGNATURE: &str = "abcdef_1730000000";
+    const RUNTIME_DIR: &str = "/run/user/1000";
 
     fn window() -> hypr::Client {
         hypr::Client {
             address: "0xabc".to_owned(),
+            stable_id: "9001".to_owned(),
             at: [100, 200],
             size: [800, 600],
             workspace: hypr::WorkspaceRef {
                 name: "special:pilot".to_owned(),
             },
+            floating: false,
+            monitor: 0,
             class: String::new(),
+            initial_class: String::new(),
             title: "App".to_owned(),
+            initial_title: "App".to_owned(),
             pid: 1,
         }
+    }
+
+    fn live() -> Instance {
+        Instance::Live {
+            signature: SIGNATURE.to_owned(),
+            wayland_display: "wayland-2".to_owned(),
+            pid: 4242,
+            console_address: "0xc0ff33".to_owned(),
+        }
+    }
+
+    fn agent_state(instance: Instance, active_address: Option<&str>) -> Isolated {
+        Isolated {
+            output: "hyprpilot-alpha".to_owned(),
+            workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
+            size: [1600, 1000],
+            shown: false,
+            active_address: active_address.map(str::to_owned),
+            instance,
+            host: Vec::new(),
+        }
+    }
+
+    fn agent_route() -> Route {
+        Route::Isolated {
+            signature: SIGNATURE.to_owned(),
+            socket: PathBuf::from("/run/user/1000/wayland-2"),
+            window: window(),
+        }
+    }
+
+    #[test]
+    fn the_agent_socket_sits_beside_the_users_own_in_the_runtime_dir() {
+        assert_eq!(
+            socket_path(Path::new(RUNTIME_DIR), "wayland-2"),
+            PathBuf::from("/run/user/1000/wayland-2")
+        );
+    }
+
+    #[test]
+    fn an_agent_target_carries_the_instance_signature_socket_and_window() {
+        let instance = isolated::LiveInstance {
+            signature: SIGNATURE,
+            wayland_display: "wayland-2",
+            pid: 4242,
+            console: "0xc0ff33",
+        };
+        assert_eq!(
+            AgentTarget::of(instance, "0xdead", Path::new(RUNTIME_DIR)),
+            AgentTarget {
+                signature: SIGNATURE.to_owned(),
+                socket: PathBuf::from("/run/user/1000/wayland-2"),
+                address: "0xdead".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_agent_desktop_pointer_is_created_on_its_own_socket_and_read_from_its_own_instance() {
+        let route = agent_route();
+        assert_eq!(
+            route.seat(),
+            Seat::Agent(Path::new("/run/user/1000/wayland-2"))
+        );
+        assert_eq!(route.ctl(), Ctl::Instance(SIGNATURE));
+
+        let shared = Route::Shared { window: window() };
+        assert_eq!(shared.seat(), Seat::User);
+        assert_eq!(shared.ctl(), Ctl::Host);
+    }
+
+    #[test]
+    fn focus_is_a_no_op_on_an_agent_desktop_seat() {
+        assert_eq!(agent_route().focus_address(true), None);
+        assert_eq!(agent_route().focus_address(false), None);
+        let shared = Route::Shared { window: window() };
+        assert_eq!(shared.focus_address(true), Some("0xabc"));
+        assert_eq!(shared.focus_address(false), None);
+    }
+
+    #[test]
+    fn a_pending_instance_is_refused_with_a_teardown_hint() -> Result<(), Box<dyn StdError>> {
+        let state = agent_state(Instance::Pending, Some("0xdead"));
+        let Err(error) = AgentTarget::resolve("alpha", &state, Path::new(RUNTIME_DIR)) else {
+            return Err("a pending instance has no seat to act on".into());
+        };
+        assert!(
+            matches!(error, Error::AgentDesktopUnready { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("never spawned"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_dead_instance_is_refused_instead_of_reaching_the_users_seat()
+    -> Result<(), Box<dyn StdError>> {
+        // Pid 4242 does not carry this session's marker in the real `/proc`,
+        // which is exactly what a crashed nested compositor looks like; the probe
+        // itself is asserted against a fake `/proc` in `isolated`.
+        let state = agent_state(live(), Some("0xdead"));
+        let Err(error) = AgentTarget::resolve("alpha", &state, Path::new(RUNTIME_DIR)) else {
+            return Err("a dead instance has no seat to act on".into());
+        };
+        assert!(matches!(error, Error::AgentDesktopDead { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("is dead"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
+        Ok(())
     }
 
     #[test]

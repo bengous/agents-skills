@@ -1,0 +1,16 @@
+[
+  {
+    "address": "0xoccupied",
+    "stableId": "6001",
+    "at": [5120, 0],
+    "size": [800, 600],
+    "workspace": {"name": "hyprpilot"},
+    "floating": true,
+    "monitor": 1,
+    "class": "fixture",
+    "initialClass": "fixture",
+    "title": "Output occupant",
+    "initialTitle": "Output occupant",
+    "pid": 1001
+  }
+]

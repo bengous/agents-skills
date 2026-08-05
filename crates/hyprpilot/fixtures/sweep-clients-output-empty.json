@@ -1,0 +1,16 @@
+[
+  {
+    "address": "0xphysical",
+    "stableId": "6101",
+    "at": [0, 0],
+    "size": [800, 600],
+    "workspace": {"name": "1"},
+    "floating": true,
+    "monitor": 0,
+    "class": "fixture",
+    "initialClass": "fixture",
+    "title": "Physical output client",
+    "initialTitle": "Physical output client",
+    "pid": 1002
+  }
+]
