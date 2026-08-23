@@ -16,21 +16,10 @@ allowed-tools:
   - Bash
   - WebFetch
   - WebSearch
-  - mcp__bun__run-bun-script-file
-  - mcp__bun__run-bun-eval
-  - mcp__bun__run-bun-install
-  - mcp__bun__run-bun-script
-  - mcp__bun__run-bun-build
-  - mcp__bun__run-bun-test
-  - mcp__bun__analyze-bun-performance
-  - mcp__bun__benchmark-bun-script
-  - mcp__bun__start-bun-server
-  - mcp__bun__list-servers
-  - mcp__bun__stop-server
-  - mcp__bun__get-server-logs
-  - mcp__bun__get-bun-version
-  - mcp__bun__list-bun-versions
-  - mcp__bun__select-bun-version
+  - mcp__bun-docs__search_bun
+  - mcp__bun-docs__read_bun_page
+  - mcp__bun-docs__list_bun_pages
+  - mcp__bun-docs__grep_bun
   - mcp__Context7__resolve-library-id
   - mcp__Context7__query-docs
   - mcp__exa__web_search_exa
@@ -61,8 +50,9 @@ Load only the reference needed for the task.
 
 1. Inspect local truth first: `package.json`, `bunfig.toml`, `tsconfig.json`, lockfile,
    scripts, current Bun version, and existing test/build commands.
-2. Use Bun MCP tools when they are actually loaded. If not, use Bash for local Bun
-   commands and fetch official docs for API uncertainty.
+2. Use the Bun docs MCP tools (`mcp__bun-docs__*`) for official documentation
+   lookups when they are loaded. Run Bun commands (run/test/build/install) with
+   Bash; fall back to Context7/exa or fetching official docs for API uncertainty.
 3. For Bun API changes, verify the current release with official Bun docs and source
    before updating guidance; Bun APIs move quickly.
 4. Keep root code plain TypeScript unless the project already uses a framework. Bun is

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2310,SC2312
-# Probes the current project for Bun MCP server installation.
+# Probes the current project for the official Bun docs MCP server (bun-docs).
 # Called via !`command` preprocessing when the skill loads.
 # Outputs XML to <bun-mcp-status>.
 set -euo pipefail
@@ -32,13 +32,11 @@ indent() {
 }
 
 # The JSON block to inject into .mcp.json (canonical, no extra indentation).
-mcp_bun_json() {
+mcp_bun_docs_json() {
 	cat <<-'JSON'
-		"bun": {
-		  "command": "bunx",
-		  "args": ["-y", "mcp-bun@latest"],
-		  "env": { "DISABLE_NOTIFICATIONS": "true" },
-		  "type": "stdio"
+		"bun-docs": {
+		  "type": "http",
+		  "url": "https://bun.com/docs/mcp"
 		}
 	JSON
 }
@@ -49,12 +47,12 @@ if [[ ! -f "${mcp_file}" ]]; then
 	cat <<XML
 <bun-mcp-status installed="false" mcp-file="missing">
   <action>
-    Bun MCP server is not configured (no .mcp.json found at project root).
+    Bun docs MCP server is not configured (no .mcp.json found at project root).
 
-    Bun MCP is optional. Before editing project config, ask the user whether to
-    add it:
-    "Bun MCP is not configured in this project. Want me to create .mcp.json?
-     You will need to reload plugins/tools after."
+    The Bun docs MCP server is optional. Before editing project config, ask the
+    user whether to add it:
+    "The Bun docs MCP server is not configured in this project. Want me to create
+     .mcp.json? You will need to reload plugins/tools after."
 
     If the user accepts:
     1. Read ${mcp_file} first (it may already exist with other servers).
@@ -62,11 +60,12 @@ if [[ ! -f "${mcp_file}" ]]; then
        If it does not exist, create it with this content:
        {
          "mcpServers": {
-$(mcp_bun_json | indent 10)
+$(mcp_bun_docs_json | indent 10)
          }
        }
     3. Tell the user to run /reload-plugins to activate the MCP server.
-    4. After reload, mcp__bun__* tools become available.
+    4. After reload, the official Bun docs tools become available: search_bun,
+       read_bun_page, list_bun_pages, grep_bun.
 
     If the user declines:
     Use official Bun docs/Context7/exa for documentation lookups, and Bash for
@@ -77,22 +76,22 @@ XML
 	exit 0
 fi
 
-# --- Case 2: .mcp.json exists, check for "bun" entry ---
+# --- Case 2: .mcp.json exists, check for "bun-docs" entry ---
 
-has_bun=$(jq -r '.mcpServers.bun // empty' "${mcp_file}" 2>/dev/null) || true
+has_bun=$(jq -r '.mcpServers["bun-docs"] // empty' "${mcp_file}" 2>/dev/null) || true
 
 if [[ -n "${has_bun}" ]]; then
 	cat <<'XML'
 <bun-mcp-status installed="true">
   <guidance>
-    Bun MCP server is available. Prefer Bun MCP tools over Bash for:
-    - Running scripts: run-bun-script-file, run-bun-eval
-    - Testing: run-bun-test
-    - Building: run-bun-build
-    - Package management: run-bun-install
-    - Performance: analyze-bun-performance, benchmark-bun-script
-    Fall back to official Bun docs/Context7/exa for documentation lookups not
-    covered by MCP tools.
+    Bun docs MCP server is available. Prefer its official documentation tools
+    over fetching pages by hand:
+    - Search the docs: search_bun
+    - Read a page: read_bun_page
+    - List pages under a path: list_bun_pages
+    - Exact keyword/regex search: grep_bun
+    Run bun commands directly with Bash; fall back to Context7/exa for lookups
+    not covered by these tools.
   </guidance>
 </bun-mcp-status>
 XML
@@ -100,16 +99,16 @@ else
 	cat <<XML
 <bun-mcp-status installed="false" mcp-file="exists">
   <action>
-    .mcp.json exists but has no "bun" MCP server entry.
+    .mcp.json exists but has no "bun-docs" MCP server entry.
 
-    Bun MCP is optional. Before editing project config, ask the user whether to
-    add it:
-    "Bun MCP is not configured in this project's .mcp.json. Want me to add it?
-     You will need to reload plugins/tools after."
+    The Bun docs MCP server is optional. Before editing project config, ask the
+    user whether to add it:
+    "The Bun docs MCP server is not configured in this project's .mcp.json.
+     Want me to add it? You will need to reload plugins/tools after."
 
     If the user accepts:
-    1. Read ${mcp_file}, add "bun" to the mcpServers object:
-$(mcp_bun_json | indent 7)
+    1. Read ${mcp_file}, add "bun-docs" to the mcpServers object:
+$(mcp_bun_docs_json | indent 7)
     2. Write the updated JSON back to ${mcp_file}.
     3. Tell the user to run /reload-plugins to activate the MCP server.
 

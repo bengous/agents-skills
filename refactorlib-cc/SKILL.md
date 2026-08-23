@@ -19,9 +19,6 @@ allowed-tools:
   - mcp__exa__web_search_exa
   - mcp__exa__get_code_context_exa
   - mcp__exa__crawling_exa
-  - mcp__bun__run-bun-eval
-  - mcp__bun__get-bun-version
-  - mcp__bun__analyze-bun-performance
 ---
 
 # refactorlib
