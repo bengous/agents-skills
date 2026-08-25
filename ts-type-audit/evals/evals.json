@@ -1,0 +1,21 @@
+{
+    "skill_name": "ts-type-audit",
+    "evals": [
+        {
+            "id": 1,
+            "eval_name": "fixture-smells-plantes",
+            "prompt": "Audite le typage TypeScript de ce repo et dis-moi ce qui pèche.",
+            "expected_output": "Trois rapports normalisés en 8 sections écrits dans reports/, plus une synthèse croisée classée en chat. Le fixture contient des défauts plantés : un switch de dispatch avec default-fallback sans épuisement never (doit ressortir majeur), deux paramètres string adjacents de domaines différents userId/orderId (candidat branded types), un invariant porté par une garde dupliquée dans deux fichiers (mineur), zéro test de type, un pairing acquire/release en try/finally. Les absences sans site légitime (variance, NoInfer) doivent être statuées absentes SANS recommandation d'introduction.",
+            "assertions": [],
+            "files": []
+        },
+        {
+            "id": 2,
+            "eval_name": "ccgateways-reponse-connue",
+            "prompt": "Audite la maturité du typage TS de ce repo.",
+            "expected_output": "Retrouve les constats connus de la passe du 2026-08-26 : dispatch src/cli.ts par casts sans assertNever (majeur), duplication de la reconstruction du tuple non vide entre touched-files.ts et stop-check-edited.ts (mineur), tools/** hors include du tsconfig (mineur). Fusionne le chevauchement T1/T3 sur src/cli.ts en un constat consolidé. Ne recommande pas d'introduire variance, NoInfer ou remapping de clés.",
+            "assertions": [],
+            "files": []
+        }
+    ]
+}
