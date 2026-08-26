@@ -1,0 +1,7 @@
+interface:
+  display_name: "GitHub MD Preview"
+  short_description: "Render a local markdown file like GitHub"
+  default_prompt: "$github-md-preview "
+
+policy:
+  allow_implicit_invocation: false

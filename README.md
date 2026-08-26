@@ -91,6 +91,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`deepen-codebase-architecture`](deepen-codebase-architecture/) | Audit or design deeper codebase modules with evidence-backed architecture proposals                                           |
 | [`design-system-creator`](design-system-creator/)               | Create design systems based on physical/sensory anchoring                                                                     |
 | [`deterministic-driver`](deterministic-driver/)                 | Build and operate deterministic Workflow() drivers for large multi-phase autonomous tasks                                     |
+| [`github-md-preview`](github-md-preview/)                       | Render a local markdown file exactly as GitHub would, on localhost, before pushing                                            |
 | [`goalify`](goalify/)                                           | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file                                   |
 | [`harden-bash`](harden-bash/)                                   | Write and harden production shell scripts                                                                                     |
 | [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
