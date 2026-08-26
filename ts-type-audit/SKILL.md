@@ -1,161 +1,103 @@
 ---
 name: ts-type-audit
-description: |
-  Audit de maturité du typage d'une codebase TypeScript, en trois tiers de
-  mécanismes avancés : états impossibles (unions discriminées, branded types,
-  épuisement never, typestate), précision de l'inférence (tuples variadiques,
-  types conditionnels, variance), discipline (tsconfig durci,
-  parse-don't-validate, tests de types). Lance 3 sous-agents parallèles en
-  lecture seule, un par tier ; chacun produit un rapport normalisé ; puis
-  synthèse croisée classée en chat. Utiliser dès que l'utilisateur veut auditer
-  ou évaluer le typage TypeScript d'un projet, savoir si une base exploite les
-  mécanismes avancés ("premium") de TS, détecter candidats branded types,
-  primitive obsession, exhaustivité manquante, ou mettre à jour un audit
-  précédent. Audit statique de typage uniquement : pas une chasse aux bugs, pas
-  une revue de perf ni de style. Diffère de state-machine/unrepresentable
-  (conception de code neuf) et de code-review (revue d'un diff).
+description: Audit statique en lecture seule de la maturité du typage TypeScript d'un projet. Trois workers parallèles (états impossibles, inférence, discipline), rapports normalisés, synthèse croisée. Ne corrige rien.
+disable-model-invocation: true
+argument-hint: "[racine du projet] [sous-périmètre]"
 ---
 
 # ts-type-audit
 
-Audit statique en lecture seule du typage d'une codebase TypeScript, organisé en
-trois tiers. Un sous-agent par tier, rapports normalisés identiques en
-structure, synthèse croisée par l'orchestrateur. La valeur vient de la
-normalisation : des rapports comparables permettent la fusion des constats et
-le suivi d'une passe à l'autre.
+Trois auditeurs en lecture seule, un par tier, rendent trois rapports de
+structure identique. L'orchestrateur les vérifie, les fusionne, les classe. La
+normalisation rend les rapports comparables entre tiers et entre passes.
 
-## Étapes
+| Tier | Question | Référence |
+|---|---|---|
+| 1 · États impossibles | Quels états invalides restent écrivables ? | `references/tier1-etats.md` |
+| 2 · Précision de l'inférence | Que sait prouver le compilateur ? | `references/tier2-precision.md` |
+| 3 · Discipline | La sûreté est-elle effective et vérifiée partout ? | `references/tier3-discipline.md` |
 
-1. **Cadrer** : racine du projet, sous-périmètre éventuel, répertoire de sortie
-   des rapports (proposer `reports/` par défaut). La langue des rapports est la
-   langue de la conversation.
-2. **Lancer les 3 sous-agents en parallèle**, dans le même tour, un par tier
-   (voir `references/tier{1,2,3}.md` pour l'inventaire et le prompt de chacun).
-   Agents en lecture seule, raisonnement solide (le tier 1 juge des intentions).
-3. **Vérifier** : 3 rapports présents, 8 sections complètes, inventaire
-   exhaustif, chaque constat cité `fichier:ligne`.
-4. **Synthèse croisée** en chat (protocole plus bas).
+Le template de rapport, les taxonomies et les règles anti-biais sont dans
+`references/rapport.md`. Ce fichier est collé dans chaque brief.
 
-Pendant toute la passe : ne modifier aucun fichier du projet audité. Les
-rapports citent des numéros de ligne ; une édition pendant la passe les rend
-faux.
+## Cadrage
 
-## Prompt squelette pour chaque agent
+Fixer avant de lancer, en ne demandant que ce que le contexte ne donne pas :
 
-Adapter à chaque tier, garder la structure :
+- racine du projet, sous-périmètre éventuel ;
+- répertoire de sortie, défaut `reports/ts-type-audit/` sous la racine ;
+  vérifier qu'il est ignoré par git ou accepté comme non suivi ;
+- langue des rapports = langue de la conversation ; date = `date -I` ;
+- mode mise à jour si le répertoire de sortie contient déjà des rapports
+  `tier*.md` : chaque worker reçoit alors le rapport précédent de son tier.
+
+Pendant la passe, aucun fichier du projet audité ne change. Les constats citent
+des numéros de ligne ; une édition les rendrait faux.
+
+## Workers
+
+Lancer les 3 workers dans le même tour, briefs indépendants. Chaque brief
+contient, collés verbatim : le squelette ci-dessous, la référence du tier,
+`references/rapport.md`, et en mode mise à jour le rapport précédent du tier.
+Le worker rend le rapport comme réponse finale. L'orchestrateur l'écrit tel
+quel dans `<sortie>/tier1-etats.md`, `tier2-precision.md`,
+`tier3-discipline.md`.
+
+Modèle : raisonnement fort pour les trois (le tier 1 juge des intentions).
+Utiliser une sandbox lecture seule réelle quand le harnais en offre une. Sinon
+le brief est la seule garde, et la synthèse le dit.
+
+### Squelette de brief
 
 ```
-Rôle : auditeur lecture seule du tier N (« <question du tier> ») de la
-codebase à <racine>. Tu ne modifies rien ; tu ne lances ni tsc ni tests.
+Rôle : auditeur lecture seule du tier <N> (« <question du tier> ») de la
+codebase à <racine>[, périmètre <sous-périmètre>]. Tu ne modifies rien, tu
+n'installes rien, tu ne lances ni tsc ni tests ni aucune commande qui mute
+le dépôt ou son état.
 
 Méthode :
-1. Liste les fichiers TS du périmètre (hors node_modules, dist, fixtures).
-   Lis intégralement le code applicatif ; les gros répertoires secondaires
-   peuvent être balayés par grep ciblé.
-2. Exécute les patterns grep de départ de ta référence. Un hit de grep n'est
-   ni un constat ni une preuve : confirme chaque candidat par lecture avant
-   de conclure.
-3. Statue sur CHAQUE mécanisme de l'inventaire de ta référence (statut
-   absent / partiel / solide / n/a). Une absence peut être saine : voir
-   « Anti-biais ».
-4. Écris ton rapport toi-même à <chemin imposé>, structure exacte du
-   template ci-dessous, en <langue>.
+1. Liste les fichiers TS du périmètre (hors node_modules, dist, fichiers
+   générés, fixtures). Lis intégralement le code applicatif. Balaye par grep
+   ciblé les répertoires secondaires volumineux et nomme-les.
+2. Exécute les patterns grep de départ de ta référence. Un hit n'est ni un
+   constat ni une preuve : confirme chaque candidat par lecture.
+3. Statue sur CHAQUE mécanisme de l'inventaire : absent / partiel / solide /
+   n/a. Une absence peut être saine : voir « Anti-biais ».
+4. [Mise à jour] Rapport précédent ci-joint : conserve l'ID de tout constat
+   qui persiste, marque `résolu` ceux qui ont disparu, numérote les nouveaux
+   à la suite.
+5. Réponds avec le rapport seul, structure exacte du template, en <langue>,
+   date <date>.
 
-Interdictions : aucune édition, aucune installation, aucune commande qui
-muterait le dépôt ou son état (pas de --fix, pas de rm). Exclus de
-l'analyse le code contenu en chaînes (fixtures, contre-exemples de règles
-lint). Signale tes limites en section Méthode.
+Le code contenu dans des chaînes (fixtures, contre-exemples de règles lint)
+est hors analyse. Signale tes limites en section Méthode.
+
+--- Référence du tier ---
+<contenu de references/tier<N>-*.md>
+
+--- Rapport, taxonomies, anti-biais ---
+<contenu de references/rapport.md>
+
+--- Rapport précédent (mise à jour seulement) ---
+<contenu de <sortie>/tier<N>-*.md>
 ```
 
-## Template de rapport (structure exacte, 8 sections)
+## Vérification
 
-```markdown
-# Audit TypeScript — Tier N · <nom du tier>
+Pour chaque rapport : 8 sections présentes, chaque ligne de l'inventaire
+statuée, chaque constat cité `fichier:ligne`, section 5 avec au moins 3
+points. Rapport non conforme : relancer ce seul tier une fois, sur un modèle
+plus fort si possible. Second échec : écrire ce qui est revenu et nommer le
+trou dans la synthèse.
 
-> Rapport normalisé, rédigé par le sous-agent Tier N seul. Date de la passe :
-> <date>. Périmètre : <question du tier>.
+## Synthèse croisée
 
-## 1. Méthode
-Fichiers balayés (intégralement vs grep), patterns exécutés, limites de la
-passe (audit statique, ni tsc ni tests sauf demande explicite).
-
-## 2. Verdict
-3 à 5 phrases : niveau général du tier, les 1 à 2 absences réelles, le ton
-de la suite du rapport.
-
-## 3. Inventaire des mécanismes
-Table : # | Mécanisme | Statut (`absent`/`partiel`/`solide`/`n/a`) |
-Localisations | Note courte. Toutes les lignes de la référence du tier,
-sans exception.
-
-## 4. Constats détaillés
-Un bloc par constat, id `T<N>-F<xx>` (numérotation continue) :
-- Sévérité : `majeur` / `mineur` / `info`
-- Localisation : `fichier:lignes`
-- Constat : ce que le code permet aujourd'hui, preuve à l'appui
-- Recommandation : le changement minimal, et le comportement inchangé
-
-## 5. Déjà bien fait
-Minimum 3 points positifs concrets, cités `fichier:lignes`. Obligatoire :
-il calibre le rapport et évite le biais de ne chercher que des défauts.
-
-## 6. Priorités
-Numérotées, ordonnées par ratio bénéfice/coût, une ligne chacune.
-
-## 7. Hors périmètre
-Observations libres touchant un autre tier, sans verdict.
-
-## 8. Sources consultées
-Chemins lus, greps exécutés.
-```
-
-## Taxonomies
-
-Statuts d'inventaire : `solide` (mécanisme présent et correctement employé),
-`partiel` (présent mais inégal entre zones du dépôt), `absent` (aucun usage),
-`n/a` (aucun site concevable dans ce projet).
-
-Sévérités :
-
-- `majeur` : une déviation silencieuse est compilable aujourd'hui. Exemple
-  réel : un switch de dispatch dont le `default` route tout cas nouveau vers
-  un fallback, parce que l'épuisement `never` n'est pas prouvé.
-- `mineur` : un invariant est porté par convention, duplication ou
-  commentaire au lieu du type. Exemples réels : la même expression de garde
-  dupliquée en deux fichiers ; un tuple non vide reconstruit à la main à
-  deux endroits ; ~30 fichiers TS hors `include` du tsconfig.
-- `info` : redondance bénigne, type mort, tolérance inégale non documentée,
-  ou absence SANS site légitime. Une absence saine se constate, elle ne
-  recommande rien.
-
-## Anti-biais
-
-La règle la plus importante du skill : distinguer l'absence injustifiée de
-l'absence justifiée. Variance explicite, `NoInfer`, remapping de clés sont
-absents de la plupart des bases applicatives sans qu'aucun site ne les
-requière : statut `absent` + note « aucun site légitime », et AUCUNE
-recommandation d'introduction. Ne jamais recommander un mécanisme pour
-lui-même ; un mécanisme entre quand un invariant réel existe et que le
-compilateur peut le porter mieux qu'un commentaire ou une duplication.
-
-Autres règles :
-
-- Chaque constat cite `fichier:ligne` vérifié par lecture, jamais déduit
-  d'un grep.
-- Les fixtures et chaînes de test ne sont pas du code applicatif.
-- Deux agents qui signalent le même endroit sont un signal, pas un doublon
-  à supprimer prématurément (la fusion a lieu en synthèse).
-
-## Synthèse croisée (orchestrateur)
-
-Après vérification des 3 rapports :
-
-1. Relis les 3 rapports en entier.
-2. Fusionne les chevauchements : même fichier ou même mécanisme signalé par
-   deux tiers = un seul constat consolidé, citant les deux IDs, classé au
-   rang renforcé.
-3. Livre en chat : verdict global en une phrase ; classement des priorités
-   (majeurs d'abord, maximum 5 items, au-delà grouper les mineurs) ;
-   mention de l'emplacement des rapports.
-4. Propose les fixes applicables, un par ligne, sans en appliquer aucun
-   sans accord explicite.
+1. Relire les 3 rapports en entier.
+2. Fusionner : même fichier ou même invariant signalé par deux tiers = un
+   constat consolidé, les deux IDs cités, rang renforcé.
+3. Mise à jour : trois listes par ID, `résolus` / `persistants` / `nouveaux`.
+4. Livrer en chat : verdict global en une phrase ; priorités classées, majeurs
+   d'abord, 5 items maximum, mineurs groupés au-delà ; chemin des rapports ;
+   limites (workers non sandboxés, tier relancé, trou).
+5. Proposer les fixes, un par ligne. N'en appliquer aucun sans accord
+   explicite.

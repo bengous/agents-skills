@@ -3,59 +3,63 @@
 Question du tier : quels états ou séquences invalides reste-t-il possible
 d'écrire dans cette codebase ?
 
-## Inventaire des mécanismes (statuer sur chacun)
+## Inventaire (statuer sur chaque ligne)
 
 1. **Unions discriminées + épuisement `never`** : discriminateur unique
-   (`kind:` / `mode:` / `type:`), narrowing systématique, et preuve
-   d'épuisement (`assertNever`, `const exhausted: never`) dans chaque
-   `switch` qui dispatche une union. Un `default` qui avale des cas futurs
+   (`kind` / `type` / `status`), narrowing systématique, preuve d'épuisement
+   (`assertNever`, `const exhausted: never`) dans chaque `switch` ou chaîne
+   `if` qui dispatche une union. Un `default` qui avale des membres futurs
    sans erreur de compilation est LE constat majeur type de ce tier.
-2. **Branded / opaque types** : `unique symbol` en marque, constructeur
-   gardien unique, invariant documenté par un commentaire `SAFETY`.
-   Détecter aussi les candidats manqués : primitives porteuses d'un
-   domaine (ids, paths, tokens) passées nues entre fonctions.
-3. **Typestate / builder typé** : séquences invalides non compilables ;
-   état intermédiaire portant des corrélations (champs booléens ou
-   optionnels corrélés = suspect).
-4. **Template literal types** : types construits sur gabarits (routes,
-   clés d'événements, sélecteurs).
-5. **Paramètres génériques `const`** : `<const T>` ; usage couvert par
-   `as const` dérivé en `(typeof X)[number]` quand le besoin est simple.
+2. **Branded / opaque types** : marque par `unique symbol` ou propriété
+   fantôme, constructeur gardien unique, invariant documenté. Détecter aussi
+   les candidats manqués : primitives porteuses d'un domaine (ids, chemins,
+   tokens, montants, unités) passées nues entre fonctions, surtout deux
+   paramètres adjacents de même primitive et de domaines différents.
+3. **Typestate / builder typé** : séquences invalides non compilables ; état
+   intermédiaire portant des corrélations. Champs booléens ou optionnels
+   corrélés (`done: boolean` + `result?: T`) = suspect.
+4. **Template literal types** : types construits sur gabarits (routes, clés
+   d'événements, sélecteurs, préfixes d'ids).
+5. **`as const` et paramètres génériques `const`** : littéraux préservés,
+   dérivation `(typeof X)[number]`, `<const T>` quand l'appelant fournit le
+   littéral.
 6. **`satisfies`** : validation de forme sans élargissement.
 
-## Patterns grep de départ
+## Grep de départ
 
-- `\bnever\b`, `switch \(` + champs discriminateurs `kind:|mode:|type:|state:`
-- `z\.discriminatedUnion`
-- `unique symbol|__brand|\bbrand`
-- `<const `, `as const`
-- backtick en position de type, `extends \``
+- `\bnever\b`, `switch \(`, `default:`, discriminateurs `kind:|type:|status:|mode:`
+- `discriminatedUnion`
+- `unique symbol|__brand|\bbrand|Branded<|Opaque<`
+- `as const`, `<const `
+- `` extends ` ``, backtick en position de type
 - `satisfies`
+- `\?\?\s*(""|0|\[\]|\{\})` (valeurs par défaut fabriquées)
 
-## Calibration (constats réels d'une passe de référence)
+## Signaux typiques
 
-- `majeur` — dispatch CLI : cast `head as Subcommand` après un test
-  `includes()`, `default` qui route verbatim vers un fallback. Ajouter un
-  nom à la liste sans ajouter de `case` compile et dévie silencieusement.
-  Fix : `assertNever` dans le `default`, comportement actuel inchangé.
-- `mineur` — interface `Draft` avec champs corrélés non représentés :
-  l'invariant « stocker exige un token résolu » est vérifié deux fois à
-  l'exécution avec la même expression triple, dans deux fichiers. Fix :
-  champ discriminé construit seulement quand la clé est validée.
-- `mineur` — `?? ""` fabrique une valeur impossible dont la preuve vit
-  dans une fonction distante ; le type laisse `""` représentable.
-- `info` — garde redondante doublant une discrimination déjà garantie par
-  le schéma de validation.
-- `info` — type exporté sans aucune référence : mort, ou occasion manquée
-  de tracer une provenance.
+- `majeur` : switch de dispatch sur une union, `default` qui route vers un
+  fallback, aucun `never`. Ajouter un membre compile sans erreur et dévie
+  silencieusement. Fix : `assertNever(value)` dans le `default`, comportement
+  inchangé.
+- `majeur` : cast vers un type union après un test runtime partiel
+  (`includes`, `in`, regex), sans prédicat `value is T`.
+- `mineur` : interface à champs corrélés ; l'invariant est revérifié à
+  l'exécution par la même expression à plusieurs endroits. Fix : membre
+  d'union construit seulement quand l'invariant est établi.
+- `mineur` : `?? ""` ou `?? 0` fabrique une valeur que le domaine interdit ;
+  le type la laisse représentable.
+- `info` : garde redondante doublant une discrimination déjà garantie par un
+  schéma de validation ; type exporté sans référence.
 
 ## Pièges
 
 - Un hit de grep ne prouve rien : lire le contexte avant tout constat.
-- Les fixtures (contre-exemples de règles lint, chaînes de test)
-  contiennent souvent du code type-level : hors analyse.
-- L'absence de branded types peut être saine (petit CLI, aucun risque de
-  confusion entre domaines) : statut `absent` + note « aucun site
-  légitime », pas de recommandation.
-- Le pattern `?? fail(...)` avec `fail(): never` est une technique
-  valide de narrowing : ne pas le confondre avec un `?? ""` fautif.
+- Les fixtures et chaînes de test contiennent souvent du code type-level :
+  hors analyse.
+- L'absence de branded types peut être saine (petit outil, aucun risque de
+  confusion entre domaines) : statut `absent`, note « aucun site légitime »,
+  pas de recommandation.
+- `?? fail()` avec `fail(): never` est un narrowing valide, pas un `?? ""`
+  fautif.
+- Le typestate complet est rare et coûteux ; le recommander seulement quand
+  une séquence invalide est atteignable et a un coût réel.

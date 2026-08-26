@@ -1,21 +1,114 @@
 {
-    "skill_name": "ts-type-audit",
-    "evals": [
+  "skill_name": "ts-type-audit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Audite le typage TypeScript du projet dans fixture/. Écris les rapports dans fixture/reports/ts-type-audit/.",
+      "files": [
+        "evals/files/fixture/package.json",
+        "evals/files/fixture/tsconfig.json",
+        "evals/files/fixture/src/commands.ts",
+        "evals/files/fixture/src/orders.ts",
+        "evals/files/fixture/src/store.ts",
+        "evals/files/fixture/src/config.ts",
+        "evals/files/fixture/src/terminal.ts",
+        "evals/files/fixture/src/files.ts",
+        "evals/files/fixture/scripts/release.ts"
+      ],
+      "assertions": [
         {
-            "id": 1,
-            "eval_name": "fixture-smells-plantes",
-            "prompt": "Audite le typage TypeScript de ce repo et dis-moi ce qui pèche.",
-            "expected_output": "Trois rapports normalisés en 8 sections écrits dans reports/, plus une synthèse croisée classée en chat. Le fixture contient des défauts plantés : un switch de dispatch avec default-fallback sans épuisement never (doit ressortir majeur), deux paramètres string adjacents de domaines différents userId/orderId (candidat branded types), un invariant porté par une garde dupliquée dans deux fichiers (mineur), zéro test de type, un pairing acquire/release en try/finally. Les absences sans site légitime (variance, NoInfer) doivent être statuées absentes SANS recommandation d'introduction.",
-            "assertions": [],
-            "files": []
+          "id": "three-reports-eight-sections",
+          "text": "Writes tier1-etats.md, tier2-precision.md and tier3-discipline.md, each with the 8 template sections and every inventory line given a status"
         },
         {
-            "id": 2,
-            "eval_name": "ccgateways-reponse-connue",
-            "prompt": "Audite la maturité du typage TS de ce repo.",
-            "expected_output": "Retrouve les constats connus de la passe du 2026-08-26 : dispatch src/cli.ts par casts sans assertNever (majeur), duplication de la reconstruction du tuple non vide entre touched-files.ts et stop-check-edited.ts (mineur), tools/** hors include du tsconfig (mineur). Fusionne le chevauchement T1/T3 sur src/cli.ts en un constat consolidé. Ne recommande pas d'introduire variance, NoInfer ou remapping de clés.",
-            "assertions": [],
-            "files": []
+          "id": "dispatch-default-majeur",
+          "text": "Tier 1 reports run() in src/commands.ts as majeur: the switch default absorbs future Command members with no never exhaustiveness proof"
+        },
+        {
+          "id": "branded-candidate",
+          "text": "Tier 1 flags userId and orderId passed as bare strings (attachOrder vs lookup argument order) as a branded-type candidate"
+        },
+        {
+          "id": "duplicated-guard-mineur",
+          "text": "Reports the resolved/token correlation in Draft and the guard duplicated between orders.ts canStore and store.ts store as mineur"
+        },
+        {
+          "id": "scripts-outside-include",
+          "text": "Tier 3 reports scripts/release.ts as TypeScript outside the tsconfig include, mineur"
+        },
+        {
+          "id": "boundary-without-schema",
+          "text": "Tier 3 reports loadConfig in src/config.ts (JSON.parse as Config, raw process.env) as a boundary without a schema"
+        },
+        {
+          "id": "using-candidate",
+          "text": "Tier 3 reports withRawMode in src/terminal.ts as a using/Symbol.dispose candidate and checks target availability before recommending"
+        },
+        {
+          "id": "no-type-tests",
+          "text": "Tier 3 reports zero type tests in the repo"
+        },
+        {
+          "id": "healthy-absences-no-recommendation",
+          "text": "Variance, NoInfer, key remapping and typestate are marked absent with no legitimate site and no recommendation to introduce them"
+        },
+        {
+          "id": "positive-non-empty-tuple",
+          "text": "Section 5 of tier 1 or tier 2 cites src/files.ts nonEmptyPaths as a well-carried non-empty invariant"
+        },
+        {
+          "id": "synthesis-merges-commands",
+          "text": "The chat synthesis consolidates the tier 1 and tier 3 findings on src/commands.ts (default fallback and cast after includes) into one item citing both IDs"
+        },
+        {
+          "id": "read-only",
+          "text": "No file under fixture/src, fixture/scripts, package.json or tsconfig.json is modified; no fix is applied"
         }
-    ]
+      ],
+      "expected_output": "Three normalized 8-section reports in fixture/reports/ts-type-audit/ and a ranked chat synthesis. The planted defects surface at the right severity: switch default without never (majeur), bare userId/orderId strings (branded candidate), duplicated resolved/token guard (mineur), scripts/ outside include (mineur), config boundary without schema, try/finally acquire/release (using candidate), zero type tests. Healthy absences are stated without recommendation. Nothing is edited."
+    },
+    {
+      "id": 2,
+      "prompt": "Mets à jour l'audit de typage du projet dans fixture/. Les rapports de la passe précédente sont dans fixture/reports/ts-type-audit/.",
+      "files": [
+        "evals/files/fixture/package.json",
+        "evals/files/fixture/tsconfig.json",
+        "evals/files/fixture/src/commands.ts",
+        "evals/files/fixture/src/orders.ts",
+        "evals/files/fixture/src/store.ts",
+        "evals/files/fixture/src/config.ts",
+        "evals/files/fixture/src/terminal.ts",
+        "evals/files/fixture/src/files.ts",
+        "evals/files/fixture/scripts/release.ts",
+        "evals/files/previous/tier1-etats.md"
+      ],
+      "assertions": [
+        {
+          "id": "detects-update-mode",
+          "text": "Recognizes the existing tier1-etats.md as a previous pass and passes it to the tier 1 worker"
+        },
+        {
+          "id": "keeps-persistent-id",
+          "text": "The new tier 1 report keeps T1-F01 for the src/commands.ts switch default and marks it persistant"
+        },
+        {
+          "id": "marks-resolved",
+          "text": "T1-F02 (the ?? \"\" in src/config.ts, no longer present) is reported as résolu, not silently dropped"
+        },
+        {
+          "id": "new-ids-continue",
+          "text": "New tier 1 findings (correlated Draft fields, branded candidates) are numbered from T1-F03 onward"
+        },
+        {
+          "id": "synthesis-three-lists",
+          "text": "The chat synthesis lists résolus, persistants and nouveaux by ID"
+        },
+        {
+          "id": "read-only",
+          "text": "No source file in fixture/ is modified"
+        }
+      ],
+      "expected_output": "Update pass: tier 1 keeps T1-F01 (persistant), reports T1-F02 as résolu, numbers new findings from T1-F03. Tiers 2 and 3 run as first passes. The synthesis lists résolus, persistants and nouveaux by ID. Nothing is edited."
+    }
+  ]
 }
