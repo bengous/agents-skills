@@ -1,0 +1,14 @@
+interface:
+  display_name: Software Architecture
+  short_description: Choisir et faire évoluer une architecture adaptée
+  default_prompt: Utilise $software-architecture pour examiner mon projet et proposer
+    une architecture ou des améliorations justifiées par ses besoins.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
