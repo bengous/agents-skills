@@ -1,8 +1,8 @@
 interface:
   display_name: Software Architecture
-  short_description: Choisir et faire évoluer une architecture adaptée
-  default_prompt: Utilise $software-architecture pour examiner mon projet et proposer
-    une architecture ou des améliorations justifiées par ses besoins.
+  short_description: Choose and evolve an architecture that fits the project
+  default_prompt: Use $software-architecture to examine my project and propose an
+    architecture or improvements justified by its needs.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

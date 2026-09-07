@@ -37,11 +37,6 @@ Make relevant checks and flows reproducible when needed. Humans and agents
 benefit from accessible logs, startup commands and a way to exercise behavior.
 Keep infrastructure proportional; a library need not acquire a browser harness.
 
-## Evidence limits
-
-A coherent guideline is not evidence that it improves agent outcomes. Treat this
-skill as decision support. Broad agent evaluations are optional work, not a
-prerequisite for applying it or an automatic step of an architecture task.
 Report checks actually performed without implying independent validation.
 
 ## Sources

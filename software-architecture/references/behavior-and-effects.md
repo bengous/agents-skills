@@ -28,16 +28,11 @@ where it removes difficult setup or exposes meaningful rules.
 ## State machines
 
 For order-dependent behavior, enumerate states and events; describe permitted
-transitions, guards and effects. A short table is often enough. Derive flags from
-state rather than independently updating correlated booleans.
-
-Example: capture can move from `pending` to `captured` or `failed`. A late success
-after a timeout may require reconciliation, not a transition assuming failure.
-Include failure paths the system can actually observe.
-
-Keep modeling separate from library selection. A reducer may suffice; hierarchy,
-parallel states or actor lifecycles can justify richer statecharts. Assess
-complexity from interactions and consequences, not a fixed state count.
+transitions, guards and effects. A short table is often enough. Include failure
+paths the system can actually observe: a late success after a timeout may require
+reconciliation, not a transition assuming failure. Keep modeling separate from
+library selection. For the modeling workflow and implementation references, use
+the `state-machine` skill when available.
 
 ## Asynchronous boundaries
 

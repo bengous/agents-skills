@@ -41,11 +41,9 @@ measurement that distinguishes alternatives. For instance, measure contention
 before assuming service separation will fix it. Do not invent a scalability
 requirement to justify distribution.
 
-Present the recommended combination, what it costs, and a plausible alternative
-when useful. In an exploratory conversation, let the user settle meaningful
-tradeoffs before implementation. If the user already delegated the choice, make
-it and explain it. Do not add a confirmation gate merely because a pattern has
-a name.
+In an exploratory conversation, let the user settle meaningful tradeoffs before
+implementation. If the user already delegated the choice, make it and explain
+it. Do not add a confirmation gate merely because a pattern has a name.
 
 ## Sources
 

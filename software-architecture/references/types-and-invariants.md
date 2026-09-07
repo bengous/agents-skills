@@ -4,14 +4,9 @@ Read when designing data shapes, public signatures or order-dependent operations
 
 Identify invalid combinations or confusable roles first. Choose a representation
 excluding them where the language permits. Keep runtime handling for external
-errors and guarantees the type system cannot enforce.
-
-| Problem | Useful representation | Restraint |
-|---|---|---|
-| Correlated flags and optional data | Tagged union/enum with data in its valid variant | Independent booleans do not need a state machine. |
-| Values with domain constraints | Validated constructor and opaque/newtype value | Match the actual rule; do not invent validation requirements. |
-| Same-shaped values with different roles | Distinct ID types or named parameters | Role separation can help without runtime validation. |
-| Operations legal only in certain states | Typestate or state-specific capability | Consider aliasing, resource lifetime and language guarantees. |
+errors and guarantees the type system cannot enforce. For the catalogue of
+representations (tagged unions, newtypes, distinct ID types, typestate) and
+their per-language mechanics, use the `unrepresentable` skill when available.
 
 Illustrative TypeScript:
 
