@@ -122,7 +122,6 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`ascii-diagram-builder-cc`](ascii-diagram-builder-cc/)     | Generate pixel-perfect ASCII box diagrams for architecture docs and READMEs        |
 | [`bun-cc`](bun-cc/)                                         | TypeScript CLI scripts and applications using the Bun runtime                      |
 | [`effect-language-service-cc`](effect-language-service-cc/) | Tooling automation for @effect/language-service: diagnostics, quickfixes, codegen  |
-| [`effect-usage-cc`](effect-usage-cc/)                       | Decision support for Effect (effect-ts): when to use it, which patterns to prefer  |
 | [`null-as-error-cc`](null-as-error-cc/)                     | Audit Effect codebases for silent error swallowing (`catchAll` to sentinel values) |
 | [`refactorlib-cc`](refactorlib-cc/)                         | Audit a codebase for handcrafted code replaceable by existing dependencies         |
 | [`rekooh-cc`](rekooh-cc/)                                   | Author, audit, register, and test Claude Code hooks against official docs          |
