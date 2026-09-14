@@ -94,12 +94,14 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`goalify`](goalify/)                                           | Convert rough intent into a compact Codex `/goal` payload or protected `.agents/goals` file                                   |
 | [`harden-bash`](harden-bash/)                                   | Write and harden production shell scripts                                                                                     |
 | [`humanizer`](humanizer/)                                       | Remove signs of AI-generated writing from text                                                                                |
+| [`hyprpilot`](hyprpilot/)                                       | Drive and visually inspect a native GUI app on Hyprland through a headless output                                             |
 | [`intent-to-workflow`](intent-to-workflow/)                     | Human-gated planner that turns explicit intent into local workflow artifacts                                                  |
 | [`looper`](looper/)                                             | Design, audit, and convert rough work into dynamic Codex loops with gates, validation, and stop/pause conditions              |
 | [`of`](of/)                                                     | Open an explicit or recently mentioned local file in the default viewer                                                       |
 | [`premium-handoff`](premium-handoff/)                           | Turn selected targets into compact handoffs for scarce premium models                                                        |
 | [`promptify`](promptify/)                                       | Transform rough dictated intent into a compact GPT-5.5-optimized prompt                                                       |
 | [`pr-review-html`](pr-review-html/)                             | Create annotated HTML artifacts for PR reviews and unfamiliar code paths                                                      |
+| [`second-brain`](second-brain/)                                 | Stand up and maintain a progressively loaded, bounded agent wiki                                                              |
 | [`shrinkify`](shrinkify/)                                       | Interactively reduce skills while preserving behavior and output contracts                                                    |
 | [`skill-eval-methodology`](skill-eval-methodology/)             | Operational discipline for running skill evaluations and benchmarks                                                           |
 | [`skills-maintenance`](skills-maintenance/)                     | Update installed global or project skills and persist related maintenance changes                                             |
@@ -111,8 +113,10 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`swarm-research`](swarm-research/)                             | Fan out parallel read-only research subagents and synthesize the findings                                                     |
 | [`targetify`](targetify/)                                       | Rank evidence-backed repo targets before spending scarce premium model attention                                             |
 | [`teach-back`](teach-back/)                                     | Teach a session incrementally and verify the human's understanding before advancing                                           |
+| [`ts-type-audit`](ts-type-audit/)                               | Read-only audit of a TypeScript project's typing maturity across three parallel workers                                       |
 | [`unrepresentable`](unrepresentable/)                           | Make invalid states unrepresentable in new Rust, TypeScript, or Go types: state enums, newtypes, typestate                    |
 | [`update-windows`](update-windows/)                             | Update a Windows PC end to end: winget app upgrades under one elevation, then Windows Update patches and drivers              |
+| [`zoom-out`](zoom-out/)                                         | Give broader context and a higher-level view of an unfamiliar code area                                                       |
 
 ### Claude Code (`-cc`)
 
