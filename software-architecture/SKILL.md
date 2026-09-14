@@ -70,8 +70,8 @@ diagram or table when it clarifies relationships; no mandatory report format.
 ## Optional specialist skills
 
 If available, consult `unrepresentable` for detailed type design, `state-machine`
-for transition modeling, or `deepen-codebase-architecture` for a requested deeper
-interface audit. Read their descriptions before selecting them. Consult them
+for transition modeling, or `codebase-design` for deep-module interface and seam
+design. Read their descriptions before selecting them. Consult them
 only for that subproblem; do not automatically start their entire workflows.
 This skill remains usable without them. Keep project-specific decisions in the
 project, not in this reusable skill.
