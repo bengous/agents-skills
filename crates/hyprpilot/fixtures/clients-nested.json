@@ -1,0 +1,44 @@
+[
+  {
+    "address": "0xc0ff33",
+    "stableId": "5001",
+    "at": [5120, 0],
+    "size": [1920, 1080],
+    "workspace": {"name": "agent-alpha"},
+    "floating": false,
+    "monitor": 1,
+    "class": "aquamarine",
+    "initialClass": "aquamarine",
+    "title": "aquamarine - WAYLAND-1",
+    "initialTitle": "aquamarine - WAYLAND-1",
+    "pid": 4242
+  },
+  {
+    "address": "0xdecoy",
+    "stableId": "5002",
+    "at": [100, 100],
+    "size": [1280, 720],
+    "workspace": {"name": "3"},
+    "floating": true,
+    "monitor": 0,
+    "class": "aquamarine",
+    "initialClass": "aquamarine",
+    "title": "aquamarine - WAYLAND-1",
+    "initialTitle": "aquamarine - WAYLAND-1",
+    "pid": 9999
+  },
+  {
+    "address": "0xstale",
+    "stableId": "5003",
+    "at": [0, 0],
+    "size": [900, 600],
+    "workspace": {"name": "1"},
+    "floating": false,
+    "monitor": 0,
+    "class": "foot",
+    "initialClass": "foot",
+    "title": "user shell",
+    "initialTitle": "user shell",
+    "pid": 4242
+  }
+]

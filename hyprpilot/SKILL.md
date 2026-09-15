@@ -2,21 +2,37 @@
 name: hyprpilot
 description: >-
   Drive and visually inspect a native GUI app (Iced, egui, GTK, winit…) on
-  Hyprland through a headless output, leaving the user's desktop untouched
-  (focus preserved, cursor restored). Use when asked to "test the GUI", "piloter l'app native",
-  "screenshot the app", "voir le rendu", to verify a native app's rendering
-  after a change, or to interact (keys, text, clicks) with a native window
-  that exposes no AT-SPI tree. Do not use for web or Electron apps (use
-  agent-browser), apps exposing a usable AT-SPI accessibility tree (prefer a
-  semantic tool), or compositors other than Hyprland.
+  Hyprland through a headless output, leaving the user's desktop as it was
+  (every action puts their focus and cursor back) — or on an agent desktop of
+  its own, a
+  nested compositor with its own seat and cursor (`--isolated`). Use when asked
+  to "test the GUI", "piloter l'app native", "screenshot the app", "voir le
+  rendu", to verify a native app's rendering after a change, to interact (keys,
+  text, clicks) with a native window that exposes no AT-SPI tree, or to run a
+  GUI without disturbing the user's session. Do not use for web or Electron
+  apps (use agent-browser), apps exposing a usable AT-SPI accessibility tree
+  (prefer a semantic tool), or compositors other than Hyprland.
 ---
 
 # hyprpilot
 
-One CLI, one loop: park the app's window on an invisible headless output, then
-observe → act → verify with screenshots the agent reads. Keys are delivered by
-window address (no focus stolen); clicks warp a virtual pointer, then restore
-the cursor and re-focus the window the user had (if any was focused).
+One CLI, one loop: observe → act → verify with screenshots you read yourself.
+Two modes; the first decision is which one.
+
+**shared** (default) — you drive windows on the *user's* desktop. The window is
+parked on an invisible headless output; keys are delivered by window address (no
+focus stolen); clicks warp a virtual pointer, then restore the cursor and
+re-focus the window the user had. Pick it to act on a window the user already
+has open, or when the app needs the user's real portals (file pickers).
+
+**isolated** (`session start --isolated`) — an agent desktop that belongs to
+you: a nested Hyprland with its own seat, cursor and keyboard. Nothing there can
+touch the user's desktop, so there is no focus to steal and no cursor to
+restore. Pick it to exercise a native app end to end without disturbing
+anything.
+
+One agent desktop per session, any number in parallel. Only one shared session
+at a time, whatever its name.
 
 ## Preflight
 
@@ -34,9 +50,11 @@ install -m755 target/release/hyprpilot ~/.local/bin/
 ```
 
 `doctor` verifies hyprctl, the Hyprland session, grim, the virtual-pointer
-protocol, and runtime-dir permissions, and reports the active keyboard layout.
+protocol, and runtime-dir permissions, reports the active keyboard layout, and
+checks what an agent desktop needs (`Hyprland` on PATH, version against the
+validated 0.56).
 
-## Canonical loop
+## Canonical loop — shared
 
 ```bash
 hyprpilot session start --app './my-app' --match-title 'My App'   # or attach to a running window
@@ -55,14 +73,107 @@ hyprpilot teardown                      # ALWAYS, at the end of every session
 Every visual assertion = read the PNG with the Read tool. Never claim a UI
 state you have not seen in a capture.
 
-- `session start` matches windows by **exact** title/class (`hyprctl clients`
-  values). Iced/winit windows often have an empty class — match by title.
-- `--size WxH` (default 1600x1000) sets the headless output resolution.
+## Canonical loop — agent desktop
+
+```bash
+export HYPRPILOT_SESSION=agent-1            # every command below acts on it
+hyprpilot session start --isolated --app './my-app' --match-title 'My App'
+hyprpilot wait --stable --timeout 10s
+hyprpilot shot                              # READ the PNG
+hyprpilot type "fig"                        # or: hyprpilot key Down Return
+hyprpilot wait --stable
+hyprpilot click 120 260                     # nothing of the user's moves
+hyprpilot target --match-title 'Preferences' --wait 5s   # a second toplevel
+hyprpilot session show                      # let the user watch; `hide` puts it back
+hyprpilot teardown                          # destroys the whole desktop
+```
+
+`--app` is required: an agent desktop starts empty, there is nothing to attach
+to. Same session name = same desktop, so `HYPRPILOT_SESSION` (or
+`--session NAME`) is how parallel agents stay out of each other's way.
+
+What differs from shared mode:
+
+- No focus or cursor to steal, so `--focus` is accepted and does nothing.
+- No parking and no teardown dispositions: `target` just focuses the match
+  inside the desktop, and `--untracked` / `--on-teardown` are refused. It proves
+  the focus, not that a frame showing it has been painted — toplevels often stack
+  at the same geometry, so a `shot` fired immediately after can still return the
+  previous window. Put `wait --changed-from <last.png>` between the two.
+- `windows` and `status` report the desktop's own clients and geometry, never
+  the host's.
+- `teardown` destroys the desktop whole, so there is no window to restore and
+  `--kill`/`--close` are refused. Still always tear down: the headless output
+  and the nested compositor outlive you otherwise.
+- `session resize` is refused. Tear down and start again with `--size`.
+- Portal file pickers never open (see the caveat below).
+- `session show` / `session hide` are the only way to let the user look at the
+  desktop. Do not tell them to click the `agent-*` workspace in waybar: that
+  moves their focus to an invisible headless output. `show` focuses the console
+  for a moment — Hyprland only drops a fullscreen state on the focused window —
+  then puts the user's focus and cursor back, so expect a brief flicker.
+
+## Secondary windows — shared mode (portals, pickers, "Library"-style popups)
+
+When the app opens another window (file chooser, portal, secondary
+browser window), do NOT tear down and restart. Adopt it:
+
+```bash
+hyprpilot windows                                   # JSON list, tracked/active/focused annotated
+hyprpilot target --untracked --match-title "All Files" --wait 5s
+#   … drive the popup (shot / click / type) …
+hyprpilot target --address 0x<main-window>          # switch back; popup stays tracked, parked
+hyprpilot teardown                                  # restores/closes every adopted window
+```
+
+- `target` criteria are exact-match and combined with AND; ambiguity fails
+  with the candidates as a JSON array on the last stderr line — pick by
+  `--address`.
+- Adopted windows default to `--on-teardown restore`; use
+  `--on-teardown close` for windows that should die with the session
+  (e.g. a picker you opened). Switching back to a tracked window forbids
+  `--on-teardown`.
+- Only the active target is visible on the output; the others are parked
+  invisibly. `session resize WxH` adapts the output when a dialog is
+  larger than the current size (no teardown needed; the start warning
+  suggests it).
+
+In an agent desktop, `target` is the whole mechanism: it focuses the match
+inside the desktop and nothing is parked or restored.
+
+## When to use `--focus`
+
+Shared mode only; in an agent desktop the flag is accepted and does nothing.
+
+Default: no explicit focus (`key`/`type`/`click` as-is) — it works on
+winit/Iced/egui and most GTK apps. `key`/`type` never touch the focus at all
+(they are delivered by window address); `click`/`scroll` inject real pointer
+input, so the compositor may focus the window under the cursor for the length
+of the action — the same restoration envelope puts the user's focus back
+either way. Reach for `--focus` when a widget
+visibly ignores focusless input: portal file choosers, XUL/Firefox menus,
+Chromium chrome shortcuts (`Ctrl+L`…). It focuses the session window for
+one action, then restores the user's focus and cursor strictly (non-zero
+exit if restoration fails). The physical keyboard reaches the target
+during that window — keep `--focus` actions short.
+
+- `session start` and `target` match windows by **exact** title/class
+  (`hyprctl clients` values), and by exact `--pid` or `--address`. Iced/winit
+  windows often have an empty class — match by title.
+- Every command takes `--session NAME` (default `$HYPRPILOT_SESSION`, else
+  `default`, alphabet `[a-z0-9-]{1,32}`); the whole loop above is one session.
+  Reserved namespace, do not touch by hand: outputs `hyprpilot` and
+  `hyprpilot-<session>`, workspaces `hyprpilot`, `special:hyprpilot-parked`
+  and `agent-<session>`.
+- `--size WxH` sets the output resolution: default 1600x1000 shared,
+  1920x1080 for an agent desktop.
 - `shot` is framed to the window (fewer tokens, no waybar); `--full` captures
-  the whole output. Files land in `$XDG_RUNTIME_DIR/hyprpilot/shots/`.
+  the whole output (in isolated mode, the whole agent desktop). Files land in
+  `$XDG_RUNTIME_DIR/hyprpilot/sessions/<session>/shots/`.
 - `wait --stable` for "the UI settled"; `wait --changed-from PNG` for "the UI
-  reacted"; both take `--timeout 5s` and exit non-zero on timeout (the
-  timeout bounds the polling loop, not a single hung capture).
+  reacted"; both take `--timeout 5s` and exit non-zero on timeout. Every
+  capture underneath runs under its own bounded deadline, so a stuck grim ends
+  as an error instead of hanging the command.
 
 ## Keys
 
@@ -79,19 +190,53 @@ Caveats:
 
 ## Caveats
 
-- A click or a scroll must move the real cursor for a moment: position and
-  focus are restored immediately after, but a brief flash on the user's
-  screen is possible. Prefer keyboard navigation when both work.
+- In shared mode a click or a scroll must move the real cursor for a moment:
+  position and focus are restored immediately after, but a brief flash on the
+  user's screen is possible. Prefer keyboard navigation when both work. In an
+  agent desktop the cursor moved is the agent's own.
 - `click --double` sends two press/release pairs ~80 ms apart (one warp, one
   restore). `scroll X Y --dy N [--dx N]` counts wheel detents, positive =
   down/right; `--dy`/`--dx` both zero is an error.
 - Captures are pixels, not semantics: there is no element tree. Derive click
   coordinates from a fresh `shot` plus the window geometry in `status`.
-- One session at a time. If `session start` reports an existing session, run
-  `hyprpilot teardown` first. A start that failed midway leaves its state on
-  purpose — `teardown` cleans it up.
-- `teardown` closes a **spawned** app (`--kill` kills its process group) but
-  returns an **attached** window to its original workspace instead of closing
-  an app the user had opened (`--close` overrides). It then removes the
-  headless output. Leaving outputs behind pollutes the user's monitor
-  layout — always tear down.
+- Routing: web/Electron **content** → agent-browser; browser **chrome**,
+  portals and native windows → hyprpilot. A browser's page DOM is better
+  driven semantically; its file-picker dialog is not.
+- One changing command at a time per session: `target`, `session resize`,
+  `session show`/`hide` and `teardown` take the session lock and the second
+  one exits non-zero without doing anything. `shot`/`wait`/`status`/`windows`
+  and the input commands never wait for it, so do not fire them while a
+  `target` is still moving windows. Different sessions in parallel are fine.
+- One shared session at a time, whatever its name; agent desktops are
+  unlimited. If `session start` reports an existing session, run
+  `hyprpilot teardown` first. A start that failed after claiming the session
+  leaves its state on purpose — `teardown` cleans it up; one that failed
+  before the claim takes the app it launched down with it, so there is
+  nothing to clean.
+- File pickers work in shared mode because it drives the user's real desktop.
+  An **agent desktop** cannot open them: the nested compositor inherits the
+  host D-Bus session, so `FileChooser` portal calls hang with no dialog — every
+  GTK4 picker included. A GUI you have to test through a file picker belongs in
+  shared mode.
+- If an agent desktop's nested compositor dies, every command fails saying so
+  and naming `teardown`; `teardown` is what cleans it up.
+- State left by an older build (any older `schema_version`, or the
+  unversioned format) is refused by every command with the version it holds
+  and the way out; `hyprpilot teardown` still clears it, wherever it lives.
+- Shared `teardown` walks every tracked window in reverse adoption order:
+  **attached** windows go back to their origin workspace, position and
+  size (`restore`), `close`-disposition windows are actually closed, a
+  **spawned** primary is closed (`--kill` kills its process group even if the
+  window already vanished, `--close` closes an attached primary instead).
+  Then the output is removed — only if this session created it, and only once
+  nothing sits on it — and the user's cursor is put back where it was.
+  Leaving outputs behind pollutes the user's monitor layout — always tear
+  down. A corrupt state aborts without removing anything and tells you how to
+  recover with `hyprpilot windows` + `hyprctl`.
+- A window that closed while the session was driving it can have its address
+  handed to another window: commands then fail with "never adopted" and send
+  nothing, and `teardown` leaves that window alone. Re-`target` the real one,
+  or tear down.
+- Ctrl-C during an action is the one way to leave the user's focus and cursor
+  displaced: the restoration survives an error or a crash of the command, not
+  a signal. `hyprpilot teardown` puts the desktop back.

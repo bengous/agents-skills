@@ -6,13 +6,19 @@
 //! shifted characters must be written as `SHIFT` + the base key of a US
 //! keymap (`!` → `SHIFT,1`), and accented characters resolve only on keymaps
 //! that expose them unshifted (e.g. `fr`).
+//!
+//! Both modes use that one dispatcher, on different compositors: a shared
+//! session addresses the host, an isolated one the nested compositor of its
+//! agent desktop (`Route` below).
 
 use std::thread;
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::hypr;
-use crate::session;
+use crate::guard;
+use crate::hypr::{self, Ctl};
+use crate::isolated;
+use crate::session::{self, Isolated, ModeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Modifier {
@@ -163,9 +169,126 @@ pub fn char_to_keysym(c: char) -> Result<(bool, &'static str), Error> {
     Ok(mapped)
 }
 
-fn send_chord(chord: &Chord, address: &str) -> Result<(), Error> {
-    let arg = format!("{},{},address:{address}", chord.mods_string(), chord.keysym);
-    hypr::dispatch(&["sendshortcut", &arg]).map_err(|error| enrich_key_error(error, chord))
+/// Which compositor input goes to, and to which window. An isolated session
+/// resolves to `Ctl::Instance`, so no dispatch made here can reach a window of
+/// the user's desktop.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Shared { address: String },
+    Isolated { signature: String, address: String },
+}
+
+impl Route {
+    fn resolve(name: &str, command: &'static str) -> Result<Self, Error> {
+        match session::load(name)?.state {
+            // Shared mode goes through `session::current_window`, which re-reads
+            // the state and stays the single definition of the window a session
+            // drives on the user's desktop.
+            ModeState::Shared(_) => {
+                let (_, window) = session::current_window(name, command)?;
+                Ok(Self::Shared {
+                    address: window.address,
+                })
+            }
+            ModeState::Isolated(isolated) => Self::agent(name, &isolated),
+        }
+    }
+
+    /// The target of an agent desktop: the signature of its nested compositor
+    /// and the window address recorded when the app was launched inside it.
+    /// `isolated::live_instance` is the one gate for a dead or unfinished
+    /// desktop, so no dispatch here can go looking for the user's own windows.
+    fn agent(name: &str, isolated: &Isolated) -> Result<Self, Error> {
+        let instance = isolated::live_instance(name, isolated)?;
+        let address = isolated::recorded_window(name, isolated)?;
+        ensure_window(instance.signature, address)?;
+        Ok(Self::Isolated {
+            signature: instance.signature.to_owned(),
+            address: address.to_owned(),
+        })
+    }
+
+    fn ctl(&self) -> Ctl<'_> {
+        match self {
+            Self::Shared { .. } => Ctl::Host,
+            Self::Isolated { signature, .. } => Ctl::Instance(signature),
+        }
+    }
+
+    fn address(&self) -> &str {
+        match self {
+            Self::Shared { address } | Self::Isolated { address, .. } => address,
+        }
+    }
+
+    /// Only the user's seat is guarded. `--focus` is accepted and ignored on an
+    /// agent desktop: its target window already is the focused window of that
+    /// seat, and no human has a cursor there to snapshot or restore.
+    fn guarded(&self, focus: bool) -> bool {
+        match self {
+            Self::Shared { .. } => focus,
+            Self::Isolated { .. } => false,
+        }
+    }
+
+    /// How the target reads back in command output: an agent desktop's address
+    /// only means something together with the instance it lives in.
+    fn target(&self) -> String {
+        match self {
+            Self::Shared { address } => address.clone(),
+            Self::Isolated { signature, address } => {
+                format!("{address} in agent desktop instance {signature}")
+            }
+        }
+    }
+
+    fn send(&self, chords: &[Chord], delay_ms: u64, focus: bool) -> Result<(), Error> {
+        let action = || {
+            for (index, chord) in chords.iter().enumerate() {
+                if index > 0 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                send_chord(chord, self.ctl(), self.address())?;
+            }
+            Ok(())
+        };
+        if self.guarded(focus) {
+            guard::run(
+                Some(self.address()),
+                || Ok(()),
+                |()| action(),
+                |&(), cursor| guard::restore_cursor(cursor),
+            )?;
+            Ok(())
+        } else {
+            action()
+        }
+    }
+}
+
+/// The window is read back from the instance before anything is dispatched, so
+/// a stale address fails here with the same error as in shared mode instead of
+/// depending on what the dispatcher answers for a window it cannot find.
+fn ensure_window(signature: &str, address: &str) -> Result<(), Error> {
+    let present = hypr::clients_on(Ctl::Instance(signature))?
+        .iter()
+        .any(|client| client.address == address);
+    if present {
+        Ok(())
+    } else {
+        Err(Error::WindowGone(address.to_owned()))
+    }
+}
+
+fn send_chord(chord: &Chord, ctl: Ctl<'_>, address: &str) -> Result<(), Error> {
+    hypr::dispatch_on(ctl, &["sendshortcut", &shortcut_arg(chord, address)])
+        .map_err(|error| enrich_key_error(error, chord))
+}
+
+/// The dispatcher's window argument is the address: a title can change between
+/// the read and the dispatch.
+fn shortcut_arg(chord: &Chord, address: &str) -> String {
+    format!("{},{},address:{address}", chord.mods_string(), chord.keysym)
 }
 
 /// Hyprland's `key not found` means the keysym is not reachable unmodified on
@@ -183,27 +306,27 @@ fn enrich_key_error(error: Error, chord: &Chord) -> Error {
     }
 }
 
-pub fn send_keys(raw_chords: &[String], delay_ms: u64) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
+pub fn send_keys(
+    name: &str,
+    raw_chords: &[String],
+    delay_ms: u64,
+    focus: bool,
+) -> Result<String, Error> {
+    let route = Route::resolve(name, "key")?;
     let chords = raw_chords
         .iter()
         .map(|raw| parse_chord(raw))
         .collect::<Result<Vec<_>, _>>()?;
-    for (index, chord) in chords.iter().enumerate() {
-        if index > 0 {
-            thread::sleep(Duration::from_millis(delay_ms));
-        }
-        send_chord(chord, &window.address)?;
-    }
+    route.send(&chords, delay_ms, focus)?;
     Ok(format!(
         "sent {} key(s) to {}",
         chords.len(),
-        window.address
+        route.target()
     ))
 }
 
-pub fn type_text(text: &str, delay_ms: u64) -> Result<String, Error> {
-    let (_, window) = session::current_window()?;
+pub fn type_text(name: &str, text: &str, delay_ms: u64, focus: bool) -> Result<String, Error> {
+    let route = Route::resolve(name, "type")?;
     let chords = text
         .chars()
         .map(|c| {
@@ -214,23 +337,123 @@ pub fn type_text(text: &str, delay_ms: u64) -> Result<String, Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    for (index, chord) in chords.iter().enumerate() {
-        if index > 0 {
-            thread::sleep(Duration::from_millis(delay_ms));
-        }
-        send_chord(chord, &window.address)?;
-    }
+    route.send(&chords, delay_ms, focus)?;
     Ok(format!(
         "typed {} character(s) into {}",
         chords.len(),
-        window.address
+        route.target()
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Chord, Modifier, char_to_keysym, parse_chord};
+    use std::error::Error as StdError;
+
+    use super::{Chord, Ctl, Isolated, Modifier, Route, char_to_keysym, parse_chord, shortcut_arg};
     use crate::error::Error;
+    use crate::session::Instance;
+
+    const SIGNATURE: &str = "abcdef_1730000000";
+
+    fn live() -> Instance {
+        Instance::Live {
+            signature: SIGNATURE.to_owned(),
+            wayland_display: "wayland-2".to_owned(),
+            pid: 4242,
+            console_address: "0xc0ff33".to_owned(),
+        }
+    }
+
+    fn agent_state(instance: Instance, active_address: Option<&str>) -> Isolated {
+        Isolated {
+            output: "hyprpilot-alpha".to_owned(),
+            workspace: "agent-alpha".to_owned(),
+            instance_nonce: "4242-1700000000000000000".to_owned(),
+            size: [1600, 1000],
+            shown: false,
+            active_address: active_address.map(str::to_owned),
+            instance,
+            host: Vec::new(),
+        }
+    }
+
+    fn agent_route() -> Route {
+        Route::Isolated {
+            signature: SIGNATURE.to_owned(),
+            address: "0xdead".to_owned(),
+        }
+    }
+
+    fn shared_route() -> Route {
+        Route::Shared {
+            address: "0xabc".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_agent_desktop_chord_is_addressed_to_its_instance_never_the_host() -> Result<(), Error> {
+        let route = agent_route();
+        assert_eq!(route.ctl(), Ctl::Instance(SIGNATURE));
+        assert_eq!(
+            shortcut_arg(&parse_chord("Ctrl+Shift+a")?, route.address()),
+            "CTRL SHIFT,a,address:0xdead"
+        );
+        assert_eq!(
+            shortcut_arg(&parse_chord("Return")?, route.address()),
+            ",Return,address:0xdead"
+        );
+        assert_eq!(shared_route().ctl(), Ctl::Host);
+        Ok(())
+    }
+
+    #[test]
+    fn focus_is_a_no_op_on_an_agent_desktop_seat() {
+        assert!(!agent_route().guarded(true));
+        assert!(!agent_route().guarded(false));
+        assert!(shared_route().guarded(true));
+        assert!(!shared_route().guarded(false));
+    }
+
+    #[test]
+    fn output_names_the_instance_an_agent_desktop_window_lives_in() {
+        assert_eq!(
+            agent_route().target(),
+            format!("0xdead in agent desktop instance {SIGNATURE}")
+        );
+        assert_eq!(shared_route().target(), "0xabc");
+    }
+
+    #[test]
+    fn a_pending_instance_is_refused_with_a_teardown_hint() -> Result<(), Box<dyn StdError>> {
+        let state = agent_state(Instance::Pending, Some("0xdead"));
+        let Err(error) = Route::agent("alpha", &state) else {
+            return Err("a pending instance has no compositor to send to".into());
+        };
+        assert!(
+            matches!(error, Error::AgentDesktopUnready { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("never spawned"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_dead_instance_is_refused_instead_of_reaching_the_host() -> Result<(), Box<dyn StdError>> {
+        // Pid 4242 does not carry this session's marker in the real `/proc`,
+        // which is exactly what a crashed nested compositor looks like; the probe
+        // itself is asserted against a fake `/proc` in `isolated`.
+        let state = agent_state(live(), Some("0xdead"));
+        let Err(error) = Route::agent("alpha", &state) else {
+            return Err("a dead instance has no compositor to send chords to".into());
+        };
+        assert!(matches!(error, Error::AgentDesktopDead { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("is dead"), "{message}");
+        assert!(message.contains("--session alpha teardown"), "{message}");
+        Ok(())
+    }
 
     #[test]
     fn every_printable_ascii_char_is_mapped() {
