@@ -49,6 +49,8 @@ triggered.
 - Single boolean toggle with no side effects
 - Pure server cache (use TanStack Query or SWR; their internal FSM is enough)
 - Stateless pure transformations
+- Existing code whose states already contradict each other across components:
+  run the `state-audit` skill first; it hands its target back here
 
 ## Output contract
 
@@ -103,6 +105,15 @@ Full glossary with citations: `references/concepts.md`
 7. Sketch Mermaid `stateDiagram-v2` only when it improves review. See `references/visual-notation.md`.
 
 Worked example: `references/modeling-process.md`
+
+## Verify the model
+
+Before implementing a machine with more than a few states, parallel regions, or
+several processes, write its rules as invariants and check them on the model:
+a breadth-first walk over the transition function for one finite machine,
+`xstate/graph` when the machine is already XState, Quint when several processes
+interleave. Templates and pitfalls live in the `state-audit` skill,
+`references/verify.md`.
 
 ## Pick an implementation
 
