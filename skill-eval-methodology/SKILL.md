@@ -1,6 +1,6 @@
 ---
 name: skill-eval-methodology
-description: Portable discipline for designing, running, and interpreting skill evaluations with skill-creator. Use when defining eval success criteria, running or comparing trials, grading outputs or end states, reviewing traces, benchmarking a skill, iterating on evals, or maintaining eval artifacts. Separates experimental validity from artifact integrity and harness-specific formats.
+description: Portable discipline for designing, running, and interpreting skill evaluations with skill-creator. Use when defining eval success criteria, testing whether a skill description triggers when it should and not otherwise, running or comparing trials, grading outputs or end states, reviewing traces, benchmarking a skill, estimating an eval's cost, iterating on evals, or maintaining eval artifacts. Separates experimental validity from artifact integrity and harness-specific formats.
 ---
 
 # Skill Eval Methodology
@@ -10,6 +10,8 @@ Use skill-creator for skill mechanics. Use this discipline to make eval claims s
 ## Reference
 
 Read @references/artifact-examples.md when defining an artifact layout, adapting an existing harness, or auditing completeness. Treat its records as a logical model, not as required filenames or a universal JSON schema.
+
+Read @references/trigger-evals.md before a trigger eval (does the description load the skill when it should, and only then): what `run_eval.py` really counts, a staged protocol that spends in steps, exact commands, measured pitfalls and per-call costs, and a worked example.
 
 ## 1. Define The Evaluation Contract
 
@@ -35,7 +37,9 @@ Read @references/artifact-examples.md when defining an artifact layout, adapting
 
 - Freeze or fingerprint the exact skill, task definitions, graders, and harness configuration. Use a commit when authorized; otherwise use an immutable snapshot or content hash.
 - Choose trial count from the claim and expected non-determinism. Treat one trial as evidence about that trial, not a reliability estimate.
+- Price a trial before scheduling many: run one, read its cost, multiply. Start with a pilot on the most informative tasks, and widen only when the pilot is clean.
 - Start each trial from a clean, isolated state. Prevent prior outputs, caches, histories, or concurrent trials from leaking information.
+- Check that concurrent trials cannot see each other's files. A harness that writes per-trial files into one shared directory makes parallel trials contaminate each other; run them sequentially or in separate directories.
 - Match intended deployment conditions when evaluating the deployed system. Record material differences.
 - Record resource guarantees and limits, timeout, concurrency, network access, tool versions, and other conditions that can affect the result.
 - Predeclare retry and exclusion rules. Track infrastructure failures separately from task failures.
@@ -53,6 +57,7 @@ Read @references/artifact-examples.md when defining an artifact layout, adapting
 
 - Reconcile scheduled trials, completed trials, grades, and aggregate counts.
 - Inspect representative successes and failures. Confirm that grades are fair and supported by output, final-state, or trace evidence.
+- Replay a surprising failure once, alone, logging what the system did instead, before changing the skill: the cause is often the harness.
 - Compare configurations or iterations only when the relevant task, grader, model, harness, and environment controls support the comparison. Name every material change.
 - Interpret a perfect score by suite purpose: useful regression evidence, but saturation for capability improvement. Do not automatically discard it.
 - Treat equal scores as “no measured difference in these trials,” not proof that the skill has no value.
