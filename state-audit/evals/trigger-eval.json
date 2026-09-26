@@ -1,0 +1,23 @@
+[
+  {"query": "Dans vellum, la page affiche 'Drafting' alors que le serveur refuse d'enregistrer la version parce qu'un grill est ouvert, et après End grill Claude me repropose d'écrire le plan. Le moteur, le serveur et la page n'ont pas l'air d'accord sur où on en est.", "should_trigger": true},
+  {"query": "c'est le troisième fix qu'on merge sur le flux de checkout (d'abord le bouton payer qui restait actif, puis le double débit, maintenant le panier vidé trop tôt) et ça recasse ailleurs à chaque fois. je veux comprendre une bonne fois pour toutes", "should_trigger": true},
+  {"query": "Our job dashboard shows 'completed' while the worker is still retrying the job, and the API returns 'running'. The status lives in the DB row, a Redis cache and a React query store. Figure out who actually owns the job state.", "should_trigger": true},
+  {"query": "Audite les états du flux d'onboarding existant (src/onboarding/, le store zustand et le webhook Stripe) : je veux la carte de qui écrit quoi avant de toucher au code.", "should_trigger": true},
+  {"query": "After a websocket reconnect, the chat client shows messages as 'sending' forever although the server acked them. We patched the reconnect handler twice already. The client queue, the server session and the service worker each track delivery.", "should_trigger": true},
+  {"query": "plusieurs agents ont bossé sur le module de réservation en parallèle, et maintenant une réservation peut être 'confirmée' côté admin et 'en attente' côté client. trouve d'où viennent ces incohérences et ce qui garantit quoi", "should_trigger": true},
+  {"query": "Map the implicit state machine of our deploy pipeline: the CLI keeps a lock file, the CI job has its own status, and the Slack bot posts 'deployed' based on a webhook. We keep getting 'deployed' messages for rollbacks.", "should_trigger": true},
+  {"query": "Le mode offline de l'app mobile : la sync marque des notes comme envoyées alors que le serveur les a rejetées, et l'indicateur de la barre dit 'à jour'. On a déjà corrigé l'indicateur et la file de sync séparément, sans succès.", "should_trigger": true},
+
+  {"query": "Le bouton 'Enregistrer' reste grisé après avoir rempli le formulaire. Voilà l'erreur dans la console : TypeError: Cannot read properties of undefined (reading 'valid') at SettingsForm.tsx:88", "should_trigger": false},
+  {"query": "Design the state machine for a new multi-step onboarding wizard: account, team invite, billing, done, with back navigation and a skip on the invite step.", "should_trigger": false},
+  {"query": "ce type permet d'avoir isLoading à true et error rempli en même temps, refais-le pour que ce soit impossible : type FetchState = { isLoading: boolean; error?: string; data?: User[] }", "should_trigger": false},
+  {"query": "Review the overall architecture of the billing module: are the boundaries between invoices, payments and subscriptions right, and should we split it into services?", "should_trigger": false},
+  {"query": "The spinner on the upload page flickers for a frame before the progress bar appears. Probably a CSS transition issue, can you look?", "should_trigger": false},
+  {"query": "Écris un useReducer pour gérer l'état d'un modal de confirmation : fermé, ouvert, en cours de suppression, erreur.", "should_trigger": false},
+  {"query": "The login test fails on CI with a timeout on 'await page.waitForSelector(\"#dashboard\")' but passes locally. Diagnose it.", "should_trigger": false},
+  {"query": "Explique-moi la différence entre une machine à états finis et un statechart, avec un exemple simple.", "should_trigger": false},
+  {"query": "Add a 'cancelled' status to the Order enum and handle it in the order list filter and the status badge.", "should_trigger": false},
+  {"query": "Audite la maturité du typage TypeScript de ce projet : unions discriminées, any implicites, inférence.", "should_trigger": false},
+  {"query": "Our React app re-renders the whole list when one item changes. Find why and fix the memoization.", "should_trigger": false},
+  {"query": "Write a Quint spec for a simple two-phase commit protocol with a coordinator and three participants, and check that no participant commits while another aborts.", "should_trigger": false}
+]
