@@ -109,6 +109,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`slice-runner`](slice-runner/)                                 | Execute approved plans by Codex-native implementation slices                                                                  |
 | [`slop-detector`](slop-detector/)                               | Detect, score, and rewrite AI-generated or generic text                                                                       |
 | [`software-architecture`](software-architecture/)               | Choose or evolve software architecture from product needs and code evidence: slices, ports, functional core, domain types     |
+| [`state-audit`](state-audit/)                                   | Recover the implicit state machines of existing code, write invariants, and check them on a small model (walk, XState, Quint) |
 | [`state-machine`](state-machine/)                               | Model behavior as finite state machines and statecharts; references for TypeScript, XState v5, React, Svelte 5, C, Java, Rust |
 | [`swarm-research`](swarm-research/)                             | Fan out parallel read-only research subagents and synthesize the findings                                                     |
 | [`targetify`](targetify/)                                       | Rank evidence-backed repo targets before spending scarce premium model attention                                             |
