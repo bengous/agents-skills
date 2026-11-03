@@ -1,6 +1,7 @@
 ---
 name: skills-maintenance
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $skills-maintenance or explicitly asks to update installed agent skills globally, update project skills, refresh skills-lock files, reconcile dotfiles-managed skills.sh/bootstrap state, or commit/push skill-update maintenance changes. Runs skills.sh updates through a bundled script, then verifies source/live/dotfiles boundaries before any commit."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Skills Maintenance

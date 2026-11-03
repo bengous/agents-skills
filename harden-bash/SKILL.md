@@ -1,6 +1,7 @@
 ---
 name: harden-bash
 description: Write, review, and harden non-trivial Bash and POSIX sh scripts for production. Use for shell files and CI, deployment, administration, or automation code involving untrusted input, destructive filesystem operations, privileges, pipelines, traps, signals, concurrency, portability, or failure handling. Skip trivial interactive commands and tasks better served by an existing project tool.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Harden Bash

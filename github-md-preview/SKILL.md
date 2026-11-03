@@ -8,6 +8,7 @@ description: >
   check mermaid diagrams, tables, or alerts before pushing. Requires network
   access to api.github.com and the gh CLI.
 disable-model-invocation: true
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # GitHub Markdown Preview

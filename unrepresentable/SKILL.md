@@ -7,6 +7,7 @@ description: |
   valid only in a specific order (connect before send). Makes invalid states
   unrepresentable: state enums, newtypes, typestate. NOT for reviewing
   existing code or modeling behavior over time (events, transitions, guards).
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Unrepresentable

@@ -7,6 +7,7 @@ description: >
   Covers composition of modularity, vertical slices, ports/adapters, functional
   cores, domain types and deployment boundaries. Does not turn routine feature
   work, bug fixes or formatting into a whole-project architecture review.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Software Architecture

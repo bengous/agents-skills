@@ -2,6 +2,7 @@
 name: targetify
 disable-model-invocation: true
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $targetify or asks where to spend scarce/premium/frontier/super-model attention in a repo. Read-only. Do not use for implementation, full audits, premium handoffs, or launching premium model runs."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Targetify

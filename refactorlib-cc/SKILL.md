@@ -19,6 +19,7 @@ allowed-tools:
   - mcp__exa__web_search_exa
   - mcp__exa__get_code_context_exa
   - mcp__exa__crawling_exa
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # refactorlib

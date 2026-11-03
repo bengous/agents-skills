@@ -1,7 +1,7 @@
 ---
 name: goalify
 description: Use this skill when the user wants to convert rough coding, product, architecture, audit, review, migration, cleanup, debugging, or orchestration intent into a compact Codex `/goal` payload. Trigger on "goalify", "Codex goal", "/goal", "make this a goal", "RALF loop", "turn this into a Codex prompt", "$goalify interactive", or requests to be questioned before creating a goal. Do not use for normal implementation or review unless the user explicitly asks to produce a Codex goal/prompt.
-license: MIT
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 compatibility: Designed for Codex CLI 0.128+ with GPT-5.5 and the Agent Skills format. Requires the local Linux `codex-goal` helper for protected long goal files.
 metadata:
   version: "0.2.0"

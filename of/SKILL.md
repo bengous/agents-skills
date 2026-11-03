@@ -1,6 +1,7 @@
 ---
 name: of
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $of or $op, or explicitly names this skill to open/view a local file. Never invoke implicitly. Opens visualizable files such as images, Mermaid, Markdown, HTML, PDF, and text using the system default app."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Open File

@@ -5,6 +5,7 @@ disable-model-invocation: true
 model: opus
 effort: medium
 allowed-tools: [Read, Write, Edit, Bash, Grep, Glob, AskUserQuestion]
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Second Brain

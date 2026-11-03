@@ -6,6 +6,7 @@ argument-hint: "[text or file path]"
 model: opus
 effort: high
 allowed-tools: Read, Glob, Bash(python3 *)
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Slop Detector

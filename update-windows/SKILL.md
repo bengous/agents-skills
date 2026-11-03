@@ -15,6 +15,7 @@ compatibility: >-
   Windows 10/11 with winget (App Installer) and PowerShell 5.1 or later.
   Harness-neutral: needs only a shell that can run powershell.exe and read a
   file. No background-task or file-watching tool required.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # update-windows

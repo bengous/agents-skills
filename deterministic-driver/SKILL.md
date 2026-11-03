@@ -9,7 +9,7 @@ description: >
   (retryStep bump, human arbitration, mutation suspected), harden a driver
   against non-deterministic agent behavior, or wrap an external CLI
   (e.g. codex exec) inside a workflow agent.
-license: MIT
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 compatibility: Claude Code Workflow() scripts (deterministic JS driver,
   agent()/pipeline()/parallel(), resumeFromRunId prefix cache). Downstream of
   the looper skill's .agents/loops/*.md specs.

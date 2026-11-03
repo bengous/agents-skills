@@ -1,6 +1,7 @@
 ---
 name: slice-runner
 description: USER-INVOKED ONLY. Use when the user explicitly invokes $slice-runner or asks Codex to execute an already-approved multi-slice implementation plan with native Codex subagents. Requires runnable quality gates. Do not use for planning; use intent-to-workflow first when the plan is not yet agreed.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Slice Runner

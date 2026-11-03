@@ -1,6 +1,7 @@
 ---
 name: skill-sync
 description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $skill-sync or asks to commit, push, and deploy agent skill changes live from agents-skills. Commits scoped source, pushes the default branch, publishes exact managed skill names through the shared post-push gate, and verifies live parity without touching project-pinned copies."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Skill Sync

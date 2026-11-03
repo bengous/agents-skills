@@ -7,6 +7,7 @@ description: >
   tracker, prompts, and final execution handoff. Use only when the user explicitly invokes
   $intent-to-workflow or asks to scaffold this PRD-to-issues-to-workflow
   process with human gates.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Intent To Workflow

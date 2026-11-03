@@ -1,6 +1,7 @@
 ---
 name: skill-eval-methodology
 description: Portable discipline for designing, running, and interpreting skill evaluations with skill-creator. Use when defining eval success criteria, testing whether a skill description triggers when it should and not otherwise, running or comparing trials, grading outputs or end states, reviewing traces, benchmarking a skill, estimating an eval's cost, iterating on evals, or maintaining eval artifacts. Separates experimental validity from artifact integrity and harness-specific formats.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Skill Eval Methodology

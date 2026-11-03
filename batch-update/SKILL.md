@@ -1,6 +1,7 @@
 ---
 name: batch-update
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $batch-update or explicitly names this skill to update a repository. Create an isolated git-wt worktree, inventory repo update surfaces, research and apply dependency/tooling update batches with native ecosystem tools, validate, commit each successful batch, and document deferrals. Never invoke implicitly."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Batch Update

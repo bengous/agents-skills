@@ -14,6 +14,7 @@ description: |
   cause (debug it), designing a new machine (state-machine), type-level
   impossible states (unrepresentable, ts-type-audit), a UI glitch with no state
   behind it, or a whole-architecture review (software-architecture).
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # State Audit

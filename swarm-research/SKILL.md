@@ -1,6 +1,7 @@
 ---
 name: swarm-research
 description: Fan out parallel read-only research workers and synthesize their findings. Use only when a research task splits into two or more questions that are independent of one another and each need real investigation. Not for a single question, a lookup whose answer location is already known, research that must proceed sequentially, or anything that writes.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 ## Gate

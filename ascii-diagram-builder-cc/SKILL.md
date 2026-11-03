@@ -11,6 +11,7 @@ description: >
   Triggers on: "draw a diagram", "ASCII diagram", "box diagram", "architecture
   diagram", "add a diagram to the doc", "fix the alignment", "the boxes are
   misaligned", or any request to visualize system architecture in text.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # ASCII Diagram Builder

@@ -8,7 +8,7 @@ description: >
   Pete loop, loopify, inner loop, watch this PR, loop until review passes,
   or create a dynamic workflow. Do not invoke for normal implementation,
   review, or planning unless the user asks for a loop.
-license: MIT
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 compatibility: Designed for Codex CLI with the Agent Skills format. Emits raw
   `/goal` payloads, `.agents/loops/` artifacts, and runner specs; defers to
   `goalify`/`codex-goal` for long protected goals.

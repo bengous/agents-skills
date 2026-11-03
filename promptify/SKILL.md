@@ -1,6 +1,7 @@
 ---
 name: promptify
 description: "USER-INVOKED ONLY. Use only when Augustin explicitly invokes $promptify or explicitly names this skill with one raw prompt argument. Transform a rough dictated instruction into a clean GPT-5.5-optimized prompt. If blocking ambiguities remain, do not produce the final prompt; route to $grilling first."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Promptify

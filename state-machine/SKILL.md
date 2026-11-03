@@ -12,6 +12,7 @@ description: |
   v5, React useReducer, Svelte 5 runes, C, Java, and Rust. NOT for installing
   tools, single-boolean toggles, pure server-cache concerns better handled by
   TanStack Query or SWR, or stateless pure transformations.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # State Machine

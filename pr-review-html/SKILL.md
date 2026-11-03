@@ -1,6 +1,7 @@
 ---
 name: pr-review-html
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $pr-review-html or explicitly names this skill. Create a self-contained HTML artifact for reviewing a pull request, patch, or local diff with real diff excerpts, inline margin annotations, severity-colored findings, reviewer handoff context, and explanations for unfamiliar code paths such as streaming, backpressure, concurrency, retry, cancellation, or state-machine logic. Never invoke implicitly."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # PR Review HTML

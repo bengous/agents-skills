@@ -9,6 +9,7 @@ description: >-
   that exposes no AT-SPI tree. Do not use for web or Electron apps (use
   agent-browser), apps exposing a usable AT-SPI accessibility tree (prefer a
   semantic tool), or compositors other than Hyprland.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # hyprpilot

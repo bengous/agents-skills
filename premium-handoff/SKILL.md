@@ -2,6 +2,7 @@
 name: premium-handoff
 disable-model-invocation: true
 description: "USER-INVOKED ONLY. Use only when the user explicitly invokes $premium-handoff or asks to turn a selected target, targetify seed, evidence summary, design/architecture problem, or premium-model target into a compact handoff prompt/artifact for a scarce frontier model. Do not target the whole repo, implement, or launch the premium model."
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Premium Handoff

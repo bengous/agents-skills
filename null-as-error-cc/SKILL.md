@@ -11,6 +11,7 @@ allowed-tools:
   - Grep
   - Bash
   - Agent
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # null-as-error

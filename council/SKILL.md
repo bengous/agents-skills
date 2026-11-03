@@ -2,6 +2,7 @@
 name: council
 disable-model-invocation: true
 description: USER-INVOKED ONLY. Do NOT auto-trigger. Convene 3 fresh Codex subagents to give independent opinions on a question, idea, hypothesis, plan, or ambiguity. Use only when the user explicitly invokes this skill ("$council", "/council") or explicitly names it ("run council", "use the council skill", "convoque le council"). Never trigger on musings, opinions, or phrases like "je me demande si" — thinking out loud is not an invocation. If invoked with no extra prompt, infer the current subject from the active conversation and ask clean-context subagents to review it.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Council

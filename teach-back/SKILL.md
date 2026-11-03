@@ -1,6 +1,7 @@
 ---
 name: teach-back
 description: Teach a human through the current session incrementally until they can demonstrate real understanding. Use when the user invokes "$teach-back", asks to be taught or debriefed on a session, wants a running understanding checklist, asks for teach-back verification, ELI5/ELI14/ELII explanations, quizzes, or a mastery-gated walkthrough of problem, solution, edge cases, and broader impact.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Teach Back

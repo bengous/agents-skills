@@ -8,6 +8,7 @@ description: >
   or CLI-to-frontend mapping. Use when deciding what pages/screens exist and how
   they connect. Do not use for UI implementation, visual design, design systems,
   complete PRDs, implementation tickets, or code architecture.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Content Architect

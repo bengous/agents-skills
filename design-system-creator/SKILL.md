@@ -16,6 +16,7 @@ description: >
 compatibility:
   optional:
     - visualize:show_widget (for visual moodboards; falls back to HTML file or structured markdown)
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Design System Creator

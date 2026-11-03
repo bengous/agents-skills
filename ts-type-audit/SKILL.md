@@ -3,6 +3,7 @@ name: ts-type-audit
 description: Audit statique en lecture seule de la maturité du typage TypeScript d'un projet. Trois workers parallèles (états impossibles, inférence, discipline), rapports normalisés, synthèse croisée. Ne corrige rien.
 disable-model-invocation: true
 argument-hint: "[racine du projet] [sous-périmètre]"
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # ts-type-audit

@@ -1,6 +1,7 @@
 ---
 name: shrinkify
 description: Interactively shrink AI agent skills while preserving their useful semantics. Use when the user wants to reduce, compact, slim, shrinkify, deslop, or optimize a SKILL.md or skill folder, especially when they want fewer tokens without losing triggers, output shape, decision rules, validation behavior, or recurring workflow quality. Supports explicit audit and apply modes.
+license: "MIT. Copyright (c) 2026 Augustin BENGOLEA. Full terms in LICENSE at https://github.com/bengous/agents-skills"
 ---
 
 # Shrinkify
