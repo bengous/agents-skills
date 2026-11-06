@@ -101,6 +101,7 @@ unused-dependency checks. See `rustfmt.toml`, `clippy.toml`, `Cargo.toml`,
 | [`premium-handoff`](premium-handoff/)                           | Turn selected targets into compact handoffs for scarce premium models                                                        |
 | [`promptify`](promptify/)                                       | Transform rough dictated intent into a compact GPT-5.5-optimized prompt                                                       |
 | [`pr-review-html`](pr-review-html/)                             | Create annotated HTML artifacts for PR reviews and unfamiliar code paths                                                      |
+| [`room-plan`](room-plan/)                                       | Draw a printable line plan of a room from its measurements and compute its paint areas                                        |
 | [`second-brain`](second-brain/)                                 | Stand up and maintain a progressively loaded, bounded agent wiki                                                              |
 | [`shrinkify`](shrinkify/)                                       | Interactively reduce skills while preserving behavior and output contracts                                                    |
 | [`skill-eval-methodology`](skill-eval-methodology/)             | Operational discipline for running skill evaluations and benchmarks                                                           |
