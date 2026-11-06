@@ -1,0 +1,28 @@
+{
+  "title": "Chambre sous combles, plan pour la peinture",
+  "lang": "fr",
+  "width": 3.58,
+  "length": 2.75,
+  "ceiling": [[0, 2.47], [1.36, 2.47], [1.925, 2.18], [2.495, 2.18], [3.58, 1.63]],
+  "walls": {
+    "back": {
+      "name": "Mur fenêtre",
+      "openings": [{ "label": "fenêtre", "at": 0.56, "width": 1.35, "sill": 1.0, "height": 1.03 }]
+    },
+    "front": {
+      "name": "Mur porte",
+      "openings": [{ "label": "porte", "at": 0.04, "width": 0.73, "height": 2.04, "hinge": "start" }]
+    },
+    "left": { "name": "Mur gauche" },
+    "right": { "name": "Placard", "paint": false, "reason": "façade du placard" }
+  },
+  "ceiling_openings": [
+    { "label": "velux", "segment": 3, "from_back": 1.2, "across": 1.1, "along": 1.1, "reveal": 0.25 }
+  ],
+  "coats": 2,
+  "notes": [
+    "Les tableaux de la fenêtre ne sont pas comptés : profondeur non mesurée.",
+    "Début du palier (x = 192,5 cm) mesuré sur photo, pas au mètre.",
+    "Tableau du velux : profondeur de 25 cm supposée, à mesurer."
+  ]
+}
