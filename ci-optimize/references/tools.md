@@ -10,7 +10,7 @@
 
 ## Auditing a third-party tool
 
-Delegate the audit to one subagent on a strong model. The brief says why the tool is considered and what the user fears, and asks for answers tied to file:line or a URL read:
+Delegate the audit to one subagent on a strong model, or run the same brief yourself where the harness has no subagents. The brief says why the tool is considered and what the user fears, and asks for answers tied to file:line or a URL read:
 
 - **What runs**: the entry point, whether a committed bundle matches its sources, the dependencies bundled.
 - **Token and network**: every API call, every write and the permission it needs, every host contacted, any shell or eval fed by untrusted data.
