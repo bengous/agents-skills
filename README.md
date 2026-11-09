@@ -40,10 +40,11 @@ Useful entry points:
 
 ## Local Development
 
-Prepare the Rust toolchain and repo validation tools:
+Install the Rust toolchain, lefthook and gitleaks from `mise.toml`, then the
+git hooks:
 
 ```bash
-./install.sh
+mise install
 ```
 
 Validate all skill frontmatter:
